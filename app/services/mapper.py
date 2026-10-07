@@ -101,7 +101,24 @@ class KomgaMapper:
         metadata_obj = raw.get("metadata", {})
         title = metadata_obj.get("title") or name
         summary = metadata_obj.get("description", "")
-        release_date = metadata_obj.get("publishedDate")
+        raw_released = (
+            record.get("released")
+            or metadata_obj.get("released")
+            or raw.get("released")
+            or metadata_obj.get("releaseDate")
+            or raw.get("releaseDate")
+            or metadata_obj.get("publishedDate")
+        )
+        release_date = None
+        if raw_released:
+            r_str = str(raw_released).strip()
+            if len(r_str) >= 10 and r_str[:4].isdigit() and r_str[4] == "-" and r_str[7] == "-":
+                release_date = r_str[:10]
+            elif len(r_str) == 4 and r_str.isdigit():
+                release_date = f"{r_str}-01-01"
+            else:
+                release_date = r_str[:10] if len(r_str) >= 10 else r_str
+
         isbn = metadata_obj.get("isbn13") or metadata_obj.get("isbn10")
 
         authors_list: List[AuthorDto] = []
@@ -147,7 +164,15 @@ class KomgaMapper:
 
         # Reading progress from user or record
         read_progress = user_progress
-        if not read_progress and raw:
+        if not read_progress and (record.get("user_page") is not None or record.get("user_completed") is not None or record.get("user_read_date")):
+            read_progress = ReadProgressDto(
+                page=record.get("user_page") or 1,
+                completed=bool(record.get("user_completed")),
+                readDate=format_iso_timestamp(record.get("user_read_date") or book_modified),
+                created=book_created,
+                lastModified=book_modified,
+            )
+        elif not read_progress and raw:
             # Check if book raw JSON has progress for the current user
             if raw.get("readStatus") == "READ":
                 read_progress = ReadProgressDto(

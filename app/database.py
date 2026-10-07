@@ -46,12 +46,25 @@ CREATE TABLE IF NOT EXISTS books (
     file_size_kb INTEGER DEFAULT 0,
     page_count INTEGER DEFAULT 0,
     deleted INTEGER DEFAULT 0,
+    released TEXT,
     created TEXT,
     last_modified TEXT,
     raw_json TEXT,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (series_id) REFERENCES series (id) ON DELETE CASCADE,
     FOREIGN KEY (library_id) REFERENCES libraries (id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS read_progress (
+    user_id INTEGER NOT NULL,
+    book_id INTEGER NOT NULL,
+    page INTEGER DEFAULT 1,
+    completed INTEGER DEFAULT 0,
+    read_date TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id, book_id),
+    FOREIGN KEY (book_id) REFERENCES books (id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS book_pages (
@@ -95,6 +108,9 @@ CREATE INDEX IF NOT EXISTS idx_books_series_id ON books(series_id);
 CREATE INDEX IF NOT EXISTS idx_books_library_id ON books(library_id);
 CREATE INDEX IF NOT EXISTS idx_books_page_count ON books(page_count);
 CREATE INDEX IF NOT EXISTS idx_books_created ON books(created);
+CREATE INDEX IF NOT EXISTS idx_read_progress_user ON read_progress(user_id);
+CREATE INDEX IF NOT EXISTS idx_read_progress_book ON read_progress(book_id);
+CREATE INDEX IF NOT EXISTS idx_read_progress_date ON read_progress(read_date);
 CREATE INDEX IF NOT EXISTS idx_series_library_id ON series(library_id);
 CREATE INDEX IF NOT EXISTS idx_series_name ON series(name);
 """
@@ -114,7 +130,30 @@ class Database:
             await db.executescript(SCHEMA_SQL)
             # Automatic schema migration for existing databases
             try:
+                await db.execute("ALTER TABLE books ADD COLUMN released TEXT")
+            except Exception:
+                pass
+            try:
+                await db.execute("CREATE INDEX IF NOT EXISTS idx_books_released ON books(released)")
+            except Exception:
+                pass
+            try:
                 await db.execute("ALTER TABLE page_calc_jobs ADD COLUMN removed_books INTEGER DEFAULT 0")
+            except Exception:
+                pass
+            # Backfill released column from raw_json if books were previously synced without released column
+            try:
+                await db.execute("""
+                    UPDATE books SET released = (
+                        COALESCE(
+                            json_extract(raw_json, '$.metadata.released'),
+                            json_extract(raw_json, '$.released'),
+                            json_extract(raw_json, '$.metadata.releaseDate'),
+                            json_extract(raw_json, '$.metadata.publishedDate')
+                        )
+                    )
+                    WHERE (released IS NULL OR released = '') AND raw_json IS NOT NULL
+                """)
             except Exception:
                 pass
             await db.commit()
@@ -319,8 +358,8 @@ class Database:
             for b in books:
                 await db.execute(
                     """
-                    INSERT INTO books (id, series_id, library_id, name, number, book_type, file_path, file_size_kb, page_count, deleted, created, last_modified, raw_json, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    INSERT INTO books (id, series_id, library_id, name, number, book_type, file_path, file_size_kb, page_count, deleted, released, created, last_modified, raw_json, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                     ON CONFLICT(id) DO UPDATE SET
                         series_id = excluded.series_id,
                         library_id = excluded.library_id,
@@ -331,6 +370,7 @@ class Database:
                         file_size_kb = excluded.file_size_kb,
                         page_count = CASE WHEN excluded.page_count > 0 THEN excluded.page_count ELSE books.page_count END,
                         deleted = excluded.deleted,
+                        released = excluded.released,
                         last_modified = excluded.last_modified,
                         raw_json = excluded.raw_json,
                         updated_at = CURRENT_TIMESTAMP
@@ -346,6 +386,7 @@ class Database:
                         b.get("file_size_kb", 0),
                         b.get("page_count", 0),
                         b.get("deleted", 0),
+                        b.get("released"),
                         b.get("created"),
                         b.get("last_modified"),
                         json.dumps(b.get("raw_json", {})),
@@ -380,11 +421,22 @@ class Database:
                 )
             await db.commit()
 
-    async def get_book_by_id(self, book_id: int, include_deleted: bool = False) -> Optional[Dict[str, Any]]:
-        clause = "WHERE id = ?" if include_deleted else "WHERE id = ? AND deleted = 0"
+    async def get_book_by_id(
+        self, book_id: int, include_deleted: bool = False, user_id: Optional[int] = None
+    ) -> Optional[Dict[str, Any]]:
+        clause = "WHERE b.id = ?" if include_deleted else "WHERE b.id = ? AND b.deleted = 0"
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
-            cursor = await db.execute(f"SELECT * FROM books {clause}", (book_id,))
+            if user_id is not None:
+                query = f"""
+                    SELECT b.*, rp.page as user_page, rp.completed as user_completed, rp.read_date as user_read_date
+                    FROM books b
+                    LEFT JOIN read_progress rp ON rp.book_id = b.id AND rp.user_id = ?
+                    {clause}
+                """
+                cursor = await db.execute(query, (user_id, book_id))
+            else:
+                cursor = await db.execute(f"SELECT b.* FROM books b {clause}", (book_id,))
             row = await cursor.fetchone()
             return dict(row) if row else None
 
@@ -415,6 +467,43 @@ class Database:
             rows = await cursor.fetchall()
             return [r[0] for r in rows]
 
+    # ---------------- Read Progress Operations ----------------
+
+    async def upsert_read_progress(
+        self,
+        user_id: int,
+        book_id: int,
+        page: int,
+        completed: bool,
+        read_date: str,
+    ) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO read_progress (user_id, book_id, page, completed, read_date, updated_at)
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(user_id, book_id) DO UPDATE SET
+                    page = excluded.page,
+                    completed = excluded.completed,
+                    read_date = excluded.read_date,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (user_id, book_id, page, 1 if completed else 0, read_date),
+            )
+            await db.commit()
+
+    async def delete_read_progress(self, user_id: int, book_id: int) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("DELETE FROM read_progress WHERE user_id = ? AND book_id = ?", (user_id, book_id))
+            await db.commit()
+
+    async def get_book_read_progress(self, user_id: int, book_id: int) -> Optional[Dict[str, Any]]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("SELECT * FROM read_progress WHERE user_id = ? AND book_id = ?", (user_id, book_id))
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
     async def get_books_list(
         self,
         library_id: Optional[int] = None,
@@ -422,6 +511,8 @@ class Database:
         series_id: Optional[str] = None,
         series_ids: Optional[List[str]] = None,
         search: Optional[str] = None,
+        read_status: Optional[List[str]] = None,
+        user_id: Optional[int] = None,
         offset: int = 0,
         limit: int = 20,
         sort_by: str = "number",
@@ -453,9 +544,31 @@ class Database:
             conditions.append("b.name LIKE ?")
             params.append(f"%{search}%")
 
-        where_clause = f"WHERE {' AND '.join(conditions)}"
+        # Read status expressions
+        eff_read_date = "COALESCE(rp.read_date, json_extract(b.raw_json, '$.dateFinished'), json_extract(b.raw_json, '$.cbxProgress.lastRead'), json_extract(b.raw_json, '$.epubProgress.lastRead'), json_extract(b.raw_json, '$.pdfProgress.lastRead'))"
+        is_completed = "(rp.completed = 1 OR (rp.book_id IS NULL AND json_extract(b.raw_json, '$.readStatus') = 'READ'))"
+        is_in_prog = "((rp.book_id IS NOT NULL AND rp.completed = 0 AND (rp.page > 0 OR rp.read_date IS NOT NULL)) OR (rp.book_id IS NULL AND (json_extract(b.raw_json, '$.readStatus') IN ('READING', 'IN_PROGRESS') OR (json_extract(b.raw_json, '$.cbxProgress.percentage') > 0 AND json_extract(b.raw_json, '$.cbxProgress.percentage') < 99) OR (json_extract(b.raw_json, '$.epubProgress.percentage') > 0 AND json_extract(b.raw_json, '$.epubProgress.percentage') < 99) OR (json_extract(b.raw_json, '$.pdfProgress.percentage') > 0 AND json_extract(b.raw_json, '$.pdfProgress.percentage') < 99))))"
+        is_unread = f"(NOT {is_completed} AND NOT {is_in_prog})"
+
+        if read_status:
+            statuses = {str(s).upper() for s in read_status}
+            status_clauses = []
+            if "IN_PROGRESS" in statuses:
+                status_clauses.append(is_in_prog)
+            if "READ" in statuses:
+                status_clauses.append(is_completed)
+            if "UNREAD" in statuses:
+                status_clauses.append(is_unread)
+            if status_clauses:
+                conditions.append(f"({' OR '.join(status_clauses)})")
 
         clean_sort = sort_by.lower().replace("metadata.", "").replace("sort", "")
+        if clean_sort in ("readprogress.readdate", "readdate", "readprogress") and not read_status:
+            # When sorting by read date without explicit read_status, only include books with read progress
+            conditions.append(f"{eff_read_date} IS NOT NULL")
+
+        where_clause = f"WHERE {' AND '.join(conditions)}"
+
         allowed_sorts = {
             "number": "b.number",
             "name": "b.name",
@@ -465,37 +578,164 @@ class Database:
             "lastmodified": "b.last_modified",
             "lastmodifieddate": "b.last_modified",
             "filelastmodified": "b.last_modified",
-            "releasedate": "b.created",
+            "release": "COALESCE(b.released, json_extract(b.raw_json, '$.metadata.released'), b.created)",
+            "releasedate": "COALESCE(b.released, json_extract(b.raw_json, '$.metadata.released'), b.created)",
+            "readdate": eff_read_date,
+            "readprogress.readdate": eff_read_date,
         }
         order_col = allowed_sorts.get(clean_sort, "b.number")
         order_direction = "DESC" if sort_dir.lower() == "desc" else "ASC"
 
+        join_rp_clause = "LEFT JOIN read_progress rp ON (b.id = rp.book_id AND (rp.user_id = ? OR ? IS NULL))"
+        rp_join_params = [user_id, user_id]
+
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
-            count_cursor = await db.execute(f"SELECT COUNT(*) as total FROM books b {where_clause}", params)
+            count_query = f"""
+                SELECT COUNT(*) as total FROM books b
+                {join_rp_clause}
+                {where_clause}
+            """
+            count_cursor = await db.execute(count_query, rp_join_params + params)
             count_row = await count_cursor.fetchone()
             total = count_row["total"] if count_row else 0
 
+            select_cols = """
+                b.*, s.name as series_name,
+                rp.page as user_page, rp.completed as user_completed, rp.read_date as user_read_date
+            """
+
             if unpaged:
                 query = f"""
-                    SELECT b.*, s.name as series_name FROM books b
+                    SELECT {select_cols} FROM books b
                     LEFT JOIN series s ON b.series_id = s.id
+                    {join_rp_clause}
                     {where_clause}
                     ORDER BY {order_col} {order_direction}
                 """
-                cursor = await db.execute(query, params)
+                cursor = await db.execute(query, rp_join_params + params)
             else:
                 query = f"""
-                    SELECT b.*, s.name as series_name FROM books b
+                    SELECT {select_cols} FROM books b
                     LEFT JOIN series s ON b.series_id = s.id
+                    {join_rp_clause}
                     {where_clause}
                     ORDER BY {order_col} {order_direction}
                     LIMIT ? OFFSET ?
                 """
-                cursor = await db.execute(query, params + [limit, offset])
+                cursor = await db.execute(query, rp_join_params + params + [limit, offset])
 
             rows = await cursor.fetchall()
             return [dict(r) for r in rows], total
+
+    async def get_books_ondeck(
+        self,
+        library_ids: Optional[List[int]] = None,
+        user_id: Optional[int] = None,
+        offset: int = 0,
+        limit: int = 20,
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        """
+        Calculates On Deck books for the user according to Komga specifications:
+        For each series that has been started:
+        1. If a book in the series is currently in progress, that in-progress book is On Deck.
+        2. Else if at least one book in the series has been completed, the NEXT unread book in that series is On Deck.
+        Series that have never been started (or are completely finished) are excluded.
+        """
+        if library_ids is not None and len(library_ids) == 0:
+            return [], 0
+
+        lib_filter = ""
+        lib_params = []
+        if library_ids:
+            placeholders = ",".join("?" for _ in library_ids)
+            lib_filter = f"AND b.library_id IN ({placeholders})"
+            lib_params = list(library_ids)
+
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            query = f"""
+                SELECT b.*, s.name as series_name,
+                       rp.page as user_page, rp.completed as user_completed, rp.read_date as user_read_date
+                FROM books b
+                LEFT JOIN series s ON b.series_id = s.id
+                LEFT JOIN read_progress rp ON (b.id = rp.book_id AND (rp.user_id = ? OR ? IS NULL))
+                WHERE b.deleted = 0 {lib_filter}
+                ORDER BY b.series_id, b.number ASC
+            """
+            cursor = await db.execute(query, [user_id, user_id] + lib_params)
+            rows = await cursor.fetchall()
+
+        series_books: Dict[str, List[Dict[str, Any]]] = {}
+        for r in rows:
+            book_dict = dict(r)
+            series_books.setdefault(book_dict["series_id"], []).append(book_dict)
+
+        ondeck_candidates = []
+
+        for s_id, books in series_books.items():
+            books.sort(key=lambda x: x.get("number", 1.0))
+
+            in_progress_books = []
+            completed_numbers = []
+            unread_books = []
+            latest_activity_date = None
+
+            for b in books:
+                raw = {}
+                if b.get("raw_json"):
+                    try:
+                        raw = json.loads(b["raw_json"]) if isinstance(b["raw_json"], str) else b["raw_json"]
+                    except Exception:
+                        pass
+
+                has_user_rp = b.get("user_page") is not None or b.get("user_completed") is not None or b.get("user_read_date")
+                if has_user_rp:
+                    is_comp = bool(b.get("user_completed"))
+                    is_prog = not is_comp and ((b.get("user_page") or 0) > 0 or b.get("user_read_date") is not None)
+                    r_date = b.get("user_read_date")
+                else:
+                    is_comp = raw.get("readStatus") == "READ" or raw.get("cbxProgress", {}).get("percentage", 0) >= 99.0 or raw.get("epubProgress", {}).get("percentage", 0) >= 99.0 or raw.get("pdfProgress", {}).get("percentage", 0) >= 99.0
+                    cbx_perc = raw.get("cbxProgress", {}).get("percentage", 0)
+                    epub_perc = raw.get("epubProgress", {}).get("percentage", 0)
+                    pdf_perc = raw.get("pdfProgress", {}).get("percentage", 0)
+                    is_prog = not is_comp and (raw.get("readStatus") in ("READING", "IN_PROGRESS") or 0 < cbx_perc < 99.0 or 0 < epub_perc < 99.0 or 0 < pdf_perc < 99.0)
+                    r_date = raw.get("dateFinished") or raw.get("cbxProgress", {}).get("lastRead") or raw.get("epubProgress", {}).get("lastRead") or raw.get("pdfProgress", {}).get("lastRead")
+
+                if r_date and (not latest_activity_date or r_date > latest_activity_date):
+                    latest_activity_date = r_date
+
+                if is_prog:
+                    in_progress_books.append((b, r_date or b.get("last_modified") or ""))
+                elif is_comp:
+                    completed_numbers.append(b.get("number", 1.0))
+                else:
+                    unread_books.append(b)
+
+            if in_progress_books:
+                # Pick the most recently active in-progress book in the series
+                in_progress_books.sort(key=lambda x: x[1], reverse=True)
+                chosen = in_progress_books[0][0]
+                ondeck_candidates.append({
+                    "book": chosen,
+                    "activity_date": in_progress_books[0][1] or latest_activity_date or chosen.get("last_modified") or "",
+                })
+            elif completed_numbers:
+                max_completed = max(completed_numbers)
+                next_books = [ub for ub in unread_books if ub.get("number", 1.0) > max_completed]
+                if not next_books and unread_books:
+                    next_books = unread_books
+                if next_books:
+                    next_book = next_books[0]
+                    ondeck_candidates.append({
+                        "book": next_book,
+                        "activity_date": latest_activity_date or next_book.get("last_modified") or "",
+                    })
+
+        ondeck_candidates.sort(key=lambda x: x["activity_date"], reverse=True)
+        total = len(ondeck_candidates)
+        sliced = [c["book"] for c in ondeck_candidates[offset : offset + limit]]
+        return sliced, total
 
     async def get_books_missing_pages(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
         query = "SELECT * FROM books WHERE deleted = 0 AND (page_count IS NULL OR page_count <= 0) ORDER BY id ASC"

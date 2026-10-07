@@ -257,6 +257,7 @@ def get_series_router(db: Database) -> APIRouter:
             sort_by=sort_col,
             sort_dir=sort_dir,
             unpaged=is_unpaged,
+            user_id=user.user_id if user else None,
         )
 
         content = [KomgaMapper.to_book_dto(r) for r in records]

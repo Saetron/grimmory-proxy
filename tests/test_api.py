@@ -190,13 +190,181 @@ async def test_series_library_filter_and_access_restrictions():
         assert resp_updated_14.json()["totalElements"] == 0
 
         # J. Query GET /api/v1/books/ondeck?library_id=20 and ?library_id=14
+        # Since no books have been started in series 20, on-deck returns 0
         resp_ondeck_20 = await client.get("/api/v1/books/ondeck?library_id=20", headers=headers)
         assert resp_ondeck_20.status_code == 200
-        assert resp_ondeck_20.json()["totalElements"] == 2
+        assert resp_ondeck_20.json()["totalElements"] == 0
 
         resp_ondeck_14 = await client.get("/api/v1/books/ondeck?library_id=14", headers=headers)
         assert resp_ondeck_14.status_code == 200
         assert resp_ondeck_14.json()["totalElements"] == 0
+
+
+@pytest.mark.asyncio
+async def test_ondeck_keep_reading_and_released_sorting():
+    from datetime import datetime, timezone, timedelta
+    from app.main import db
+    from app.models.internal import UserSession
+    from app.services.auth import AuthService
+
+    await db.connect()
+    user_id = 300
+    user = UserSession(
+        user_id=user_id,
+        username="reader_user",
+        token="token_reader_user",
+        is_admin=True,
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    AuthService.cache_session(user)
+    headers = {"Authorization": "Bearer token_reader_user"}
+
+    # Setup library, series with 3 books
+    await db.upsert_libraries([{"id": 30, "name": "Manga Lib", "paths": []}])
+    await db.upsert_series_batch([{
+        "id": "30-manga1",
+        "library_id": 30,
+        "name": "One Piece",
+        "slug": "one-piece",
+        "books_count": 3,
+    }])
+    await db.upsert_books_batch([
+        {
+            "id": 301,
+            "series_id": "30-manga1",
+            "library_id": 30,
+            "name": "One Piece Vol 1",
+            "number": 1.0,
+            "released": "2020-01-01",
+            "created": "2023-01-01T00:00:00Z",
+        },
+        {
+            "id": 302,
+            "series_id": "30-manga1",
+            "library_id": 30,
+            "name": "One Piece Vol 2",
+            "number": 2.0,
+            "released": "2022-05-15",
+            "created": "2023-01-02T00:00:00Z",
+        },
+        {
+            "id": 303,
+            "series_id": "30-manga1",
+            "library_id": 30,
+            "name": "One Piece Vol 3",
+            "number": 3.0,
+            "released": "2024-10-01",
+            "created": "2023-01-03T00:00:00Z",
+        },
+    ])
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # 1. Unstarted series: On Deck and Read More should be empty
+        ondeck_resp = await client.get("/api/v1/books/ondeck?library_id=30", headers=headers)
+        assert ondeck_resp.status_code == 200
+        assert ondeck_resp.json()["totalElements"] == 0
+
+        read_more_resp = await client.post(
+            "/api/v1/books/list?page=0&sort=readProgress.readDate,desc",
+            json={"condition": {"libraryId": {"operator": "is", "value": "30"}}},
+            headers=headers,
+        )
+        assert read_more_resp.status_code == 200
+        assert read_more_resp.json()["totalElements"] == 0
+
+        # 2. Start reading Vol 1 (in-progress)
+        await db.upsert_read_progress(
+            user_id=user_id,
+            book_id=301,
+            page=45,
+            completed=False,
+            read_date="2026-10-01T12:00:00Z",
+        )
+
+        # On Deck should now return Vol 1 (in-progress book)
+        ondeck_resp = await client.get("/api/v1/books/ondeck?library_id=30", headers=headers)
+        assert ondeck_resp.status_code == 200
+        assert ondeck_resp.json()["totalElements"] == 1
+        assert ondeck_resp.json()["content"][0]["id"] == "301"
+
+        # Read more (Keep Reading) should return Vol 1
+        read_more_resp = await client.post(
+            "/api/v1/books/list?page=0&sort=readProgress.readDate,desc",
+            json={"condition": {"libraryId": {"operator": "is", "value": "30"}}},
+            headers=headers,
+        )
+        assert read_more_resp.status_code == 200
+        assert read_more_resp.json()["totalElements"] == 1
+        assert read_more_resp.json()["content"][0]["id"] == "301"
+        assert read_more_resp.json()["content"][0]["readProgress"]["page"] == 45
+        assert read_more_resp.json()["content"][0]["readProgress"]["completed"] is False
+
+        # 3. Finish Vol 1 (completed)
+        await db.upsert_read_progress(
+            user_id=user_id,
+            book_id=301,
+            page=200,
+            completed=True,
+            read_date="2026-10-02T15:00:00Z",
+        )
+
+        # On Deck should now return Vol 2 (next unread book)
+        ondeck_resp = await client.get("/api/v1/books/ondeck?library_id=30", headers=headers)
+        assert ondeck_resp.status_code == 200
+        assert ondeck_resp.json()["totalElements"] == 1
+        assert ondeck_resp.json()["content"][0]["id"] == "302"
+
+        # 4. Finish Vol 2 and Vol 3
+        await db.upsert_read_progress(
+            user_id=user_id,
+            book_id=302,
+            page=200,
+            completed=True,
+            read_date="2026-10-03T15:00:00Z",
+        )
+        await db.upsert_read_progress(
+            user_id=user_id,
+            book_id=303,
+            page=200,
+            completed=True,
+            read_date="2026-10-04T15:00:00Z",
+        )
+
+        # On Deck should now be empty (entire series read)
+        ondeck_resp = await client.get("/api/v1/books/ondeck?library_id=30", headers=headers)
+        assert ondeck_resp.status_code == 200
+        assert ondeck_resp.json()["totalElements"] == 0
+
+        # Read more should return all 3 books sorted by readDate descending (303, 302, 301)
+        read_more_resp = await client.post(
+            "/api/v1/books/list?page=0&sort=readProgress.readDate,desc",
+            json={"condition": {"libraryId": {"operator": "is", "value": "30"}}},
+            headers=headers,
+        )
+        assert read_more_resp.status_code == 200
+        assert read_more_resp.json()["totalElements"] == 3
+        ids = [b["id"] for b in read_more_resp.json()["content"]]
+        assert ids == ["303", "302", "301"]
+
+        # 5. Test release date sorting via POST /api/v1/books/list?sort=metadata.releaseDate,desc
+        rel_resp = await client.post(
+            "/api/v1/books/list?page=0&sort=metadata.releaseDate,desc",
+            json={"condition": {"libraryId": {"operator": "is", "value": "30"}}},
+            headers=headers,
+        )
+        assert rel_resp.status_code == 200
+        assert rel_resp.json()["totalElements"] == 3
+        rel_ids = [b["id"] for b in rel_resp.json()["content"]]
+        # Vol 3 (2024-10-01) > Vol 2 (2022-05-15) > Vol 1 (2020-01-01)
+        assert rel_ids == ["303", "302", "301"]
+        assert rel_resp.json()["content"][0]["metadata"]["releaseDate"] == "2024-10-01"
+
+        # 6. Test GET /api/v1/books/released?library_id=30
+        released_endpoint = await client.get("/api/v1/books/released?library_id=30", headers=headers)
+        assert released_endpoint.status_code == 200
+        assert released_endpoint.json()["totalElements"] == 3
+        assert [b["id"] for b in released_endpoint.json()["content"]] == ["303", "302", "301"]
 
 
 @pytest.mark.asyncio

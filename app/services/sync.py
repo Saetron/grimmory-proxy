@@ -149,6 +149,16 @@ class SyncService:
                     elif isinstance(auth, dict) and "name" in auth:
                         author_names.add(auth["name"].strip())
 
+                # Grimmory released date field
+                raw_released = (
+                    meta.get("released")
+                    or b.get("released")
+                    or meta.get("releaseDate")
+                    or b.get("releaseDate")
+                    or meta.get("publishedDate")
+                )
+                released_str = str(raw_released).strip() if raw_released else None
+
                 book_records.append({
                     "id": b["id"],
                     "series_id": series_id,
@@ -160,6 +170,7 @@ class SyncService:
                     "file_size_kb": pfile.get("fileSizeKb", 0),
                     "page_count": meta.get("pageCount") or 0,
                     "deleted": 1 if b.get("deleted") else 0,
+                    "released": released_str,
                     "created": b.get("addedOn"),
                     "last_modified": b.get("addedOn"),
                     "raw_json": b,

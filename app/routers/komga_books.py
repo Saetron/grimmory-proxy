@@ -26,6 +26,7 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
     async def _query_books(
         library_ids: Optional[List[int]] = None,
         series_ids: Optional[List[str]] = None,
+        read_status: Optional[List[str]] = None,
         search: Optional[str] = None,
         page: int = 0,
         size: int = 20,
@@ -75,12 +76,14 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
         records, total = await db.get_books_list(
             library_ids=effective_libs if not canonical_series_ids else None,
             series_ids=canonical_series_ids,
+            read_status=read_status,
             search=search,
             offset=0 if unpaged else page * size,
             limit=size,
             sort_by=sort_by,
             sort_dir=sort_dir,
             unpaged=unpaged,
+            user_id=user.user_id if user else None,
         )
 
         content = [KomgaMapper.to_book_dto(r) for r in records]
@@ -98,6 +101,7 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
         return await _query_books(
             library_ids=filters["library_ids"],
             series_ids=filters["series_ids"],
+            read_status=filters["read_status"],
             search=filters["search"],
             page=page,
             size=size,
@@ -129,6 +133,7 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
         return await _query_books(
             library_ids=filters["library_ids"],
             series_ids=filters["series_ids"],
+            read_status=filters["read_status"],
             search=filters["search"],
             page=page,
             size=size,
@@ -148,12 +153,11 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
         effective_libs = resolve_effective_library_ids(user, filters["library_ids"])
         if effective_libs is not None and len(effective_libs) == 0:
             return build_pageable([], page, size, 0)
-        records, total = await db.get_books_list(
+        records, total = await db.get_books_ondeck(
             library_ids=effective_libs,
+            user_id=user.user_id if user else None,
             offset=page * size,
             limit=size,
-            sort_by="lastmodified",
-            sort_dir="desc",
         )
         content = [KomgaMapper.to_book_dto(r) for r in records]
         return build_pageable(content, page, size, total)
@@ -175,6 +179,7 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
             limit=size,
             sort_by="created",
             sort_dir="desc",
+            user_id=user.user_id if user else None,
         )
         content = [KomgaMapper.to_book_dto(r) for r in records]
         return build_pageable(content, page, size, total)
@@ -194,8 +199,9 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
             library_ids=effective_libs,
             offset=page * size,
             limit=size,
-            sort_by="created",
+            sort_by="releasedate",
             sort_dir="desc",
+            user_id=user.user_id if user else None,
         )
         content = [KomgaMapper.to_book_dto(r) for r in records]
         return build_pageable(content, page, size, total)
@@ -205,7 +211,7 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
         book_id: int,
         user: UserSession = Depends(AuthService.require_user),
     ) -> BookDto:
-        record = await db.get_book_by_id(book_id)
+        record = await db.get_book_by_id(book_id, user_id=user.user_id if user else None)
         if not record:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
 

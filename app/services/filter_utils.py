@@ -116,7 +116,24 @@ def extract_filter_params(request: Request, body: Optional[Any] = None) -> Dict[
             if "fullTextSearch" in cond and str(cond["fullTextSearch"]).strip():
                 search = str(cond["fullTextSearch"]).strip()
 
-    # 4. Extract Unpaged Flag
+    # 4. Extract Read Status
+    read_status_keys = {"read_status", "readstatus", "read_status[]", "readstatus[]"}
+    raw_read_status: List[Any] = []
+    for qk, qv in request.query_params.multi_items():
+        if qk.lower() in read_status_keys:
+            raw_read_status.append(qv)
+
+    if body:
+        raw_read_status.extend(_extract_ids_recursive(body, read_status_keys))
+
+    read_status: List[str] = []
+    for item in raw_read_status:
+        for part in str(item).split(","):
+            part = part.strip().upper()
+            if part and part not in read_status:
+                read_status.append(part)
+
+    # 5. Extract Unpaged Flag
     unpaged = False
     if "unpaged" in request.query_params:
         unpaged = request.query_params.get("unpaged", "").lower() in ("true", "1")
@@ -127,6 +144,7 @@ def extract_filter_params(request: Request, body: Optional[Any] = None) -> Dict[
         "library_ids": library_ids,
         "series_ids": series_ids,
         "search": search,
+        "read_status": read_status,
         "unpaged": unpaged,
     }
 
