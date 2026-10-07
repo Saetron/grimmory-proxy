@@ -14,7 +14,7 @@ from app.database import Database
 from app.models.internal import PageCalcStatus
 from app.models.komga import PageDto
 
-logger = logging.getLogger("komic.page_calculator")
+logger = logging.getLogger("grimmory_proxy.page_calculator")
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif", ".bmp"}
 

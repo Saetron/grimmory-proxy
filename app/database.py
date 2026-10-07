@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 import aiosqlite
 
-logger = logging.getLogger("komic.database")
+logger = logging.getLogger("grimmory_proxy.database")
 
 SCHEMA_SQL = """
 PRAGMA journal_mode = WAL;

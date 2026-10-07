@@ -15,7 +15,7 @@ from app.services.cache import thumbnail_cache
 from app.services.page_calculator import PageCalculator
 from app.services.sync import SyncService
 
-logger = logging.getLogger("komic.admin_webui")
+logger = logging.getLogger("grimmory_proxy.admin_webui")
 
 templates_dir = Path(__file__).parent.parent / "templates"
 templates = Jinja2Templates(directory=str(templates_dir))

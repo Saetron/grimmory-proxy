@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from app.config import settings
 
-logger = logging.getLogger("komic.cache")
+logger = logging.getLogger("grimmory_proxy.cache")
 
 
 class MemoryCache:

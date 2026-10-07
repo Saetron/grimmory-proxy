@@ -6,7 +6,7 @@ from app.models.internal import UserSession
 from app.models.komga import UserDto
 from app.services.auth import AuthService
 
-logger = logging.getLogger("komic.komga_auth")
+logger = logging.getLogger("grimmory_proxy.komga_auth")
 
 router = APIRouter(tags=["Komga Auth & System"])
 

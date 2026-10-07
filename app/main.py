@@ -27,7 +27,7 @@ logging.basicConfig(
     level=log_level,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
-logger = logging.getLogger("komic.main")
+logger = logging.getLogger("grimmory_proxy.main")
 
 # Database & Core Services
 db = Database(db_path=settings.database_path)
@@ -37,7 +37,7 @@ sync_service = SyncService(db=db, page_calculator=page_calculator)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Initializing Komic (Grimmory to Komga Bridge)...")
+    logger.info("Initializing Grimmory Proxy (Komga API Bridge)...")
     settings.ensure_directories()
     await db.connect()
 
@@ -46,7 +46,7 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    logger.info("Shutting down Komic...")
+    logger.info("Shutting down Grimmory Proxy...")
     sync_task.cancel()
     await grimmory_client.close()
 
@@ -58,7 +58,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS Middleware (allows web readers like Komic, Kavita, Tachiyomi Web, etc.)
+# CORS Middleware (allows web readers like Komic, Mihon, Tachiyomi, Kuro, etc.)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -92,7 +92,7 @@ async def root_redirect(request: Request):
     if "text/html" in accept:
         return RedirectResponse(url="/admin", status_code=status.HTTP_302_FOUND)
     return {
-        "app": "Komic",
+        "app": "Grimmory Proxy",
         "description": "Grimmory to Komga API Bridge",
         "version": "1.12.0",
         "status": "UP",

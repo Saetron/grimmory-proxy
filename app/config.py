@@ -70,7 +70,7 @@ class Settings(BaseSettings):
 
     # WebUI admin session secret key
     admin_session_secret: str = Field(
-        default="komic-grimmory-bridge-secret-key-change-me",
+        default="grimmory-proxy-secret-key-change-me",
         description="Secret key for signing WebUI admin session cookies",
     )
 

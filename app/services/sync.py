@@ -11,7 +11,7 @@ from app.database import Database
 from app.models.internal import SyncStatus
 from app.services.page_calculator import PageCalculator
 
-logger = logging.getLogger("komic.sync")
+logger = logging.getLogger("grimmory_proxy.sync")
 
 SLUG_PATTERN = re.compile(r"[^a-z0-9]+")
 

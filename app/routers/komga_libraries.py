@@ -8,7 +8,7 @@ from app.models.komga import LibraryDto
 from app.services.auth import AuthService
 from app.services.mapper import KomgaMapper
 
-logger = logging.getLogger("komic.komga_libraries")
+logger = logging.getLogger("grimmory_proxy.komga_libraries")
 
 
 def get_libraries_router(db: Database) -> APIRouter:

@@ -15,7 +15,7 @@ from app.services.cache import memory_cache, thumbnail_cache
 from app.services.mapper import KomgaMapper
 from app.services.page_calculator import PageCalculator
 
-logger = logging.getLogger("komic.komga_books")
+logger = logging.getLogger("grimmory_proxy.komga_books")
 
 
 def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter:

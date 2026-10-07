@@ -8,7 +8,7 @@ from app.models.internal import UserSession
 from app.models.komga import AuthorDto, PageableDto, build_pageable
 from app.services.auth import AuthService
 
-logger = logging.getLogger("komic.komga_authors")
+logger = logging.getLogger("grimmory_proxy.komga_authors")
 
 
 def get_authors_router(db: Database) -> APIRouter:

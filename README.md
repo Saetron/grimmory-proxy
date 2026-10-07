@@ -1,11 +1,11 @@
-# Komic - Grimmory to Komga API Bridge
+# grimmory-proxy - Komga to Grimmory API Bridge
 
 [![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688.svg)](https://fastapi.tiangolo.com/)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED.svg)](https://www.docker.com/)
 [![Komga API](https://img.shields.io/badge/Komga%20API-v1.12.0-orange.svg)](https://komga.org/)
 
-A high-performance Python and Docker bridge that translates the **Grimmory API** (`https://grimmory.org/api/`) into the complete **Komga API specification** (`https://raw.githubusercontent.com/gotson/komga/refs/heads/master/komga/docs/openapi.json`), restoring seamless compatibility for reader applications such as **Komic**, **Mihon / Tachiyomi**, **Paperback**, and **Kuro Reader** after the deprecation of Grimmory's native Komga endpoint.
+A high-performance Python and Docker proxy/bridge that translates the **Grimmory API** (`https://grimmory.org/api/`) into the complete **Komga API specification** (`https://raw.githubusercontent.com/gotson/komga/refs/heads/master/komga/docs/openapi.json`), restoring seamless compatibility for any Komga-compatible reader application such as **Mihon / Tachiyomi**, **Komic**, **Paperback**, and **Kuro Reader** after the deprecation of Grimmory's native Komga endpoint.
 
 ---
 
@@ -34,37 +34,37 @@ A high-performance Python and Docker bridge that translates the **Grimmory API**
 ## Architecture Overview
 
 ```
-+-------------------------------------------------------+
-|  Reader Clients (Komic, Mihon, Tachiyomi, Kuro, etc.)  |
-+-------------------------------------------------------+
-                           |
-            Komga API (Basic Auth / Session)
-                           v
-+-------------------------------------------------------+
-|                     KOMIC BRIDGE                      |
-|                                                       |
-|  +-------------------+        +--------------------+  |
-|  |   FastAPI Proxy   | <----> | SQLite Cache & WAL |  |
-|  | (Komga Endpoints) |        |    (bridge.db)     |  |
-|  +-------------------+        +--------------------+  |
-|            |                            |             |
-|            | Per-User Auth              |             |
-|            | & Progress                 |             |
-|            v                            v             |
-|  +-------------------+        +--------------------+  |
-|  |  Grimmory Client  |        | Page Calc Engine   |  |
-|  | (Multi-User HTTP) |        | (Calibre ADE / CBZ)|  |
-|  +-------------------+        +--------------------+  |
-|            ^                            |             |
-|            | Background Sync            | Write-Back  |
-|            | (SYNC_USERNAME)            | (pageCount) |
-+-------------------------------------------------------+
-                           |
-                           v
-+-------------------------------------------------------+
-|                   GRIMMORY SERVER                     |
-|              (https://grimmory.org/api/)              |
-+-------------------------------------------------------+
++-------------------------------------------------------------+
+|  Reader Clients (Mihon, Tachiyomi, Komic, Kuro Reader, etc.)|
++-------------------------------------------------------------+
+                               |
+                Komga API (Basic Auth / Session)
+                               v
++-------------------------------------------------------------+
+|                 GRIMMORY PROXY (Komga Bridge)               |
+|                                                             |
+|  +-------------------+        +--------------------------+  |
+|  |   FastAPI Proxy   | <----> | SQLite Cache & WAL       |  |
+|  | (Komga Endpoints) |        | (bridge.db)              |  |
+|  +-------------------+        +--------------------------+  |
+|            |                            |                   |
+|            | Per-User Auth              |                   |
+|            | & Progress                 |                   |
+|            v                            v                   |
+|  +-------------------+        +--------------------------+  |
+|  |  Grimmory Client  |        | Page Calc Engine         |  |
+|  | (Multi-User HTTP) |        | (Calibre ADE / CBZ)      |  |
+|  +-------------------+        +--------------------------+  |
+|            ^                            |                   |
+|            | Background Sync            | Write-Back        |
+|            | (SYNC_USERNAME)            | (pageCount)       |
++-------------------------------------------------------------+
+                               |
+                               v
++-------------------------------------------------------------+
+|                      GRIMMORY SERVER                        |
+|                 (https://grimmory.org/api/)                 |
++-------------------------------------------------------------+
 ```
 
 ---
@@ -153,17 +153,17 @@ A high-performance Python and Docker bridge that translates the **Grimmory API**
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/your-username/komic.git
-   cd komic
+   git clone https://github.com/Saetron/grimmory-proxy.git
+   cd grimmory-proxy
    ```
 
 2. Edit `docker-compose.yml` or set environment variables:
    ```yaml
    services:
-     komic:
-       image: komic-bridge:latest
+     grimmory-proxy:
+       image: ghcr.io/saetron/grimmory-proxy:latest
        build: .
-       container_name: komic-bridge
+       container_name: grimmory-proxy
        restart: unless-stopped
        ports:
          - "8080:8080"
@@ -191,11 +191,11 @@ A high-performance Python and Docker bridge that translates the **Grimmory API**
 
 ## Reader Configuration
 
-### Komic / Mihon / Tachiyomi
-1. Add a new Komga repository/source.
-2. **Server Address**: `http://<bridge-host>:8080` (or `https://your-reverse-proxy-domain`)
-3. **Username & Password**: Enter your regular Grimmory credentials (e.g. `your_username`).
-4. Browse your libraries, read comics and novels with accurate page totals, and sync reading progress automatically.
+### Connecting Komga Readers (Mihon, Tachiyomi, Komic, Kuro Reader, Paperback, etc.)
+1. In your reader app, add a new **Komga** server/repository.
+2. **Server URL / Address**: `http://<server-ip>:8080` (or `https://proxy.yourdomain.com` behind reverse proxy).
+3. **Username & Password**: Enter your personal Grimmory credentials.
+4. Browse your libraries, read comics, manga, and novels with accurate page totals, and sync reading progress automatically.
 
 ---
 

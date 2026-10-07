@@ -11,7 +11,7 @@ from app.models.komga import ReadProgressDto, ReadProgressUpdateDto
 from app.services.auth import AuthService
 from app.services.mapper import KomgaMapper
 
-logger = logging.getLogger("komic.komga_progress")
+logger = logging.getLogger("grimmory_proxy.komga_progress")
 
 
 def get_progress_router(db: Database) -> APIRouter:

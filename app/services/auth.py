@@ -9,7 +9,7 @@ from app.clients.grimmory import grimmory_client
 from app.config import settings
 from app.models.internal import UserSession
 
-logger = logging.getLogger("komic.auth")
+logger = logging.getLogger("grimmory_proxy.auth")
 
 security_basic = HTTPBasic(auto_error=False)
 

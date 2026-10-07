@@ -11,7 +11,7 @@ from app.models.grimmory import (
     GrimmoryUser,
 )
 
-logger = logging.getLogger("komic.grimmory_client")
+logger = logging.getLogger("grimmory_proxy.grimmory_client")
 
 
 class GrimmoryClient:

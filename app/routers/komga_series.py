@@ -11,7 +11,7 @@ from app.services.auth import AuthService
 from app.services.cache import thumbnail_cache
 from app.services.mapper import KomgaMapper
 
-logger = logging.getLogger("komic.komga_series")
+logger = logging.getLogger("grimmory_proxy.komga_series")
 
 
 def get_series_router(db: Database) -> APIRouter:

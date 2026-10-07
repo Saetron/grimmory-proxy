@@ -7,7 +7,7 @@ from app.models.internal import UserSession
 from app.models.komga import CollectionDto, PageableDto, ReadListDto, build_pageable
 from app.services.auth import AuthService
 
-logger = logging.getLogger("komic.komga_collections")
+logger = logging.getLogger("grimmory_proxy.komga_collections")
 
 router = APIRouter(tags=["Komga Collections & ReadLists"])
 

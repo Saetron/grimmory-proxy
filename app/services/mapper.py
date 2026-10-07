@@ -17,7 +17,7 @@ from app.models.komga import (
     SeriesMetadataDto,
 )
 
-logger = logging.getLogger("komic.mapper")
+logger = logging.getLogger("grimmory_proxy.mapper")
 
 
 def format_file_size(size_kb: int) -> str:
@@ -229,7 +229,7 @@ class KomgaMapper:
     def to_divina_manifest(book: BookDto, pages: List[PageDto], base_url: str = "") -> Dict[str, Any]:
         """
         Builds a Readium Web Publication / Divina manifest.
-        Komic and other Divina-compliant readers use this for reading.
+        Komga and Divina-compliant readers use this for reading.
         """
         reading_order = []
         for p in pages:
