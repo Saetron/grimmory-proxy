@@ -4,6 +4,7 @@ import logging
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import StreamingResponse
+import httpx
 from PIL import Image
 
 from app.clients.grimmory import grimmory_client
@@ -39,6 +40,24 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
             if len(parts) > 1:
                 sort_dir = parts[1].strip()
 
+        # Resolve series IDs to canonical database IDs if possible
+        canonical_series_ids = None
+        if series_ids:
+            canonical_series_ids = []
+            series_lib_ids = []
+            for s_id in series_ids:
+                series_rec = await db.find_series_by_id_or_slug(s_id)
+                if series_rec:
+                    canonical_series_ids.append(series_rec["id"])
+                    series_lib_ids.append(series_rec["library_id"])
+                else:
+                    canonical_series_ids.append(s_id)
+
+            # If user has library restrictions, check that requested series belongs to allowed libraries
+            if user and not user.is_admin and user.assigned_library_ids:
+                if series_lib_ids and not any(lid in user.assigned_library_ids for lid in series_lib_ids):
+                    return build_pageable([], page, size, 0, unpaged=unpaged)
+
         effective_libs = None
         if user:
             effective_libs = resolve_effective_library_ids(user, library_ids or [])
@@ -48,8 +67,8 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
             effective_libs = library_ids
 
         records, total = await db.get_books_list(
-            library_ids=effective_libs,
-            series_ids=series_ids,
+            library_ids=effective_libs if not canonical_series_ids else None,
+            series_ids=canonical_series_ids,
             search=search,
             offset=0 if unpaged else page * size,
             limit=size,
@@ -65,7 +84,7 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
     async def get_all_books(
         request: Request,
         page: int = Query(0, ge=0),
-        size: int = Query(20, ge=1, le=500),
+        size: int = Query(20, ge=1),
         sort: str = Query("number,asc"),
         user: UserSession = Depends(AuthService.require_user),
     ) -> PageableDto[BookDto]:
@@ -85,11 +104,16 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
     async def list_books_post(
         request: Request,
         page: int = Query(0, ge=0),
-        size: int = Query(20, ge=1, le=500),
+        size: int = Query(20, ge=1),
         sort: str = Query("number,asc"),
         body: Optional[Dict[str, Any]] = None,
         user: UserSession = Depends(AuthService.require_user),
     ) -> PageableDto[BookDto]:
+        if body is None:
+            try:
+                body = await request.json()
+            except Exception:
+                body = None
         filters = extract_filter_params(request, body)
         return await _query_books(
             library_ids=filters["library_ids"],
@@ -104,14 +128,17 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
 
     @router.api_route("/api/v1/books/ondeck", methods=["GET", "POST"], response_model=PageableDto[BookDto])
     async def get_books_ondeck(
+        request: Request,
         page: int = Query(0, ge=0),
-        size: int = Query(20, ge=1, le=500),
+        size: int = Query(20, ge=1),
         user: UserSession = Depends(AuthService.require_user),
     ) -> PageableDto[BookDto]:
-        # Return recently accessed books for this user, restricted to allowed libraries
-        allowed_libs = user.assigned_library_ids if (not user.is_admin and user.assigned_library_ids) else None
+        filters = extract_filter_params(request)
+        effective_libs = resolve_effective_library_ids(user, filters["library_ids"])
+        if effective_libs is not None and len(effective_libs) == 0:
+            return build_pageable([], page, size, 0)
         records, total = await db.get_books_list(
-            library_ids=allowed_libs,
+            library_ids=effective_libs,
             offset=page * size,
             limit=size,
             sort_by="lastmodified",
@@ -122,13 +149,17 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
 
     @router.api_route("/api/v1/books/latest", methods=["GET", "POST"], response_model=PageableDto[BookDto])
     async def get_books_latest(
+        request: Request,
         page: int = Query(0, ge=0),
-        size: int = Query(20, ge=1, le=500),
+        size: int = Query(20, ge=1),
         user: UserSession = Depends(AuthService.require_user),
     ) -> PageableDto[BookDto]:
-        allowed_libs = user.assigned_library_ids if (not user.is_admin and user.assigned_library_ids) else None
+        filters = extract_filter_params(request)
+        effective_libs = resolve_effective_library_ids(user, filters["library_ids"])
+        if effective_libs is not None and len(effective_libs) == 0:
+            return build_pageable([], page, size, 0)
         records, total = await db.get_books_list(
-            library_ids=allowed_libs,
+            library_ids=effective_libs,
             offset=page * size,
             limit=size,
             sort_by="created",
@@ -139,13 +170,17 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
 
     @router.api_route("/api/v1/books/released", methods=["GET", "POST"], response_model=PageableDto[BookDto])
     async def get_books_released(
+        request: Request,
         page: int = Query(0, ge=0),
-        size: int = Query(20, ge=1, le=500),
+        size: int = Query(20, ge=1),
         user: UserSession = Depends(AuthService.require_user),
     ) -> PageableDto[BookDto]:
-        allowed_libs = user.assigned_library_ids if (not user.is_admin and user.assigned_library_ids) else None
+        filters = extract_filter_params(request)
+        effective_libs = resolve_effective_library_ids(user, filters["library_ids"])
+        if effective_libs is not None and len(effective_libs) == 0:
+            return build_pageable([], page, size, 0)
         records, total = await db.get_books_list(
-            library_ids=allowed_libs,
+            library_ids=effective_libs,
             offset=page * size,
             limit=size,
             sort_by="created",
@@ -220,10 +255,17 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
         book_type = record.get("book_type", "EPUB")
 
         if page_count <= 0:
-            calc_count, calc_pages = await page_calculator.inspect_book_pages(book_id, book_type)
-            await db.update_book_page_count(book_id, calc_count)
-            await db.upsert_book_pages(book_id, [p.model_dump() for p in calc_pages])
-            return calc_pages
+            try:
+                calc_count, calc_pages = await page_calculator.inspect_book_pages(book_id, book_type)
+                await db.update_book_page_count(book_id, calc_count)
+                await db.upsert_book_pages(book_id, [p.model_dump() for p in calc_pages])
+                return calc_pages
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code in (404, 410):
+                    logger.warning(f"Book {book_id} was removed from Grimmory (HTTP {e.response.status_code}); marking deleted.")
+                    await db.mark_book_deleted(book_id)
+                    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
+                raise
 
         # Synthesize PageDto array
         page_dtos = [
@@ -278,7 +320,15 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
         if not record:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
 
-        resp = await grimmory_client.download_book_stream(book_id, token=user.token)
+        try:
+            resp = await grimmory_client.download_book_stream(book_id, token=user.token)
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code in (404, 410):
+                logger.warning(f"Book {book_id} was removed from Grimmory (HTTP {e.response.status_code}); marking deleted.")
+                await db.mark_book_deleted(book_id)
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
+            raise
+
         media_type = resp.headers.get("Content-Type", "application/octet-stream")
         content_disposition = resp.headers.get("Content-Disposition", f'attachment; filename="{record.get("name", "book")}.epub"')
 

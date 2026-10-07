@@ -19,6 +19,7 @@ class PageCalcStatus(BaseModel):
     total_books: int = 0
     processed_books: int = 0
     updated_books: int = 0
+    removed_books: int = 0
     error_count: int = 0
     current_book: str = ""
     started_at: Optional[str] = None

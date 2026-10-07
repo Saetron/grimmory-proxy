@@ -5,6 +5,7 @@ import re
 import zipfile
 from html import unescape
 from typing import Any, Dict, List, Optional, Tuple
+import httpx
 from PIL import Image
 from pypdf import PdfReader
 
@@ -201,9 +202,10 @@ class PageCalculator:
             # EPUB / Novel default: Calibre ADE algorithm
             return self.count_epub_pages(file_bytes, chars_per_page=settings.novel_chars_per_page)
 
-    async def calculate_and_save_book(self, book: Dict[str, Any]) -> bool:
+    async def calculate_and_save_book(self, book: Dict[str, Any]) -> str:
         """
         Calculates pages for a single book and writes the result to both Grimmory and SQLite.
+        Returns: "updated", "removed", or "error"
         """
         book_id = book["id"]
         book_name = book.get("name", f"Book {book_id}")
@@ -223,10 +225,22 @@ class PageCalculator:
             page_records = [p.model_dump() for p in page_dtos]
             await self.db.upsert_book_pages(book_id, page_records)
 
-            return True
+            return "updated"
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code in (404, 410):
+                logger.warning(f"Book {book_id} ('{book_name}') was removed from Grimmory (HTTP {e.response.status_code}); marking as deleted.")
+                await self.db.mark_book_deleted(book_id)
+                return "removed"
+            logger.error(f"HTTP error calculating pages for book {book_id} ('{book_name}'): {e}")
+            return "error"
         except Exception as e:
+            err_msg = str(e)
+            if "404" in err_msg or "Not Found" in err_msg:
+                logger.warning(f"Book {book_id} ('{book_name}') was removed from Grimmory; marking as deleted: {e}")
+                await self.db.mark_book_deleted(book_id)
+                return "removed"
             logger.error(f"Error calculating pages for book {book_id} ('{book_name}'): {e}")
-            return False
+            return "error"
 
     async def run_calculation_job(self, missing_only: bool = True) -> PageCalcStatus:
         """
@@ -254,6 +268,7 @@ class PageCalculator:
             self.status.total_books = total_books
             self.status.processed_books = 0
             self.status.updated_books = 0
+            self.status.removed_books = 0
             self.status.error_count = 0
 
             logger.info(f"Starting page calculation job {job_id} for {total_books} books (concurrency: {settings.sync_concurrency})")
@@ -269,11 +284,13 @@ class PageCalculator:
                     return
 
                 self.status.current_book = book.get("name", f"Book {book['id']}")
-                success = await self.calculate_and_save_book(book)
+                result = await self.calculate_and_save_book(book)
 
                 self.status.processed_books += 1
-                if success:
+                if result == "updated":
                     self.status.updated_books += 1
+                elif result == "removed":
+                    self.status.removed_books += 1
                 else:
                     self.status.error_count += 1
 
@@ -283,6 +300,7 @@ class PageCalculator:
                         job_id=job_id,
                         processed=self.status.processed_books,
                         updated=self.status.updated_books,
+                        removed=self.status.removed_books,
                         errors=self.status.error_count,
                         current_book=self.status.current_book,
                     )
@@ -297,11 +315,12 @@ class PageCalculator:
                 job_id=job_id,
                 processed=self.status.processed_books,
                 updated=self.status.updated_books,
+                removed=self.status.removed_books,
                 errors=self.status.error_count,
                 current_book="",
                 status=final_status,
             )
-            logger.info(f"Page calculation job finished with status '{final_status}': {self.status.updated_books}/{total_books} updated")
+            logger.info(f"Page calculation job finished with status '{final_status}': {self.status.updated_books}/{total_books} updated, {self.status.removed_books} removed")
         except Exception as e:
             logger.error(f"Page calculation job failed: {e}")
             self.status.is_running = False
@@ -310,6 +329,7 @@ class PageCalculator:
                 job_id=job_id,
                 processed=self.status.processed_books,
                 updated=self.status.updated_books,
+                removed=self.status.removed_books,
                 errors=self.status.error_count,
                 status="failed",
                 error_message=str(e),

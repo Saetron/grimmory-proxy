@@ -66,6 +66,12 @@ def test_filter_utils_extraction():
     assert f4["library_ids"] == [10, 15]
     assert f4["series_ids"] == ["s-1"]
 
+    # 5. Post body with nested id dictionary (e.g. {"condition": {"series": {"id": "s-nested"}}})
+    body5 = {"condition": {"series": {"id": "s-nested"}, "library": {"id": 20}}}
+    f5 = extract_filter_params(req3, body5)
+    assert f5["library_ids"] == [20]
+    assert f5["series_ids"] == ["s-nested"]
+
 
 def test_effective_library_resolution():
     admin = UserSession(
@@ -84,12 +90,26 @@ def test_effective_library_resolution():
         assigned_library_ids=[20],
         expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
     )
+    unrestricted_user = UserSession(
+        user_id=3,
+        username="open_reader",
+        token="tok3",
+        is_admin=False,
+        assigned_library_ids=[],
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
 
     # Admin with no filter -> returns None (all libraries)
     assert resolve_effective_library_ids(admin, []) is None
 
     # Admin with filter [14, 20] -> returns [14, 20]
     assert resolve_effective_library_ids(admin, [14, 20]) == [14, 20]
+
+    # Unrestricted non-admin with no filter -> returns None (all libraries)
+    assert resolve_effective_library_ids(unrestricted_user, []) is None
+
+    # Unrestricted non-admin requesting [20] -> returns [20]
+    assert resolve_effective_library_ids(unrestricted_user, [20]) == [20]
 
     # Restricted user with no filter -> defaults strictly to [20]
     assert resolve_effective_library_ids(restricted_user, []) == [20]

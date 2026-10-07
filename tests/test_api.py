@@ -168,4 +168,77 @@ async def test_series_library_filter_and_access_restrictions():
         assert resp_books_post.status_code == 200
         assert resp_books_post.json()["totalElements"] == 2
 
+        # H. Query GET /api/v1/series/20-novel1/collections (must return 200 with empty list, not 404)
+        resp_collections = await client.get("/api/v1/series/20-novel1/collections", headers=headers)
+        assert resp_collections.status_code == 200
+        assert resp_collections.json() == []
+
+        # I. Query GET /api/v1/series/updated?library_id=20 and ?library_id=14
+        resp_updated_20 = await client.get("/api/v1/series/updated?library_id=20", headers=headers)
+        assert resp_updated_20.status_code == 200
+        assert resp_updated_20.json()["totalElements"] == 1
+        assert resp_updated_20.json()["content"][0]["id"] == "20-novel1"
+
+        resp_updated_14 = await client.get("/api/v1/series/updated?library_id=14", headers=headers)
+        assert resp_updated_14.status_code == 200
+        assert resp_updated_14.json()["totalElements"] == 0
+
+        # J. Query GET /api/v1/books/ondeck?library_id=20 and ?library_id=14
+        resp_ondeck_20 = await client.get("/api/v1/books/ondeck?library_id=20", headers=headers)
+        assert resp_ondeck_20.status_code == 200
+        assert resp_ondeck_20.json()["totalElements"] == 2
+
+        resp_ondeck_14 = await client.get("/api/v1/books/ondeck?library_id=14", headers=headers)
+        assert resp_ondeck_14.status_code == 200
+        assert resp_ondeck_14.json()["totalElements"] == 0
+
+
+@pytest.mark.asyncio
+async def test_removed_book_graceful_handling(monkeypatch):
+    import httpx
+    from app.main import db, page_calculator
+    from app.clients.grimmory import grimmory_client
+    from app.services.sync import SyncService
+
+    await db.connect()
+    # Insert a book that will simulate being removed upstream
+    await db.upsert_libraries([{"id": 99, "name": "Temp Lib", "paths": []}])
+    await db.upsert_series_batch([{"id": "99-deleted-series", "library_id": 99, "name": "Deleted Series", "slug": "deleted-series", "books_count": 1}])
+    await db.upsert_books_batch([{
+        "id": 99999,
+        "series_id": "99-deleted-series",
+        "library_id": 99,
+        "name": "Ghost Book",
+        "number": 1.0,
+        "page_count": 0,
+        "deleted": 0,
+    }])
+
+    # 1. Verify book is active in DB
+    book = await db.get_book_by_id(99999)
+    assert book is not None
+    assert book["deleted"] == 0
+
+    # 2. Mock Grimmory download returning 404
+    async def mock_download_404(book_id, token=None):
+        req = httpx.Request("GET", f"http://test/api/v1/books/{book_id}/download")
+        resp = httpx.Response(404, request=req)
+        raise httpx.HTTPStatusError("Client error '404 '", request=req, response=resp)
+
+    monkeypatch.setattr(grimmory_client, "download_book_bytes", mock_download_404)
+
+    # 3. Calculate pages for the book - should mark deleted gracefully
+    result = await page_calculator.calculate_and_save_book({"id": 99999, "name": "Ghost Book", "book_type": "EPUB"})
+    assert result == "removed"
+
+    # 4. Verify book is marked deleted and orphaned series was cleaned up
+    book_after = await db.get_book_by_id(99999)
+    assert book_after is None  # get_book_by_id filters deleted by default
+    book_raw = await db.get_book_by_id(99999, include_deleted=True)
+    assert book_raw["deleted"] == 1
+
+    series_after = await db.get_series_by_id("99-deleted-series")
+    assert series_after is None  # empty series cleaned up
+
+
 

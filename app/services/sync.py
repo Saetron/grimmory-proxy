@@ -62,10 +62,43 @@ class SyncService:
             await self.db.upsert_libraries(libraries)
             logger.info(f"Synchronized {len(libraries)} libraries from Grimmory")
 
-            # 2. Fetch all books
+            # 2. Fetch all books (per library for authoritative libraryId, with fallback to get_all_books)
             self.status.current_phase = "fetching_books"
-            books_raw = await grimmory_client.get_all_books()
-            logger.info(f"Fetched {len(books_raw)} books from Grimmory")
+            all_books_map: Dict[int, Dict[str, Any]] = {}
+            for lib in libraries:
+                lib_id = lib.get("id")
+                if lib_id is not None:
+                    try:
+                        lib_books = await grimmory_client.get_library_books(lib_id)
+                        for b in lib_books:
+                            b["libraryId"] = lib_id
+                            all_books_map[b["id"]] = b
+                    except Exception as e:
+                        logger.debug(f"get_library_books({lib_id}): {e}")
+
+            if not all_books_map:
+                books_raw = await grimmory_client.get_all_books()
+                for b in books_raw:
+                    all_books_map[b["id"]] = b
+            else:
+                try:
+                    books_raw = await grimmory_client.get_all_books()
+                    for b in books_raw:
+                        if b["id"] not in all_books_map:
+                            all_books_map[b["id"]] = b
+                except Exception as e:
+                    logger.debug(f"get_all_books fallback: {e}")
+
+            books_raw = list(all_books_map.values())
+            logger.info(f"Fetched {len(books_raw)} total books from Grimmory")
+
+            # Detect and handle books removed upstream on Grimmory
+            current_remote_book_ids = {b["id"] for b in books_raw if not b.get("deleted")}
+            active_db_ids = await self.db.get_active_book_ids()
+            removed_ids = [bid for bid in active_db_ids if bid not in current_remote_book_ids]
+            if removed_ids:
+                marked = await self.db.mark_books_deleted(removed_ids)
+                logger.info(f"Detected and marked {marked} removed books as deleted from database")
 
             # 3. Group books into series and map book records
             self.status.current_phase = "processing_series_and_books"
@@ -76,7 +109,12 @@ class SyncService:
             for b in books_raw:
                 meta = b.get("metadata") or {}
                 pfile = b.get("primaryFile") or {}
-                lib_id = b.get("libraryId") or 1
+                lib_id = (
+                    b.get("libraryId")
+                    or (b.get("library", {}).get("id") if isinstance(b.get("library"), dict) else None)
+                    or (b.get("metadata", {}).get("libraryId") if isinstance(b.get("metadata"), dict) else None)
+                    or 1
+                )
 
                 # Series name heuristic matching Grimmory's KomgaMapper
                 series_name = meta.get("seriesName")

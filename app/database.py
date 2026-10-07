@@ -83,6 +83,7 @@ CREATE TABLE IF NOT EXISTS page_calc_jobs (
     total_books INTEGER DEFAULT 0,
     processed_books INTEGER DEFAULT 0,
     updated_books INTEGER DEFAULT 0,
+    removed_books INTEGER DEFAULT 0,
     error_count INTEGER DEFAULT 0,
     current_book TEXT,
     started_at TEXT,
@@ -111,6 +112,11 @@ class Database:
             pass
         async with aiosqlite.connect(self.db_path) as db:
             await db.executescript(SCHEMA_SQL)
+            # Automatic schema migration for existing databases
+            try:
+                await db.execute("ALTER TABLE page_calc_jobs ADD COLUMN removed_books INTEGER DEFAULT 0")
+            except Exception:
+                pass
             await db.commit()
         logger.info(f"Database initialized at {self.db_path}")
 
@@ -266,8 +272,45 @@ class Database:
 
     async def cleanup_empty_series(self) -> None:
         async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("DELETE FROM series WHERE id NOT IN (SELECT DISTINCT series_id FROM books WHERE deleted = 0)")
+            # Recalculate books_count on series for accuracy
+            await db.execute("""
+                UPDATE series SET books_count = (
+                    SELECT COUNT(*) FROM books WHERE books.series_id = series.id AND books.deleted = 0
+                )
+            """)
+            # Prune empty series
+            await db.execute("""
+                DELETE FROM series
+                WHERE id NOT IN (SELECT DISTINCT series_id FROM books WHERE deleted = 0)
+                   OR books_count = 0
+            """)
             await db.commit()
+
+    async def find_series_by_id_or_slug(self, identifier: str) -> Optional[Dict[str, Any]]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("SELECT * FROM series WHERE id = ?", (identifier,))
+            row = await cursor.fetchone()
+            if row:
+                return dict(row)
+
+            cursor = await db.execute("SELECT * FROM series WHERE id LIKE ? ORDER BY id ASC LIMIT 1", (f"{identifier}-%",))
+            row = await cursor.fetchone()
+            if row:
+                return dict(row)
+
+            cursor = await db.execute("SELECT * FROM series WHERE slug = ? OR slug LIKE ? ORDER BY id ASC LIMIT 1", (identifier, f"{identifier}-%"))
+            row = await cursor.fetchone()
+            if row:
+                return dict(row)
+
+            # 4. Suffix match by id (e.g. if identifier is a slug without library prefix)
+            cursor = await db.execute("SELECT * FROM series WHERE id LIKE ? ORDER BY id ASC LIMIT 1", (f"%-{identifier}",))
+            row = await cursor.fetchone()
+            if row:
+                return dict(row)
+
+            return None
 
     # ---------------- Books Operations ----------------
 
@@ -337,12 +380,40 @@ class Database:
                 )
             await db.commit()
 
-    async def get_book_by_id(self, book_id: int) -> Optional[Dict[str, Any]]:
+    async def get_book_by_id(self, book_id: int, include_deleted: bool = False) -> Optional[Dict[str, Any]]:
+        clause = "WHERE id = ?" if include_deleted else "WHERE id = ? AND deleted = 0"
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
-            cursor = await db.execute("SELECT * FROM books WHERE id = ?", (book_id,))
+            cursor = await db.execute(f"SELECT * FROM books {clause}", (book_id,))
             row = await cursor.fetchone()
             return dict(row) if row else None
+
+    async def mark_book_deleted(self, book_id: int) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("UPDATE books SET deleted = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (book_id,))
+            await db.execute("DELETE FROM book_pages WHERE book_id = ?", (book_id,))
+            await db.commit()
+        await self.cleanup_empty_series()
+
+    async def mark_books_deleted(self, book_ids: List[int]) -> int:
+        if not book_ids:
+            return 0
+        async with aiosqlite.connect(self.db_path) as db:
+            chunk_size = 500
+            for i in range(0, len(book_ids), chunk_size):
+                chunk = book_ids[i:i + chunk_size]
+                placeholders = ",".join("?" for _ in chunk)
+                await db.execute(f"UPDATE books SET deleted = 1, updated_at = CURRENT_TIMESTAMP WHERE id IN ({placeholders})", chunk)
+                await db.execute(f"DELETE FROM book_pages WHERE book_id IN ({placeholders})", chunk)
+            await db.commit()
+        await self.cleanup_empty_series()
+        return len(book_ids)
+
+    async def get_active_book_ids(self) -> List[int]:
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute("SELECT id FROM books WHERE deleted = 0")
+            rows = await cursor.fetchall()
+            return [r[0] for r in rows]
 
     async def get_books_list(
         self,
@@ -372,9 +443,11 @@ class Database:
         if target_series is not None:
             if len(target_series) == 0:
                 return [], 0
-            placeholders = ",".join("?" for _ in target_series)
-            conditions.append(f"b.series_id IN ({placeholders})")
-            params.extend(target_series)
+            series_clauses = []
+            for s_id in target_series:
+                series_clauses.append("(b.series_id = ? OR b.series_id LIKE ? OR b.series_id LIKE ?)")
+                params.extend([s_id, f"{s_id}-%", f"%-{s_id}"])
+            conditions.append(f"({' OR '.join(series_clauses)})")
 
         if search:
             conditions.append("b.name LIKE ?")
@@ -551,6 +624,7 @@ class Database:
         processed: int,
         updated: int,
         errors: int,
+        removed: int = 0,
         current_book: str = "",
         status: Optional[str] = None,
         error_message: Optional[str] = None,
@@ -561,20 +635,20 @@ class Database:
                 await db.execute(
                     """
                     UPDATE page_calc_jobs
-                    SET processed_books = ?, updated_books = ?, error_count = ?, current_book = ?,
+                    SET processed_books = ?, updated_books = ?, removed_books = ?, error_count = ?, current_book = ?,
                         status = ?, completed_at = COALESCE(?, completed_at), error_message = ?
                     WHERE id = ?
                     """,
-                    (processed, updated, errors, current_book, status, completed_at, error_message, job_id),
+                    (processed, updated, removed, errors, current_book, status, completed_at, error_message, job_id),
                 )
             else:
                 await db.execute(
                     """
                     UPDATE page_calc_jobs
-                    SET processed_books = ?, updated_books = ?, error_count = ?, current_book = ?
+                    SET processed_books = ?, updated_books = ?, removed_books = ?, error_count = ?, current_book = ?
                     WHERE id = ?
                     """,
-                    (processed, updated, errors, current_book, job_id),
+                    (processed, updated, removed, errors, current_book, job_id),
                 )
             await db.commit()
 

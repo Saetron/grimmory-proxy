@@ -1,7 +1,7 @@
 import base64
 import logging
 from datetime import datetime, timezone, timedelta
-from typing import Dict, Optional
+from typing import Any, Dict, List, Optional
 from fastapi import Depends, HTTPException, Request, Response, status
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
@@ -17,6 +17,21 @@ security_basic = HTTPBasic(auto_error=False)
 _active_sessions: Dict[str, UserSession] = {}
 # Cache username:password -> token for quick Basic Auth re-use
 _credential_tokens: Dict[str, str] = {}
+
+
+def parse_assigned_libraries(assigned_raw: Any) -> List[int]:
+    result = []
+    if isinstance(assigned_raw, list):
+        for item in assigned_raw:
+            if isinstance(item, int):
+                result.append(item)
+            elif isinstance(item, str) and item.strip().isdigit():
+                result.append(int(item.strip()))
+            elif isinstance(item, dict):
+                lid = item.get("id") or item.get("libraryId")
+                if lid is not None and str(lid).strip().isdigit():
+                    result.append(int(str(lid).strip()))
+    return result
 
 
 class AuthService:
@@ -48,7 +63,7 @@ class AuthService:
             token = login_resp.accessToken
             user = await grimmory_client.get_current_user(token)
 
-            assigned_libs = [lib["id"] for lib in user.assignedLibraries if "id" in lib]
+            assigned_libs = parse_assigned_libraries(user.assignedLibraries)
             session = UserSession(
                 user_id=user.id,
                 username=user.username,
@@ -76,7 +91,7 @@ class AuthService:
 
         try:
             user = await grimmory_client.get_current_user(token)
-            assigned_libs = [lib["id"] for lib in user.assignedLibraries if "id" in lib]
+            assigned_libs = parse_assigned_libraries(user.assignedLibraries)
             session = UserSession(
                 user_id=user.id,
                 username=user.username,

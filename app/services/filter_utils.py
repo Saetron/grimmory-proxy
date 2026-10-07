@@ -11,16 +11,26 @@ def _extract_ids_recursive(data: Any, key_names: Set[str]) -> List[Any]:
     """
     Recursively extracts values associated with key_names from dicts and lists.
     Handles OpenAPI SearchCondition structures (such as 'allOf', 'anyOf',
-    and SearchOperatorEqualityString e.g. {"operator": "is", "value": ...}).
+    and SearchOperatorEqualityString e.g. {"operator": "is", "value": ...} or {"values": [...]},
+    or nested {"id": ...} / {"ids": [...]}).
     """
     extracted: List[Any] = []
+    lower_keys = {k.lower() for k in key_names}
     if isinstance(data, dict):
         for k, v in data.items():
-            if k in key_names:
+            if k.lower() in lower_keys:
                 if isinstance(v, list):
                     extracted.extend(v)
-                elif isinstance(v, dict) and "value" in v:
-                    extracted.append(v["value"])
+                elif isinstance(v, dict):
+                    if "value" in v:
+                        extracted.append(v["value"])
+                    if "values" in v and isinstance(v["values"], list):
+                        extracted.extend(v["values"])
+                    if "id" in v:
+                        extracted.append(v["id"])
+                    if "ids" in v and isinstance(v["ids"], list):
+                        extracted.extend(v["ids"])
+                    extracted.extend(_extract_ids_recursive(v, key_names))
                 elif v is not None:
                     extracted.append(v)
             elif isinstance(v, (dict, list)):
@@ -38,12 +48,15 @@ def extract_filter_params(request: Request, body: Optional[Dict[str, Any]] = Non
     and flat client variations).
     """
     # 1. Extract Library IDs
-    lib_id_keys = {"library_id", "libraryId", "library_ids", "libraryIds"}
+    lib_id_keys = {
+        "library_id", "libraryid", "library_ids", "libraryids",
+        "library", "libraries", "library_id[]", "libraryid[]", "libraries[]",
+    }
     raw_lib_ids: List[Any] = []
 
-    for key in ("library_id", "libraryId", "library_ids", "libraryIds"):
-        for val in request.query_params.getlist(key):
-            raw_lib_ids.append(val)
+    for qk, qv in request.query_params.multi_items():
+        if qk.lower() in lib_id_keys:
+            raw_lib_ids.append(qv)
 
     if body:
         raw_lib_ids.extend(_extract_ids_recursive(body, lib_id_keys))
@@ -58,12 +71,15 @@ def extract_filter_params(request: Request, body: Optional[Dict[str, Any]] = Non
                     library_ids.append(val_int)
 
     # 2. Extract Series IDs
-    series_id_keys = {"series_id", "seriesId", "series_ids", "seriesIds"}
+    series_id_keys = {
+        "series_id", "seriesid", "series_ids", "seriesids",
+        "series", "series_id[]", "seriesid[]", "seriesids[]",
+    }
     raw_series_ids: List[Any] = []
 
-    for key in ("series_id", "seriesId", "series_ids", "seriesIds"):
-        for val in request.query_params.getlist(key):
-            raw_series_ids.append(val)
+    for qk, qv in request.query_params.multi_items():
+        if qk.lower() in series_id_keys:
+            raw_series_ids.append(qv)
 
     if body:
         raw_series_ids.extend(_extract_ids_recursive(body, series_id_keys))
@@ -76,10 +92,11 @@ def extract_filter_params(request: Request, body: Optional[Dict[str, Any]] = Non
                 series_ids.append(part)
 
     # 3. Extract Search Term
+    search_keys = {"search", "searchterm", "q", "fulltextsearch"}
     search: Optional[str] = None
-    for key in ("search", "searchTerm", "q", "fullTextSearch"):
-        if key in request.query_params and request.query_params[key].strip():
-            search = request.query_params[key].strip()
+    for qk, qv in request.query_params.items():
+        if qk.lower() in search_keys and qv.strip():
+            search = qv.strip()
             break
 
     if not search and body:
@@ -110,12 +127,12 @@ def extract_filter_params(request: Request, body: Optional[Dict[str, Any]] = Non
 def resolve_effective_library_ids(user: UserSession, requested_lib_ids: List[int]) -> Optional[List[int]]:
     """
     Resolves the effective library IDs for the database query.
-    - If user has assigned library restrictions:
+    - If user has assigned library restrictions (non-empty assigned_library_ids):
         * If specific libraries were requested: returns intersection.
-          (Empty list [] means the user has no permission for requested libraries).
+          (Empty list [] means the user requested libraries they don't have access to).
         * If no libraries were requested: defaults strictly to user's assigned libraries.
-    - If user is admin or has no restrictions:
-        * Returns requested_lib_ids if non-empty, otherwise None (all libraries).
+    - If user is admin or has NO restrictions (assigned_library_ids is empty/None):
+        * Returns requested_lib_ids if non-empty, otherwise None (meaning all libraries).
     """
     if not user.is_admin and user.assigned_library_ids:
         if requested_lib_ids:

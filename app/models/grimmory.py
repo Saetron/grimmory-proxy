@@ -27,7 +27,7 @@ class GrimmoryUser(BaseModel):
     name: Optional[str] = None
     email: Optional[str] = None
     permissions: GrimmoryPermissions = Field(default_factory=GrimmoryPermissions)
-    assignedLibraries: List[Dict[str, Any]] = Field(default_factory=list)
+    assignedLibraries: List[Any] = Field(default_factory=list)
 
 
 class GrimmoryBookMetadataUpdate(BaseModel):

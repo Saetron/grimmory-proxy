@@ -79,6 +79,13 @@ class GrimmoryClient:
         resp.raise_for_status()
         return resp.json()
 
+    async def get_library_books(self, library_id: int, token: Optional[str] = None) -> List[Dict[str, Any]]:
+        auth_token = token or await self.get_sync_token()
+        resp = await self._http_client.get(f"/api/v1/libraries/{library_id}/book", headers=self._headers(auth_token))
+        if resp.status_code == 200:
+            return resp.json()
+        return []
+
     async def get_all_books(self, token: Optional[str] = None) -> List[Dict[str, Any]]:
         auth_token = token or await self.get_sync_token()
         resp = await self._http_client.get("/api/v1/books", headers=self._headers(auth_token))

@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response,
 from app.clients.grimmory import grimmory_client
 from app.database import Database
 from app.models.internal import UserSession
-from app.models.komga import BookDto, PageableDto, SeriesDto, build_pageable
+from app.models.komga import BookDto, CollectionDto, PageableDto, SeriesDto, build_pageable
 from app.services.auth import AuthService
 from app.services.cache import thumbnail_cache
 from app.services.filter_utils import extract_filter_params, resolve_effective_library_ids
@@ -60,7 +60,7 @@ def get_series_router(db: Database) -> APIRouter:
     async def get_all_series(
         request: Request,
         page: int = Query(0, ge=0),
-        size: int = Query(20, ge=1, le=500),
+        size: int = Query(20, ge=1),
         sort: str = Query("title,asc"),
         user: UserSession = Depends(AuthService.require_user),
     ) -> PageableDto[SeriesDto]:
@@ -79,11 +79,16 @@ def get_series_router(db: Database) -> APIRouter:
     async def list_series_post(
         request: Request,
         page: int = Query(0, ge=0),
-        size: int = Query(20, ge=1, le=500),
+        size: int = Query(20, ge=1),
         sort: str = Query("title,asc"),
         body: Optional[Dict[str, Any]] = None,
         user: UserSession = Depends(AuthService.require_user),
     ) -> PageableDto[SeriesDto]:
+        if body is None:
+            try:
+                body = await request.json()
+            except Exception:
+                body = None
         filters = extract_filter_params(request, body)
         return await _query_series(
             library_ids=filters["library_ids"],
@@ -97,37 +102,68 @@ def get_series_router(db: Database) -> APIRouter:
 
     @router.get("/api/v1/series/latest", response_model=PageableDto[SeriesDto])
     async def get_series_latest(
+        request: Request,
         page: int = Query(0, ge=0),
-        size: int = Query(20, ge=1, le=500),
+        size: int = Query(20, ge=1),
         user: UserSession = Depends(AuthService.require_user),
     ) -> PageableDto[SeriesDto]:
-        allowed_libs = user.assigned_library_ids if (not user.is_admin and user.assigned_library_ids) else None
-        return await _query_series(library_ids=allowed_libs, page=page, size=size, sort="lastmodified,desc", user=user)
+        filters = extract_filter_params(request)
+        return await _query_series(
+            library_ids=filters["library_ids"],
+            search=filters["search"],
+            page=page,
+            size=size,
+            sort="lastmodified,desc",
+            unpaged=filters["unpaged"],
+            user=user,
+        )
 
     @router.get("/api/v1/series/new", response_model=PageableDto[SeriesDto])
     async def get_series_new(
+        request: Request,
         page: int = Query(0, ge=0),
-        size: int = Query(20, ge=1, le=500),
+        size: int = Query(20, ge=1),
         user: UserSession = Depends(AuthService.require_user),
     ) -> PageableDto[SeriesDto]:
-        allowed_libs = user.assigned_library_ids if (not user.is_admin and user.assigned_library_ids) else None
-        return await _query_series(library_ids=allowed_libs, page=page, size=size, sort="created,desc", user=user)
+        filters = extract_filter_params(request)
+        return await _query_series(
+            library_ids=filters["library_ids"],
+            search=filters["search"],
+            page=page,
+            size=size,
+            sort="created,desc",
+            unpaged=filters["unpaged"],
+            user=user,
+        )
 
     @router.get("/api/v1/series/updated", response_model=PageableDto[SeriesDto])
     async def get_series_updated(
+        request: Request,
         page: int = Query(0, ge=0),
-        size: int = Query(20, ge=1, le=500),
+        size: int = Query(20, ge=1),
         user: UserSession = Depends(AuthService.require_user),
     ) -> PageableDto[SeriesDto]:
-        allowed_libs = user.assigned_library_ids if (not user.is_admin and user.assigned_library_ids) else None
-        return await _query_series(library_ids=allowed_libs, page=page, size=size, sort="lastmodified,desc", user=user)
+        filters = extract_filter_params(request)
+        return await _query_series(
+            library_ids=filters["library_ids"],
+            search=filters["search"],
+            page=page,
+            size=size,
+            sort="lastmodified,desc",
+            unpaged=filters["unpaged"],
+            user=user,
+        )
 
     @router.get("/api/v1/series/alphabetical-groups")
     async def get_series_alphabetical_groups(
+        request: Request,
         user: UserSession = Depends(AuthService.require_user),
     ) -> List[Dict[str, Any]]:
-        allowed_libs = user.assigned_library_ids if (not user.is_admin and user.assigned_library_ids) else None
-        records, _ = await db.get_series_list(library_ids=allowed_libs, limit=5000)
+        filters = extract_filter_params(request)
+        effective_libs = resolve_effective_library_ids(user, filters["library_ids"])
+        if effective_libs is not None and len(effective_libs) == 0:
+            return []
+        records, _ = await db.get_series_list(library_ids=effective_libs, limit=5000)
         groups: Dict[str, int] = {}
         for r in records:
             first_char = r["name"][:1].upper() if r.get("name") else "#"
@@ -156,6 +192,8 @@ def get_series_router(db: Database) -> APIRouter:
     ) -> SeriesDto:
         record = await db.get_series_by_id(series_id)
         if not record:
+            record = await db.find_series_by_id_or_slug(series_id)
+        if not record:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Series not found")
 
         if not user.is_admin and user.assigned_library_ids and record["library_id"] not in user.assigned_library_ids:
@@ -163,12 +201,28 @@ def get_series_router(db: Database) -> APIRouter:
 
         return KomgaMapper.to_series_dto(record)
 
+    @router.get("/api/v1/series/{series_id}/collections", response_model=List[CollectionDto])
+    async def get_series_collections(
+        series_id: str,
+        user: UserSession = Depends(AuthService.require_user),
+    ) -> List[CollectionDto]:
+        series = await db.get_series_by_id(series_id)
+        if not series:
+            series = await db.find_series_by_id_or_slug(series_id)
+        if not series:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Series not found")
+
+        if not user.is_admin and user.assigned_library_ids and series["library_id"] not in user.assigned_library_ids:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Series not found")
+
+        return []
+
     @router.get("/api/v1/series/{series_id}/books", response_model=PageableDto[BookDto])
     async def get_series_books(
         series_id: str,
         request: Request,
         page: int = Query(0, ge=0),
-        size: int = Query(20, ge=1, le=500),
+        size: int = Query(20, ge=1),
         sort: str = Query("number,asc"),
         unpaged: bool = Query(False),
         user: UserSession = Depends(AuthService.require_user),
@@ -176,6 +230,8 @@ def get_series_router(db: Database) -> APIRouter:
         is_unpaged = unpaged or request.query_params.get("unpaged", "").lower() in ("true", "1")
 
         series = await db.get_series_by_id(series_id)
+        if not series:
+            series = await db.find_series_by_id_or_slug(series_id)
         if not series:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Series not found")
 
@@ -190,7 +246,7 @@ def get_series_router(db: Database) -> APIRouter:
                 sort_dir = parts[1].strip()
 
         records, total = await db.get_books_list(
-            series_id=series_id,
+            series_id=series["id"],
             offset=0 if is_unpaged else page * size,
             limit=size,
             sort_by=sort_col,
