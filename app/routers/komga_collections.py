@@ -16,6 +16,7 @@ router = APIRouter(tags=["Komga Collections & ReadLists"])
 async def get_collections(
     page: int = Query(0, ge=0),
     size: int = Query(20, ge=1, le=500),
+    unpaged: bool = Query(False),
     user: UserSession = Depends(AuthService.require_user),
 ) -> PageableDto[CollectionDto]:
     try:
@@ -30,17 +31,18 @@ async def get_collections(
             for idx, s in enumerate(shelves, start=1)
         ]
         total = len(collections)
-        slice_items = collections[page * size : (page + 1) * size]
-        return build_pageable(slice_items, page, size, total)
+        slice_items = collections if unpaged else collections[page * size : (page + 1) * size]
+        return build_pageable(slice_items, page, size if not unpaged else total, total, unpaged=unpaged)
     except Exception as e:
         logger.debug(f"Error fetching collections: {e}")
-        return build_pageable([], page, size, 0)
+        return build_pageable([], page, size, 0, unpaged=unpaged)
 
 
 @router.get("/api/v1/readlists", response_model=PageableDto[ReadListDto])
 async def get_readlists(
     page: int = Query(0, ge=0),
     size: int = Query(20, ge=1, le=500),
+    unpaged: bool = Query(False),
     user: UserSession = Depends(AuthService.require_user),
 ) -> PageableDto[ReadListDto]:
-    return build_pageable([], page, size, 0)
+    return build_pageable([], page, size, 0, unpaged=unpaged)

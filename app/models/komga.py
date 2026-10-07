@@ -230,7 +230,36 @@ class PageableDto(BaseModel, Generic[T]):
     sort: dict = Field(default_factory=lambda: {"empty": True, "sorted": False, "unsorted": True})
 
 
-def build_pageable(content: List[T], page: int, size: int, total_elements: int) -> PageableDto[T]:
+def build_pageable(
+    content: List[T],
+    page: int,
+    size: int,
+    total_elements: int,
+    unpaged: bool = False,
+) -> PageableDto[T]:
+    if unpaged:
+        total_pages = 1 if total_elements > 0 else 0
+        return PageableDto[T](
+            content=content,
+            pageable={
+                "pageNumber": 0,
+                "pageSize": total_elements,
+                "sort": {"empty": True, "sorted": False, "unsorted": True},
+                "offset": 0,
+                "paged": False,
+                "unpaged": True,
+            },
+            totalElements=total_elements,
+            totalPages=total_pages,
+            last=True,
+            first=True,
+            size=len(content),
+            number=0,
+            numberOfElements=len(content),
+            empty=len(content) == 0,
+            sort={"empty": True, "sorted": False, "unsorted": True},
+        )
+
     total_pages = (total_elements + size - 1) // size if size > 0 else (1 if total_elements > 0 else 0)
     is_first = page == 0
     is_last = total_elements == 0 or page >= total_pages - 1

@@ -194,18 +194,24 @@ class Database:
     async def get_series_list(
         self,
         library_id: Optional[int] = None,
+        library_ids: Optional[List[int]] = None,
         search: Optional[str] = None,
         offset: int = 0,
         limit: int = 20,
         sort_by: str = "name",
         sort_dir: str = "asc",
+        unpaged: bool = False,
     ) -> Tuple[List[Dict[str, Any]], int]:
         conditions = []
         params: List[Any] = []
 
-        if library_id is not None:
-            conditions.append("library_id = ?")
-            params.append(library_id)
+        target_libs = library_ids if library_ids is not None else ([library_id] if library_id is not None else None)
+        if target_libs is not None:
+            if len(target_libs) == 0:
+                return [], 0
+            placeholders = ",".join("?" for _ in target_libs)
+            conditions.append(f"library_id IN ({placeholders})")
+            params.extend(target_libs)
 
         if search:
             conditions.append("name LIKE ?")
@@ -213,15 +219,19 @@ class Database:
 
         where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
-        # Validate sort column
+        # Normalize sort column
+        clean_sort = sort_by.lower().replace("metadata.", "").replace("sort", "")
         allowed_sorts = {
             "name": "sort_title",
             "title": "sort_title",
             "created": "created",
+            "createddate": "created",
             "lastmodified": "last_modified",
+            "lastmodifieddate": "last_modified",
             "books_count": "books_count",
+            "bookscount": "books_count",
         }
-        order_col = allowed_sorts.get(sort_by.lower(), "sort_title")
+        order_col = allowed_sorts.get(clean_sort, "sort_title")
         order_direction = "DESC" if sort_dir.lower() == "desc" else "ASC"
 
         async with aiosqlite.connect(self.db_path) as db:
@@ -230,12 +240,20 @@ class Database:
             count_row = await count_cursor.fetchone()
             total = count_row["total"] if count_row else 0
 
-            query = f"""
-                SELECT * FROM series {where_clause}
-                ORDER BY {order_col} {order_direction}
-                LIMIT ? OFFSET ?
-            """
-            cursor = await db.execute(query, params + [limit, offset])
+            if unpaged:
+                query = f"""
+                    SELECT * FROM series {where_clause}
+                    ORDER BY {order_col} {order_direction}
+                """
+                cursor = await db.execute(query, params)
+            else:
+                query = f"""
+                    SELECT * FROM series {where_clause}
+                    ORDER BY {order_col} {order_direction}
+                    LIMIT ? OFFSET ?
+                """
+                cursor = await db.execute(query, params + [limit, offset])
+
             rows = await cursor.fetchall()
             return [dict(r) for r in rows], total
 
@@ -245,6 +263,11 @@ class Database:
             cursor = await db.execute("SELECT * FROM series WHERE id = ?", (series_id,))
             row = await cursor.fetchone()
             return dict(row) if row else None
+
+    async def cleanup_empty_series(self) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("DELETE FROM series WHERE id NOT IN (SELECT DISTINCT series_id FROM books WHERE deleted = 0)")
+            await db.commit()
 
     # ---------------- Books Operations ----------------
 
@@ -324,52 +347,80 @@ class Database:
     async def get_books_list(
         self,
         library_id: Optional[int] = None,
+        library_ids: Optional[List[int]] = None,
         series_id: Optional[str] = None,
+        series_ids: Optional[List[str]] = None,
         search: Optional[str] = None,
         offset: int = 0,
         limit: int = 20,
         sort_by: str = "number",
         sort_dir: str = "asc",
+        unpaged: bool = False,
     ) -> Tuple[List[Dict[str, Any]], int]:
-        conditions = ["deleted = 0"]
+        conditions = ["b.deleted = 0"]
         params: List[Any] = []
 
-        if library_id is not None:
-            conditions.append("library_id = ?")
-            params.append(library_id)
+        target_libs = library_ids if library_ids is not None else ([library_id] if library_id is not None else None)
+        if target_libs is not None:
+            if len(target_libs) == 0:
+                return [], 0
+            placeholders = ",".join("?" for _ in target_libs)
+            conditions.append(f"b.library_id IN ({placeholders})")
+            params.extend(target_libs)
 
-        if series_id is not None:
-            conditions.append("series_id = ?")
-            params.append(series_id)
+        target_series = series_ids if series_ids is not None else ([series_id] if series_id is not None else None)
+        if target_series is not None:
+            if len(target_series) == 0:
+                return [], 0
+            placeholders = ",".join("?" for _ in target_series)
+            conditions.append(f"b.series_id IN ({placeholders})")
+            params.extend(target_series)
 
         if search:
-            conditions.append("name LIKE ?")
+            conditions.append("b.name LIKE ?")
             params.append(f"%{search}%")
 
         where_clause = f"WHERE {' AND '.join(conditions)}"
 
+        clean_sort = sort_by.lower().replace("metadata.", "").replace("sort", "")
         allowed_sorts = {
-            "number": "number",
-            "name": "name",
-            "created": "created",
-            "lastmodified": "last_modified",
-            "filelastmodified": "last_modified",
+            "number": "b.number",
+            "name": "b.name",
+            "title": "b.name",
+            "created": "b.created",
+            "createddate": "b.created",
+            "lastmodified": "b.last_modified",
+            "lastmodifieddate": "b.last_modified",
+            "filelastmodified": "b.last_modified",
+            "releasedate": "b.created",
         }
-        order_col = allowed_sorts.get(sort_by.lower(), "number")
+        order_col = allowed_sorts.get(clean_sort, "b.number")
         order_direction = "DESC" if sort_dir.lower() == "desc" else "ASC"
 
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
-            count_cursor = await db.execute(f"SELECT COUNT(*) as total FROM books {where_clause}", params)
+            count_cursor = await db.execute(f"SELECT COUNT(*) as total FROM books b {where_clause}", params)
             count_row = await count_cursor.fetchone()
             total = count_row["total"] if count_row else 0
 
-            query = f"""
-                SELECT * FROM books {where_clause}
-                ORDER BY {order_col} {order_direction}
-                LIMIT ? OFFSET ?
-            """
-            cursor = await db.execute(query, params + [limit, offset])
+            if unpaged:
+                query = f"""
+                    SELECT b.*, s.name as series_name FROM books b
+                    LEFT JOIN series s ON b.series_id = s.id
+                    {where_clause}
+                    ORDER BY {order_col} {order_direction}
+                """
+                cursor = await db.execute(query, params)
+            else:
+                query = f"""
+                    SELECT b.*, s.name as series_name FROM books b
+                    LEFT JOIN series s ON b.series_id = s.id
+                    {where_clause}
+                    ORDER BY {order_col} {order_direction}
+                    LIMIT ? OFFSET ?
+                """
+                cursor = await db.execute(query, params + [limit, offset])
+
             rows = await cursor.fetchall()
             return [dict(r) for r in rows], total
 

@@ -162,7 +162,7 @@ class KomgaMapper:
         return BookDto(
             id=book_id,
             seriesId=series_id,
-            seriesTitle=record.get("series_name", series_id),
+            seriesTitle=record.get("series_name") or series_id,
             libraryId=lib_id,
             name=name,
             url=f"/api/v1/books/{book_id}",

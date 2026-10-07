@@ -1,6 +1,8 @@
 import asyncio
+import hashlib
 import logging
 import re
+import unicodedata
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 import aiosqlite
@@ -17,8 +19,12 @@ SLUG_PATTERN = re.compile(r"[^a-z0-9]+")
 
 
 def generate_series_slug(name: str) -> str:
-    cleaned = SLUG_PATTERN.sub("-", name.lower()).strip("-")
-    return cleaned if cleaned else "unknown-series"
+    normalized = unicodedata.normalize("NFKD", name)
+    cleaned = SLUG_PATTERN.sub("-", normalized.lower()).strip("-")
+    name_hash = hashlib.sha256(name.encode("utf-8")).hexdigest()[:8]
+    if cleaned:
+        return f"{cleaned[:50]}-{name_hash}"
+    return f"s-{name_hash}"
 
 
 class SyncService:
@@ -128,6 +134,9 @@ class SyncService:
             # Upsert books
             await self.db.upsert_books_batch(book_records)
             logger.info(f"Upserted {len(book_records)} books into database")
+
+            # Prune any empty series
+            await self.db.cleanup_empty_series()
 
             # Update authors table
             if author_names:
