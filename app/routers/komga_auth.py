@@ -1,6 +1,8 @@
+import asyncio
 import logging
 from typing import Dict, List
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi.responses import StreamingResponse
 
 from app.models.internal import UserSession
 from app.models.komga import ApiKeyDto, ClaimStatusDto, OAuth2ClientDto, UserDto
@@ -64,20 +66,99 @@ def _map_user_to_dto(user: UserSession) -> UserDto:
     )
 
 
+def _set_session_cookies(response: Response, user: UserSession) -> None:
+    cookie_val = user.token or str(user.user_id)
+    for name in ["KOMGA-SESSION", "SESSION", "remember-me"]:
+        response.set_cookie(
+            key=name,
+            value=cookie_val,
+            httponly=True,
+            samesite="lax",
+            max_age=86400 * 30,
+        )
+
+
 @router.get("/api/v1/users/me", response_model=UserDto)
-async def get_current_user_v1(user: UserSession = Depends(AuthService.require_user)) -> UserDto:
+async def get_current_user_v1(
+    response: Response,
+    user: UserSession = Depends(AuthService.require_user),
+) -> UserDto:
+    _set_session_cookies(response, user)
     return _map_user_to_dto(user)
 
 
 @router.get("/api/v2/users/me", response_model=UserDto)
-async def get_current_user_v2(user: UserSession = Depends(AuthService.require_user)) -> UserDto:
+async def get_current_user_v2(
+    response: Response,
+    user: UserSession = Depends(AuthService.require_user),
+) -> UserDto:
+    _set_session_cookies(response, user)
     return _map_user_to_dto(user)
 
 
 @router.get("/api/v2/users/me/api-keys", response_model=List[ApiKeyDto])
-async def get_current_user_api_keys(user: UserSession = Depends(AuthService.require_user)) -> List[ApiKeyDto]:
-    """Returns user API keys (empty list for proxy)."""
-    return []
+async def get_current_user_api_keys(
+    user: UserSession = Depends(AuthService.require_user),
+) -> List[ApiKeyDto]:
+    """Returns user API keys."""
+    from app.main import db
+    keys = await db.get_api_keys(user.user_id)
+    return [ApiKeyDto(**k) for k in keys]
+
+
+@router.post("/api/v2/users/me/api-keys", response_model=ApiKeyDto, status_code=status.HTTP_201_CREATED)
+async def create_user_api_key(
+    request: Request,
+    user: UserSession = Depends(AuthService.require_user),
+) -> ApiKeyDto:
+    """Creates a new API key for KMreader / client integrations."""
+    from app.main import db
+    comment = None
+    try:
+        body = await request.json()
+        if isinstance(body, dict):
+            comment = body.get("comment")
+    except Exception:
+        pass
+
+    key_data = await db.create_api_key(user.user_id, comment=comment)
+    return ApiKeyDto(**key_data)
+
+
+@router.delete("/api/v2/users/me/api-keys/{key_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_user_api_key(
+    key_id: str,
+    user: UserSession = Depends(AuthService.require_user),
+) -> Response:
+    from app.main import db
+    await db.delete_api_key(user.user_id, key_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/sse/v1/events")
+async def sse_events(
+    request: Request,
+    user: UserSession = Depends(AuthService.require_user),
+) -> StreamingResponse:
+    """Server-Sent Events endpoint for real-time clients like KMreader."""
+    async def event_generator():
+        try:
+            yield ":keepalive\n\n"
+            while not await request.is_disconnected():
+                await asyncio.sleep(15)
+                yield ":keepalive\n\n"
+        except (asyncio.CancelledError, GeneratorExit):
+            pass
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get("/api/v1/login/set-cookie")
@@ -85,19 +166,13 @@ async def set_cookie_login(
     response: Response,
     user: UserSession = Depends(AuthService.require_user),
 ) -> UserDto:
-    response.set_cookie(
-        key="KOMGA-SESSION",
-        value=user.token,
-        httponly=True,
-        samesite="lax",
-        max_age=86400 * 7,
-    )
+    _set_session_cookies(response, user)
     return _map_user_to_dto(user)
 
 
 @router.api_route("/api/logout", methods=["GET", "POST"])
 async def logout(response: Response) -> Response:
-    response.delete_cookie(key="KOMGA-SESSION")
-    response.delete_cookie(key="SESSION")
+    for name in ["KOMGA-SESSION", "SESSION", "remember-me"]:
+        response.delete_cookie(key=name)
     response.status_code = status.HTTP_204_NO_CONTENT
     return response

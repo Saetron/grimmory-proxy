@@ -337,6 +337,9 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
         if not record:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
 
+        if not user.is_admin and user.assigned_library_ids and record["library_id"] not in user.assigned_library_ids:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
+
         try:
             resp = await grimmory_client.download_book_stream(book_id, token=user.token)
         except httpx.HTTPStatusError as e:

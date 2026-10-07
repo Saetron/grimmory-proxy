@@ -128,6 +128,9 @@ class GrimmoryClient:
         for path in [f"/api/v1/media/book/{book_id}/thumbnail", f"/api/v1/media/book/{book_id}/cover"]:
             try:
                 resp = await self._http_client.get(path, headers=self._headers(auth_token))
+                if resp.status_code == 403 and token:
+                    sync_tok = await self.get_sync_token()
+                    resp = await self._http_client.get(path, headers=self._headers(sync_tok))
                 if resp.status_code == 200 and resp.content:
                     return resp.content
             except Exception as e:
@@ -138,6 +141,9 @@ class GrimmoryClient:
         auth_token = token or await self.get_sync_token()
         path = f"/api/v1/media/book/{book_id}/cbx/pages/{page_number}"
         resp = await self._http_client.get(path, headers=self._headers(auth_token))
+        if resp.status_code == 403 and token:
+            sync_tok = await self.get_sync_token()
+            resp = await self._http_client.get(path, headers=self._headers(sync_tok))
         if resp.status_code == 200:
             return resp.content
         return None
@@ -146,12 +152,20 @@ class GrimmoryClient:
         auth_token = token or await self.get_sync_token()
         req = self._http_client.build_request("GET", f"/api/v1/books/{book_id}/download", headers=self._headers(auth_token))
         resp = await self._http_client.send(req, stream=True)
+        if resp.status_code == 403 and token:
+            await resp.aclose()
+            auth_token = await self.get_sync_token()
+            req = self._http_client.build_request("GET", f"/api/v1/books/{book_id}/download", headers=self._headers(auth_token))
+            resp = await self._http_client.send(req, stream=True)
         resp.raise_for_status()
         return resp
 
     async def download_book_bytes(self, book_id: int, token: Optional[str] = None) -> bytes:
         auth_token = token or await self.get_sync_token()
         resp = await self._http_client.get(f"/api/v1/books/{book_id}/download", headers=self._headers(auth_token))
+        if resp.status_code == 403 and token:
+            auth_token = await self.get_sync_token()
+            resp = await self._http_client.get(f"/api/v1/books/{book_id}/download", headers=self._headers(auth_token))
         resp.raise_for_status()
         return resp.content
 

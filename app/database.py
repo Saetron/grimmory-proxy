@@ -2,7 +2,9 @@ import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
+import secrets
 from typing import Any, Dict, List, Optional, Tuple
+import uuid
 import aiosqlite
 
 logger = logging.getLogger("grimmory_proxy.database")
@@ -136,6 +138,16 @@ CREATE TABLE IF NOT EXISTS page_calc_jobs (
     error_message TEXT
 );
 
+CREATE TABLE IF NOT EXISTS api_keys (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    key TEXT UNIQUE NOT NULL,
+    comment TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_used_at TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+);
+
 CREATE INDEX IF NOT EXISTS idx_books_series_id ON books(series_id);
 CREATE INDEX IF NOT EXISTS idx_books_library_id ON books(library_id);
 CREATE INDEX IF NOT EXISTS idx_books_page_count ON books(page_count);
@@ -145,6 +157,8 @@ CREATE INDEX IF NOT EXISTS idx_read_progress_book ON read_progress(book_id);
 CREATE INDEX IF NOT EXISTS idx_read_progress_date ON read_progress(read_date);
 CREATE INDEX IF NOT EXISTS idx_r2_progression_user ON r2_progression(user_id);
 CREATE INDEX IF NOT EXISTS idx_r2_progression_book ON r2_progression(book_id);
+CREATE INDEX IF NOT EXISTS idx_api_keys_key ON api_keys(key);
+CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id);
 CREATE INDEX IF NOT EXISTS idx_series_library_id ON series(library_id);
 CREATE INDEX IF NOT EXISTS idx_series_name ON series(name);
 CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
@@ -424,7 +438,7 @@ class Database:
                         b.get("released"),
                         b.get("created"),
                         b.get("last_modified"),
-                        json.dumps(b.get("raw_json", {})),
+                        b.get("raw_json") if isinstance(b.get("raw_json"), str) else json.dumps(b.get("raw_json", {})),
                     ),
                 )
             await db.commit()
@@ -733,6 +747,77 @@ class Database:
             )
             await db.commit()
 
+    # ---------------- API Key Operations ----------------
+
+    async def create_api_key(
+        self, user_id: int, comment: Optional[str] = None
+    ) -> Dict[str, Any]:
+        key_id = str(uuid.uuid4())
+        key_val = secrets.token_urlsafe(32)
+        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO api_keys (id, user_id, key, comment, created_at)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                """,
+                (key_id, user_id, key_val, comment),
+            )
+            await db.commit()
+        return {
+            "id": key_id,
+            "key": key_val,
+            "comment": comment,
+            "created": now_str,
+            "lastUsed": None,
+        }
+
+    async def get_api_keys(self, user_id: int) -> List[Dict[str, Any]]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT * FROM api_keys WHERE user_id = ? ORDER BY created_at DESC",
+                (user_id,),
+            )
+            rows = await cursor.fetchall()
+            return [
+                {
+                    "id": r["id"],
+                    "key": r["key"],
+                    "comment": r["comment"],
+                    "created": r["created_at"],
+                    "lastUsed": r["last_used_at"],
+                }
+                for r in rows
+            ]
+
+    async def get_user_id_by_api_key(self, key: str) -> Optional[int]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT user_id FROM api_keys WHERE key = ?",
+                (key,),
+            )
+            row = await cursor.fetchone()
+            if row:
+                user_id = row["user_id"]
+                await db.execute(
+                    "UPDATE api_keys SET last_used_at = CURRENT_TIMESTAMP WHERE key = ?",
+                    (key,),
+                )
+                await db.commit()
+                return user_id
+            return None
+
+    async def delete_api_key(self, user_id: int, key_id: str) -> bool:
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "DELETE FROM api_keys WHERE user_id = ? AND id = ?",
+                (user_id, key_id),
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
     async def get_books_list(
         self,
         library_id: Optional[int] = None,
@@ -774,9 +859,18 @@ class Database:
             params.append(f"%{search}%")
 
         # Read status expressions
-        eff_read_date = "COALESCE(rp.read_date, json_extract(b.raw_json, '$.dateFinished'), json_extract(b.raw_json, '$.cbxProgress.lastRead'), json_extract(b.raw_json, '$.epubProgress.lastRead'), json_extract(b.raw_json, '$.pdfProgress.lastRead'))"
-        is_completed = "(rp.completed = 1 OR (rp.book_id IS NULL AND json_extract(b.raw_json, '$.readStatus') = 'READ'))"
-        is_in_prog = "((rp.book_id IS NOT NULL AND rp.completed = 0 AND (rp.page > 0 OR rp.read_date IS NOT NULL)) OR (rp.book_id IS NULL AND (json_extract(b.raw_json, '$.readStatus') IN ('READING', 'IN_PROGRESS') OR (json_extract(b.raw_json, '$.cbxProgress.percentage') > 0 AND json_extract(b.raw_json, '$.cbxProgress.percentage') < 99) OR (json_extract(b.raw_json, '$.epubProgress.percentage') > 0 AND json_extract(b.raw_json, '$.epubProgress.percentage') < 99) OR (json_extract(b.raw_json, '$.pdfProgress.percentage') > 0 AND json_extract(b.raw_json, '$.pdfProgress.percentage') < 99))))"
+        if user_id is not None:
+            eff_read_date = "rp.read_date"
+            is_completed = "(rp.completed = 1)"
+            is_in_prog = "(rp.completed = 0 AND (rp.page > 0 OR rp.read_date IS NOT NULL))"
+            join_rp_clause = "LEFT JOIN read_progress rp ON (b.id = rp.book_id AND rp.user_id = ?)"
+            rp_join_params = [user_id]
+        else:
+            eff_read_date = "COALESCE(rp.read_date, json_extract(b.raw_json, '$.dateFinished'), json_extract(b.raw_json, '$.cbxProgress.lastRead'), json_extract(b.raw_json, '$.epubProgress.lastRead'), json_extract(b.raw_json, '$.pdfProgress.lastRead'))"
+            is_completed = "(rp.completed = 1 OR (rp.book_id IS NULL AND json_extract(b.raw_json, '$.readStatus') = 'READ'))"
+            is_in_prog = "((rp.book_id IS NOT NULL AND rp.completed = 0 AND (rp.page > 0 OR rp.read_date IS NOT NULL)) OR (rp.book_id IS NULL AND (json_extract(b.raw_json, '$.readStatus') IN ('READING', 'IN_PROGRESS') OR (json_extract(b.raw_json, '$.cbxProgress.percentage') > 0 AND json_extract(b.raw_json, '$.cbxProgress.percentage') < 99) OR (json_extract(b.raw_json, '$.epubProgress.percentage') > 0 AND json_extract(b.raw_json, '$.epubProgress.percentage') < 99) OR (json_extract(b.raw_json, '$.pdfProgress.percentage') > 0 AND json_extract(b.raw_json, '$.pdfProgress.percentage') < 99))))"
+            join_rp_clause = "LEFT JOIN read_progress rp ON (1 = 0)"
+            rp_join_params = []
         is_unread = f"(NOT {is_completed} AND NOT {is_in_prog})"
 
         if read_status:
@@ -814,9 +908,6 @@ class Database:
         }
         order_col = allowed_sorts.get(clean_sort, "b.number")
         order_direction = "DESC" if sort_dir.lower() == "desc" else "ASC"
-
-        join_rp_clause = "LEFT JOIN read_progress rp ON (b.id = rp.book_id AND (rp.user_id = ? OR ? IS NULL))"
-        rp_join_params = [user_id, user_id]
 
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
@@ -881,6 +972,13 @@ class Database:
             lib_filter = f"AND b.library_id IN ({placeholders})"
             lib_params = list(library_ids)
 
+        if user_id is not None:
+            join_rp_clause = "LEFT JOIN read_progress rp ON (b.id = rp.book_id AND rp.user_id = ?)"
+            rp_params = [user_id]
+        else:
+            join_rp_clause = "LEFT JOIN read_progress rp ON (1 = 0)"
+            rp_params = []
+
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             query = f"""
@@ -888,11 +986,11 @@ class Database:
                        rp.page as user_page, rp.completed as user_completed, rp.read_date as user_read_date
                 FROM books b
                 LEFT JOIN series s ON b.series_id = s.id
-                LEFT JOIN read_progress rp ON (b.id = rp.book_id AND (rp.user_id = ? OR ? IS NULL))
+                {join_rp_clause}
                 WHERE b.deleted = 0 {lib_filter}
                 ORDER BY b.series_id, b.number ASC
             """
-            cursor = await db.execute(query, [user_id, user_id] + lib_params)
+            cursor = await db.execute(query, rp_params + lib_params)
             rows = await cursor.fetchall()
 
         series_books: Dict[str, List[Dict[str, Any]]] = {}
@@ -915,11 +1013,14 @@ class Database:
                 if b.get("raw_json"):
                     try:
                         raw = json.loads(b["raw_json"]) if isinstance(b["raw_json"], str) else b["raw_json"]
+                        if isinstance(raw, str):
+                            raw = json.loads(raw)
                     except Exception:
                         pass
+                    if not isinstance(raw, dict):
+                        raw = {}
 
-                has_user_rp = b.get("user_page") is not None or b.get("user_completed") is not None or b.get("user_read_date")
-                if has_user_rp:
+                if user_id is not None:
                     is_comp = bool(b.get("user_completed"))
                     is_prog = not is_comp and ((b.get("user_page") or 0) > 0 or b.get("user_read_date") is not None)
                     r_date = b.get("user_read_date")

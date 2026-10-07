@@ -883,5 +883,236 @@ async def test_user_sync_handles_null_progress_fields(monkeypatch):
     assert p8802["page"] == 200
 
 
+@pytest.mark.asyncio
+async def test_api_key_lifecycle_and_auth():
+    from datetime import datetime, timezone, timedelta
+    from app.main import db
+    from app.models.internal import UserSession
+    from app.services.auth import AuthService
+
+    await db.connect()
+    user = UserSession(
+        user_id=77,
+        username="kmreader_user",
+        token="token_kmreader",
+        is_admin=False,
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    AuthService.cache_session(user)
+    # Also save user to database so API key lookup can resolve it
+    await db.upsert_user(
+        user_id=77,
+        username="kmreader_user",
+        token="token_kmreader",
+        is_admin=False,
+        assigned_libraries=[],
+    )
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # 1. Login check with remember-me=true sets cookies
+        resp_me = await client.get("/api/v2/users/me?remember-me=true", headers={"Authorization": "Bearer token_kmreader"})
+        assert resp_me.status_code == 200
+        assert "remember-me" in resp_me.cookies or "SESSION" in resp_me.cookies or "KOMGA-SESSION" in resp_me.cookies
+
+        # 2. KMreader creates an API key
+        resp_create = await client.post(
+            "/api/v2/users/me/api-keys",
+            json={"comment": "KMreader iPad"},
+            headers={"Authorization": "Bearer token_kmreader"},
+        )
+        assert resp_create.status_code == 201
+        key_data = resp_create.json()
+        assert key_data["comment"] == "KMreader iPad"
+        api_key = key_data["key"]
+        key_id = key_data["id"]
+
+        # 3. GET /api/v2/users/me/api-keys returns the created key
+        resp_list = await client.get("/api/v2/users/me/api-keys", headers={"Authorization": "Bearer token_kmreader"})
+        assert resp_list.status_code == 200
+        keys_list = resp_list.json()
+        assert any(k["id"] == key_id for k in keys_list)
+
+        # 4. Use X-API-Key header to authenticate
+        resp_x_api = await client.get("/api/v1/libraries", headers={"X-API-Key": api_key})
+        assert resp_x_api.status_code == 200
+
+        # 5. Use X-Auth-Token header to authenticate
+        resp_x_auth = await client.get("/api/v1/libraries", headers={"X-Auth-Token": api_key})
+        assert resp_x_auth.status_code == 200
+
+        # 6. DELETE the API key
+        resp_del = await client.delete(f"/api/v2/users/me/api-keys/{key_id}", headers={"Authorization": "Bearer token_kmreader"})
+        assert resp_del.status_code == 204
+
+        # 7. Using deleted API key fails with 401
+        client.cookies.clear()
+        resp_revoked = await client.get("/api/v1/libraries", headers={"X-API-Key": api_key})
+        assert resp_revoked.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_sse_events_endpoint():
+    from datetime import datetime, timezone, timedelta
+    from unittest.mock import AsyncMock, MagicMock
+    from fastapi import Request
+    from app.models.internal import UserSession
+    from app.routers.komga_auth import sse_events
+    from app.services.auth import AuthService
+
+    user = UserSession(
+        user_id=1,
+        username="sse_user",
+        token="token_sse",
+        is_admin=True,
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    AuthService.cache_session(user)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # SSE endpoint requires auth
+        resp_unauth = await client.get("/sse/v1/events")
+        assert resp_unauth.status_code == 401
+
+    # Test SSE response and generator directly to avoid ASGITransport infinite loop
+    mock_request = MagicMock(spec=Request)
+    mock_request.is_disconnected = AsyncMock(return_value=False)
+    sse_resp = await sse_events(mock_request, user=user)
+    assert sse_resp.status_code == 200
+    assert sse_resp.media_type == "text/event-stream"
+    assert sse_resp.headers.get("Cache-Control") == "no-cache"
+
+    gen = sse_resp.body_iterator
+    first_chunk = await anext(gen)
+    assert ":keepalive" in first_chunk
+    await gen.aclose()
+
+
+@pytest.mark.asyncio
+async def test_read_progress_isolation_between_users():
+    from datetime import datetime, timezone, timedelta
+    from app.main import db
+    from app.models.internal import UserSession
+    from app.services.auth import AuthService
+
+    await db.connect()
+    # Create library, series and book 601
+    await db.upsert_libraries([{"id": 60, "name": "Shared Lib", "paths": []}])
+    await db.upsert_series_batch([{"id": "60-series1", "library_id": 60, "name": "Shared Series", "slug": "shared-series"}])
+    await db.upsert_books_batch([{
+        "id": 601,
+        "series_id": "60-series1",
+        "library_id": 60,
+        "name": "Shared Book",
+        "number": 1.0,
+        "page_count": 100,
+        "raw_json": '{"readStatus": "READ", "cbxProgress": {"page": 100, "percentage": 100.0}}',
+    }])
+
+    # saetron (user 1) has read the book
+    saetron = UserSession(
+        user_id=1,
+        username="saetron",
+        token="token_saetron",
+        is_admin=True,
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    # testuser (user 2) has NOT read the book
+    testuser = UserSession(
+        user_id=2,
+        username="testuser",
+        token="token_testuser",
+        is_admin=False,
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    AuthService.cache_session(saetron)
+    AuthService.cache_session(testuser)
+
+    await db.upsert_read_progress(user_id=1, book_id=601, page=100, completed=True, read_date="2026-10-07T10:00:00Z")
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # 1. testuser queries book 601 by ID -> readProgress must be None!
+        resp_testuser = await client.get("/api/v1/books/601", headers={"Authorization": "Bearer token_testuser"})
+        assert resp_testuser.status_code == 200
+        book_testuser = resp_testuser.json()
+        assert book_testuser["readProgress"] is None
+
+        # 2. testuser queries book list -> readProgress must be None!
+        resp_list_testuser = await client.post(
+            "/api/v1/books/list?page=0",
+            json={"condition": {"libraryId": {"operator": "is", "value": "60"}}},
+            headers={"Authorization": "Bearer token_testuser"},
+        )
+        assert resp_list_testuser.status_code == 200
+        content_testuser = resp_list_testuser.json()["content"]
+        assert len(content_testuser) == 1
+        assert content_testuser[0]["readProgress"] is None
+
+        # 3. saetron queries book 601 -> readProgress must be completed!
+        resp_saetron = await client.get("/api/v1/books/601", headers={"Authorization": "Bearer token_saetron"})
+        assert resp_saetron.status_code == 200
+        book_saetron = resp_saetron.json()
+        assert book_saetron["readProgress"] is not None
+        assert book_saetron["readProgress"]["completed"] is True
+        assert book_saetron["readProgress"]["page"] == 100
+
+
+@pytest.mark.asyncio
+async def test_download_fallback_on_403(monkeypatch):
+    import httpx
+    from datetime import datetime, timezone, timedelta
+    from app.clients.grimmory import grimmory_client
+    from app.main import db
+    from app.models.internal import UserSession
+    from app.services.auth import AuthService
+
+    await db.connect()
+    await db.upsert_libraries([{"id": 70, "name": "Novels", "paths": []}])
+    await db.upsert_series_batch([{"id": "70-series1", "library_id": 70, "name": "Novel Series", "slug": "novel-series"}])
+    await db.upsert_books_batch([{
+        "id": 701,
+        "series_id": "70-series1",
+        "library_id": 70,
+        "name": "Novel 701",
+        "number": 1.0,
+        "page_count": 100,
+    }])
+
+    testuser = UserSession(
+        user_id=2,
+        username="testuser",
+        token="token_restricted",
+        is_admin=False,
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    AuthService.cache_session(testuser)
+
+    # Mock grimmory_client:
+    # If Authorization header has token_restricted -> return 403 Forbidden
+    # If Authorization header has sync token -> return 200 OK with bytes
+    async def mock_get_sync_token():
+        return "admin_sync_token"
+    monkeypatch.setattr(grimmory_client, "get_sync_token", mock_get_sync_token)
+
+    real_send = grimmory_client._http_client.send
+
+    async def mock_send(request: httpx.Request, *args, **kwargs):
+        auth = request.headers.get("Authorization", "")
+        if "token_restricted" in auth:
+            return httpx.Response(status_code=403, request=request)
+        return httpx.Response(status_code=200, content=b"PK\x03\x04mock_epub_data", headers={"Content-Type": "application/epub+zip"}, request=request)
+
+    monkeypatch.setattr(grimmory_client._http_client, "send", mock_send)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/v1/books/701/file", headers={"Authorization": "Bearer token_restricted"})
+        assert resp.status_code == 200
+        assert resp.content == b"PK\x03\x04mock_epub_data"
+
+
+
 
 

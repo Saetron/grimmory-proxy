@@ -1,4 +1,5 @@
 import base64
+import json
 import logging
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
@@ -140,8 +141,42 @@ class AuthService:
             if session:
                 return session
 
-        # 3. Check Session Cookies (Komga / Browser WebUI)
-        for cookie_name in ["KOMGA-SESSION", "SESSION", "access_token", "admin_session"]:
+        # 3. Check API Key Headers or Query Parameter
+        api_key = (
+            request.headers.get("X-API-Key")
+            or request.headers.get("x-api-key")
+            or request.headers.get("X-Auth-Token")
+            or request.headers.get("x-auth-token")
+            or request.headers.get("api-key")
+            or request.query_params.get("api_key")
+        )
+        if api_key:
+            from app.main import db
+            user_id = await db.get_user_id_by_api_key(api_key)
+            if user_id is not None:
+                user_row = await db.get_user_by_id(user_id)
+                if user_row:
+                    assigned_libs = []
+                    try:
+                        assigned_libs = json.loads(user_row["assigned_libraries"] or "[]")
+                    except Exception:
+                        pass
+                    return UserSession(
+                        user_id=user_row["id"],
+                        username=user_row["username"],
+                        token=user_row["token"] or "",
+                        is_admin=bool(user_row["is_admin"]),
+                        assigned_library_ids=assigned_libs,
+                        expires_at=datetime.now(timezone.utc) + timedelta(days=30),
+                    )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid or revoked API key",
+                headers={"WWW-Authenticate": 'Basic realm="Komga"'},
+            )
+
+        # 4. Check Session & Remember-Me Cookies (Komga / Browser WebUI / KMreader)
+        for cookie_name in ["KOMGA-SESSION", "SESSION", "remember-me", "access_token", "admin_session"]:
             cookie_token = request.cookies.get(cookie_name)
             if cookie_token:
                 session = await cls.get_session_from_token(cookie_token)

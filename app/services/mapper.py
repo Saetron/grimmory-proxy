@@ -108,8 +108,12 @@ class KomgaMapper:
         if record.get("raw_json"):
             try:
                 raw = json.loads(record["raw_json"]) if isinstance(record["raw_json"], str) else record["raw_json"]
+                if isinstance(raw, str):
+                    raw = json.loads(raw)
             except Exception:
                 pass
+            if not isinstance(raw, dict):
+                raw = {}
 
             # If raw contains pageCount, ensure page_count reflects it
             raw_meta = raw.get("metadata", {})
@@ -182,7 +186,17 @@ class KomgaMapper:
 
         # Reading progress from user or record
         read_progress = user_progress
-        if not read_progress and (record.get("user_page") is not None or record.get("user_completed") is not None or record.get("user_read_date")):
+        has_user_query = (
+            "user_page" in record
+            or "user_completed" in record
+            or "user_read_date" in record
+        )
+
+        if not read_progress and (
+            record.get("user_page") is not None
+            or record.get("user_completed") is not None
+            or record.get("user_read_date") is not None
+        ):
             read_progress = ReadProgressDto(
                 page=record.get("user_page") or 1,
                 completed=bool(record.get("user_completed")),
@@ -190,7 +204,7 @@ class KomgaMapper:
                 created=book_created,
                 lastModified=book_modified,
             )
-        elif not read_progress and raw:
+        elif not read_progress and not has_user_query and raw:
             # Check if book raw JSON has progress for the current user
             if raw.get("readStatus") == "READ":
                 read_progress = ReadProgressDto(
