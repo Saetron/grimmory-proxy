@@ -72,6 +72,15 @@ def test_filter_utils_extraction():
     assert f5["library_ids"] == [20]
     assert f5["series_ids"] == ["s-nested"]
 
+    # 6. Post body with AST criteria field/type syntax
+    body6 = {"condition": {"type": "seriesId", "value": "s-ast-type"}}
+    f6 = extract_filter_params(req3, body6)
+    assert f6["series_ids"] == ["s-ast-type"]
+
+    body7 = {"condition": {"field": "seriesId", "value": "s-ast-field"}}
+    f7 = extract_filter_params(req3, body7)
+    assert f7["series_ids"] == ["s-ast-field"]
+
 
 def test_effective_library_resolution():
     admin = UserSession(

@@ -44,12 +44,14 @@ class LibraryDto(BaseModel):
     repairExtensions: bool = False
     convertToCbz: bool = False
     emptyTrashAfterScan: bool = False
+    seriesCover: str = "FIRST"
     seriesCoverSort: str = "FIRST"
     seriesPaging: str = "DEFAULT"
     hashFiles: bool = False
     hashPages: bool = False
     hashKoreader: bool = False
     analyzeDimensions: bool = True
+    oneshotsDirectory: Optional[str] = None
     unavailable: bool = False
 
 
@@ -73,10 +75,12 @@ class BookMetadataDto(BaseModel):
     authorsLock: bool = False
     tags: List[str] = Field(default_factory=list)
     tagsLock: bool = False
-    isbn: Optional[str] = None
+    isbn: str = ""
     isbnLock: bool = False
     links: List[dict] = Field(default_factory=list)
     linksLock: bool = False
+    created: str = Field(default_factory=lambda: "2026-01-01T00:00:00Z")
+    lastModified: str = Field(default_factory=lambda: "2026-01-01T00:00:00Z")
 
 
 class MediaDto(BaseModel):
@@ -86,14 +90,15 @@ class MediaDto(BaseModel):
     comment: str = ""
     mediaProfile: str = "DIVINA"
     epubDivinaCompatible: bool = False
+    epubIsKepub: bool = False
 
 
 class ReadProgressDto(BaseModel):
     page: int
     completed: bool
-    readDate: Optional[str] = None
-    created: Optional[str] = None
-    lastModified: Optional[str] = None
+    readDate: str = Field(default_factory=lambda: "2026-01-01T00:00:00Z")
+    created: str = Field(default_factory=lambda: "2026-01-01T00:00:00Z")
+    lastModified: str = Field(default_factory=lambda: "2026-01-01T00:00:00Z")
     deviceId: str = ""
     deviceName: str = ""
 
@@ -111,9 +116,9 @@ class BookDto(BaseModel):
     name: str
     url: str = ""
     number: int = 1
-    created: Optional[str] = None
-    lastModified: Optional[str] = None
-    fileLastModified: Optional[str] = None
+    created: str = Field(default_factory=lambda: "2026-01-01T00:00:00Z")
+    lastModified: str = Field(default_factory=lambda: "2026-01-01T00:00:00Z")
+    fileLastModified: str = Field(default_factory=lambda: "2026-01-01T00:00:00Z")
     sizeBytes: int = 0
     size: str = "0 B"
     media: MediaDto
@@ -127,8 +132,8 @@ class BookDto(BaseModel):
 class SeriesMetadataDto(BaseModel):
     status: str = "ONGOING"
     statusLock: bool = False
-    created: Optional[str] = None
-    lastModified: Optional[str] = None
+    created: str = Field(default_factory=lambda: "2026-01-01T00:00:00Z")
+    lastModified: str = Field(default_factory=lambda: "2026-01-01T00:00:00Z")
     title: str = ""
     titleLock: bool = False
     titleSort: str = ""
@@ -163,8 +168,8 @@ class BookMetadataAggregationDto(BaseModel):
     releaseDate: Optional[str] = None
     summary: str = ""
     summaryNumber: str = ""
-    created: Optional[str] = None
-    lastModified: Optional[str] = None
+    created: str = Field(default_factory=lambda: "2026-01-01T00:00:00Z")
+    lastModified: str = Field(default_factory=lambda: "2026-01-01T00:00:00Z")
 
 
 class SeriesDto(BaseModel):
@@ -172,9 +177,9 @@ class SeriesDto(BaseModel):
     libraryId: str
     name: str
     url: str = ""
-    created: Optional[str] = None
-    lastModified: Optional[str] = None
-    fileLastModified: Optional[str] = None
+    created: str = Field(default_factory=lambda: "2026-01-01T00:00:00Z")
+    lastModified: str = Field(default_factory=lambda: "2026-01-01T00:00:00Z")
+    fileLastModified: str = Field(default_factory=lambda: "2026-01-01T00:00:00Z")
     booksCount: int = 0
     booksReadCount: int = 0
     booksUnreadCount: int = 0
@@ -200,8 +205,8 @@ class CollectionDto(BaseModel):
     name: str
     ordered: bool = False
     seriesIds: List[str] = Field(default_factory=list)
-    createdDate: Optional[str] = None
-    lastModifiedDate: Optional[str] = None
+    createdDate: str = Field(default_factory=lambda: "2026-01-01T00:00:00Z")
+    lastModifiedDate: str = Field(default_factory=lambda: "2026-01-01T00:00:00Z")
     filtered: bool = False
 
 
@@ -211,8 +216,8 @@ class ReadListDto(BaseModel):
     summary: str = ""
     ordered: bool = False
     bookIds: List[str] = Field(default_factory=list)
-    createdDate: Optional[str] = None
-    lastModifiedDate: Optional[str] = None
+    createdDate: str = Field(default_factory=lambda: "2026-01-01T00:00:00Z")
+    lastModifiedDate: str = Field(default_factory=lambda: "2026-01-01T00:00:00Z")
     filtered: bool = False
 
 

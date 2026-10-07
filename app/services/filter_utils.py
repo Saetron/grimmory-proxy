@@ -12,11 +12,18 @@ def _extract_ids_recursive(data: Any, key_names: Set[str]) -> List[Any]:
     Recursively extracts values associated with key_names from dicts and lists.
     Handles OpenAPI SearchCondition structures (such as 'allOf', 'anyOf',
     and SearchOperatorEqualityString e.g. {"operator": "is", "value": ...} or {"values": [...]},
-    or nested {"id": ...} / {"ids": [...]}).
+    or nested {"id": ...} / {"ids": [...]}, or AST criteria {"field": ..., "value": ...}).
     """
     extracted: List[Any] = []
     lower_keys = {k.lower() for k in key_names}
     if isinstance(data, dict):
+        cond_field = str(data.get("field") or data.get("type") or "").lower()
+        if cond_field in lower_keys:
+            if "value" in data:
+                extracted.append(data["value"])
+            if "values" in data and isinstance(data["values"], list):
+                extracted.extend(data["values"])
+
         for k, v in data.items():
             if k.lower() in lower_keys:
                 if isinstance(v, list):
@@ -41,7 +48,7 @@ def _extract_ids_recursive(data: Any, key_names: Set[str]) -> List[Any]:
     return extracted
 
 
-def extract_filter_params(request: Request, body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def extract_filter_params(request: Request, body: Optional[Any] = None) -> Dict[str, Any]:
     """
     Extracts library_ids, series_ids, search terms, and unpaged flag from query parameters
     and/or JSON request body (supporting both Komga standard SearchCondition schemas

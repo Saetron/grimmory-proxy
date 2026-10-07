@@ -81,15 +81,20 @@ def get_series_router(db: Database) -> APIRouter:
         page: int = Query(0, ge=0),
         size: int = Query(20, ge=1),
         sort: str = Query("title,asc"),
-        body: Optional[Dict[str, Any]] = None,
+        body: Optional[Any] = None,
         user: UserSession = Depends(AuthService.require_user),
     ) -> PageableDto[SeriesDto]:
-        if body is None:
+        parsed_body = body
+        if not isinstance(parsed_body, (dict, list)):
             try:
-                body = await request.json()
+                parsed_body = await request.json()
             except Exception:
-                body = None
-        filters = extract_filter_params(request, body)
+                parsed_body = None
+        filters = extract_filter_params(request, parsed_body)
+        logger.info(
+            f"POST /api/v1/series/list: query_params={dict(request.query_params)}, "
+            f"body={parsed_body}, extracted_filters={filters}"
+        )
         return await _query_series(
             library_ids=filters["library_ids"],
             search=filters["search"],

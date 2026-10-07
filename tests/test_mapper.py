@@ -74,3 +74,63 @@ def test_to_divina_manifest():
     assert manifest["metadata"]["numberOfPages"] == 2
     assert len(manifest["readingOrder"]) == 2
     assert manifest["readingOrder"][0]["href"] == "http://localhost:8080/api/v1/books/1/pages/1"
+
+
+def test_kotlin_dto_serialization_compliance():
+    # 1. BookDto serialization compliance
+    book_rec = {
+        "id": 42,
+        "series_id": "20-test-series",
+        "library_id": 20,
+        "name": "Book 42",
+        "number": 1.0,
+        "page_count": 100,
+        # created and last_modified are None to test defaults
+        "created": None,
+        "last_modified": None,
+        "raw_json": '{"readStatus": "READ", "dateFinished": "2026-02-15T12:00:00Z"}',
+    }
+    book_dto = KomgaMapper.to_book_dto(book_rec)
+    book_json = book_dto.model_dump()
+
+    # Moshi/Kotlin non-null checks:
+    assert isinstance(book_json["created"], str) and len(book_json["created"]) > 0
+    assert isinstance(book_json["lastModified"], str) and len(book_json["lastModified"]) > 0
+    assert isinstance(book_json["fileLastModified"], str) and len(book_json["fileLastModified"]) > 0
+    assert isinstance(book_json["media"]["epubIsKepub"], bool)
+    assert book_json["media"]["epubIsKepub"] is False
+    assert isinstance(book_json["metadata"]["isbn"], str)
+    assert isinstance(book_json["metadata"]["created"], str) and len(book_json["metadata"]["created"]) > 0
+    assert isinstance(book_json["metadata"]["lastModified"], str) and len(book_json["metadata"]["lastModified"]) > 0
+    assert isinstance(book_json["readProgress"]["readDate"], str) and len(book_json["readProgress"]["readDate"]) > 0
+    assert isinstance(book_json["readProgress"]["created"], str) and len(book_json["readProgress"]["created"]) > 0
+    assert isinstance(book_json["readProgress"]["lastModified"], str) and len(book_json["readProgress"]["lastModified"]) > 0
+
+    # 2. SeriesDto serialization compliance
+    series_rec = {
+        "id": "20-test-series",
+        "library_id": 20,
+        "name": "Test Series",
+        "books_count": 5,
+        "created": None,
+        "last_modified": None,
+    }
+    series_dto = KomgaMapper.to_series_dto(series_rec)
+    series_json = series_dto.model_dump()
+
+    assert isinstance(series_json["created"], str) and len(series_json["created"]) > 0
+    assert isinstance(series_json["lastModified"], str) and len(series_json["lastModified"]) > 0
+    assert isinstance(series_json["fileLastModified"], str) and len(series_json["fileLastModified"]) > 0
+    assert isinstance(series_json["metadata"]["created"], str) and len(series_json["metadata"]["created"]) > 0
+    assert isinstance(series_json["metadata"]["lastModified"], str) and len(series_json["metadata"]["lastModified"]) > 0
+    assert isinstance(series_json["booksMetadata"]["created"], str) and len(series_json["booksMetadata"]["created"]) > 0
+    assert isinstance(series_json["booksMetadata"]["lastModified"], str) and len(series_json["booksMetadata"]["lastModified"]) > 0
+
+    # 3. LibraryDto serialization compliance
+    lib_rec = {"id": 20, "name": "Novels", "root": "/data/novels"}
+    lib_dto = KomgaMapper.to_library_dto(lib_rec)
+    lib_json = lib_dto.model_dump()
+
+    assert "seriesCover" in lib_json
+    assert lib_json["seriesCover"] == "FIRST"
+

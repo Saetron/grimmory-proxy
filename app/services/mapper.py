@@ -50,6 +50,15 @@ def get_media_type_and_profile(book_type: str) -> tuple[str, str]:
         return "application/epub+zip", "EPUB"
 
 
+def format_iso_timestamp(ts: Optional[str] = None) -> str:
+    if ts and isinstance(ts, str) and len(ts.strip()) >= 10:
+        cleaned = ts.strip().replace(" ", "T")
+        if not cleaned.endswith("Z") and "+" not in cleaned:
+            cleaned += "Z"
+        return cleaned
+    return "2026-01-01T00:00:00Z"
+
+
 class KomgaMapper:
     @staticmethod
     def to_library_dto(record: Dict[str, Any]) -> LibraryDto:
@@ -57,6 +66,8 @@ class KomgaMapper:
             id=str(record["id"]),
             name=record.get("name", f"Library {record['id']}"),
             root=record.get("root", ""),
+            seriesCover="FIRST",
+            seriesCoverSort="FIRST",
             unavailable=False,
         )
 
@@ -115,7 +126,11 @@ class KomgaMapper:
             pagesCount=page_count,
             mediaProfile=media_profile,
             epubDivinaCompatible=(media_profile == "DIVINA"),
+            epubIsKepub=False,
         )
+
+        book_created = format_iso_timestamp(record.get("created"))
+        book_modified = format_iso_timestamp(record.get("last_modified"))
 
         metadata = BookMetadataDto(
             title=title,
@@ -125,7 +140,9 @@ class KomgaMapper:
             releaseDate=release_date,
             authors=authors_list,
             tags=tags_list,
-            isbn=isbn,
+            isbn=isbn or "",
+            created=book_created,
+            lastModified=book_modified,
         )
 
         # Reading progress from user or record
@@ -136,19 +153,27 @@ class KomgaMapper:
                 read_progress = ReadProgressDto(
                     page=page_count or 1,
                     completed=True,
-                    readDate=raw.get("dateFinished"),
+                    readDate=format_iso_timestamp(raw.get("dateFinished") or book_modified),
+                    created=book_created,
+                    lastModified=book_modified,
                 )
             elif raw.get("cbxProgress"):
                 cbx = raw["cbxProgress"]
                 read_progress = ReadProgressDto(
                     page=cbx.get("page", 1),
                     completed=cbx.get("percentage", 0.0) >= 99.0,
+                    readDate=format_iso_timestamp(cbx.get("lastRead") or book_modified),
+                    created=book_created,
+                    lastModified=book_modified,
                 )
             elif raw.get("pdfProgress"):
                 pdf = raw["pdfProgress"]
                 read_progress = ReadProgressDto(
                     page=pdf.get("page", 1),
                     completed=pdf.get("percentage", 0.0) >= 99.0,
+                    readDate=format_iso_timestamp(pdf.get("lastRead") or book_modified),
+                    created=book_created,
+                    lastModified=book_modified,
                 )
             elif raw.get("epubProgress"):
                 epub = raw["epubProgress"]
@@ -157,6 +182,9 @@ class KomgaMapper:
                 read_progress = ReadProgressDto(
                     page=calc_page,
                     completed=perc >= 99.0,
+                    readDate=format_iso_timestamp(epub.get("lastRead") or book_modified),
+                    created=book_created,
+                    lastModified=book_modified,
                 )
 
         return BookDto(
@@ -167,15 +195,16 @@ class KomgaMapper:
             name=name,
             url=f"/api/v1/books/{book_id}",
             number=int(number),
-            created=record.get("created"),
-            lastModified=record.get("last_modified"),
-            fileLastModified=record.get("last_modified"),
+            created=book_created,
+            lastModified=book_modified,
+            fileLastModified=book_modified,
             sizeBytes=file_size_kb * 1024,
             size=format_file_size(file_size_kb),
             media=media,
             metadata=metadata,
             readProgress=read_progress,
             deleted=bool(record.get("deleted", 0)),
+            fileHash="",
             oneshot=False,
         )
 
@@ -191,8 +220,13 @@ class KomgaMapper:
         name = record.get("name", "Unknown Series")
         count = books_count if books_count is not None else record.get("books_count", 0)
 
+        series_created = format_iso_timestamp(record.get("created"))
+        series_modified = format_iso_timestamp(record.get("last_modified"))
+
         meta = SeriesMetadataDto(
             status="ONGOING",
+            created=series_created,
+            lastModified=series_modified,
             title=name,
             titleSort=record.get("sort_title", name),
             readingDirection="LEFT_TO_RIGHT",
@@ -201,8 +235,8 @@ class KomgaMapper:
 
         books_meta = BookMetadataAggregationDto(
             summary=f"Series {name}",
-            created=record.get("created"),
-            lastModified=record.get("last_modified"),
+            created=series_created,
+            lastModified=series_modified,
         )
 
         unread_count = max(0, count - books_read_count - books_in_progress_count)
@@ -212,9 +246,9 @@ class KomgaMapper:
             libraryId=library_id,
             name=name,
             url=f"/api/v1/series/{series_id}",
-            created=record.get("created"),
-            lastModified=record.get("last_modified"),
-            fileLastModified=record.get("last_modified"),
+            created=series_created,
+            lastModified=series_modified,
+            fileLastModified=series_modified,
             booksCount=count,
             booksReadCount=books_read_count,
             booksUnreadCount=unread_count,

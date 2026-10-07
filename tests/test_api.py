@@ -166,7 +166,13 @@ async def test_series_library_filter_and_access_restrictions():
             headers=headers,
         )
         assert resp_books_post.status_code == 200
-        assert resp_books_post.json()["totalElements"] == 2
+        post_book_data = resp_books_post.json()
+        assert post_book_data["totalElements"] == 2
+        first_b = post_book_data["content"][0]
+        assert first_b["media"]["epubIsKepub"] is False
+        assert isinstance(first_b["metadata"]["isbn"], str)
+        assert isinstance(first_b["created"], str) and len(first_b["created"]) > 0
+        assert isinstance(first_b["lastModified"], str) and len(first_b["lastModified"]) > 0
 
         # H. Query GET /api/v1/series/20-novel1/collections (must return 200 with empty list, not 404)
         resp_collections = await client.get("/api/v1/series/20-novel1/collections", headers=headers)

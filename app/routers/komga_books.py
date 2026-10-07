@@ -48,14 +48,20 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
             for s_id in series_ids:
                 series_rec = await db.find_series_by_id_or_slug(s_id)
                 if series_rec:
-                    canonical_series_ids.append(series_rec["id"])
+                    if series_rec["id"] not in canonical_series_ids:
+                        canonical_series_ids.append(series_rec["id"])
+                    if series_rec.get("slug") and series_rec["slug"] not in canonical_series_ids:
+                        canonical_series_ids.append(series_rec["slug"])
                     series_lib_ids.append(series_rec["library_id"])
-                else:
+                if s_id not in canonical_series_ids:
                     canonical_series_ids.append(s_id)
 
             # If user has library restrictions, check that requested series belongs to allowed libraries
             if user and not user.is_admin and user.assigned_library_ids:
                 if series_lib_ids and not any(lid in user.assigned_library_ids for lid in series_lib_ids):
+                    logger.warning(
+                        f"User {user.username} blocked from series {series_ids} outside assigned libraries {user.assigned_library_ids}"
+                    )
                     return build_pageable([], page, size, 0, unpaged=unpaged)
 
         effective_libs = None
@@ -106,15 +112,20 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
         page: int = Query(0, ge=0),
         size: int = Query(20, ge=1),
         sort: str = Query("number,asc"),
-        body: Optional[Dict[str, Any]] = None,
+        body: Optional[Any] = None,
         user: UserSession = Depends(AuthService.require_user),
     ) -> PageableDto[BookDto]:
-        if body is None:
+        parsed_body = body
+        if not isinstance(parsed_body, (dict, list)):
             try:
-                body = await request.json()
+                parsed_body = await request.json()
             except Exception:
-                body = None
-        filters = extract_filter_params(request, body)
+                parsed_body = None
+        filters = extract_filter_params(request, parsed_body)
+        logger.info(
+            f"POST /api/v1/books/list: query_params={dict(request.query_params)}, "
+            f"body={parsed_body}, extracted_filters={filters}"
+        )
         return await _query_books(
             library_ids=filters["library_ids"],
             series_ids=filters["series_ids"],
