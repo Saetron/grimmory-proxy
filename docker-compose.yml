@@ -1,0 +1,25 @@
+services:
+  komic:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: komic-bridge:latest
+    container_name: komic-bridge
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - GRIMMORY_URL=http://grimmory:8080
+      - SYNC_USERNAME=admin_user
+      - SYNC_PASSWORD=your_sync_password
+      - SYNC_INTERVAL_MINUTES=30
+      - SYNC_ON_STARTUP=true
+      - SYNC_CONCURRENCY=6
+      - DATABASE_PATH=/app/data/bridge.db
+      - THUMBNAILS_DIR=/app/data/thumbnails
+      - PORT=8080
+      - HOST=0.0.0.0
+      - CACHE_TTL=300
+      - LOG_LEVEL=info
+    volumes:
+      - ./data:/app/data

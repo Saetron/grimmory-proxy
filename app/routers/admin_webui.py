@@ -34,7 +34,11 @@ def get_admin_router(db: Database, page_calculator: PageCalculator, sync_service
         user = await AuthService.get_current_user_optional(request)
         if user and user.is_admin:
             return RedirectResponse(url="/admin", status_code=status.HTTP_302_FOUND)
-        return templates.TemplateResponse("login.html", {"request": request, "user": None, "error": None})
+        return templates.TemplateResponse(
+            request=request,
+            name="login.html",
+            context={"user": None, "error": None},
+        )
 
     @router.post("/admin/login", response_class=HTMLResponse)
     async def login_post(
@@ -47,9 +51,9 @@ def get_admin_router(db: Database, page_calculator: PageCalculator, sync_service
             user = await AuthService.authenticate_credentials(username, password)
             if not user.is_admin:
                 return templates.TemplateResponse(
-                    "login.html",
-                    {
-                        "request": request,
+                    request=request,
+                    name="login.html",
+                    context={
                         "user": None,
                         "error": "Access Denied: Only Grimmory Administrators are permitted to access this management dashboard.",
                     },
@@ -68,8 +72,9 @@ def get_admin_router(db: Database, page_calculator: PageCalculator, sync_service
         except Exception as e:
             logger.warning(f"Admin login failed: {e}")
             return templates.TemplateResponse(
-                "login.html",
-                {"request": request, "user": None, "error": "Invalid Grimmory credentials or account not found."},
+                request=request,
+                name="login.html",
+                context={"user": None, "error": "Invalid Grimmory credentials or account not found."},
                 status_code=status.HTTP_401_UNAUTHORIZED,
             )
 
@@ -90,9 +95,9 @@ def get_admin_router(db: Database, page_calculator: PageCalculator, sync_service
         thumb_count, thumb_bytes = thumbnail_cache.get_cache_size()
 
         return templates.TemplateResponse(
-            "dashboard.html",
-            {
-                "request": request,
+            request=request,
+            name="dashboard.html",
+            context={
                 "user": user,
                 "stats": stats,
                 "calc_job": page_calculator.status,
