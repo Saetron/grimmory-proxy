@@ -55,6 +55,17 @@ CREATE TABLE IF NOT EXISTS books (
     FOREIGN KEY (library_id) REFERENCES libraries (id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY,
+    username TEXT NOT NULL,
+    token TEXT,
+    is_admin INTEGER DEFAULT 0,
+    assigned_libraries TEXT,
+    last_connected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_sync_progress_at TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS read_progress (
     user_id INTEGER NOT NULL,
     book_id INTEGER NOT NULL,
@@ -113,6 +124,7 @@ CREATE INDEX IF NOT EXISTS idx_read_progress_book ON read_progress(book_id);
 CREATE INDEX IF NOT EXISTS idx_read_progress_date ON read_progress(read_date);
 CREATE INDEX IF NOT EXISTS idx_series_library_id ON series(library_id);
 CREATE INDEX IF NOT EXISTS idx_series_name ON series(name);
+CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
 """
 
 
@@ -497,12 +509,101 @@ class Database:
             await db.execute("DELETE FROM read_progress WHERE user_id = ? AND book_id = ?", (user_id, book_id))
             await db.commit()
 
+    async def delete_read_progress_batch(self, user_id: int, book_ids: List[int]) -> None:
+        if not book_ids:
+            return
+        async with aiosqlite.connect(self.db_path) as db:
+            chunk_size = 500
+            for i in range(0, len(book_ids), chunk_size):
+                chunk = book_ids[i : i + chunk_size]
+                placeholders = ",".join("?" for _ in chunk)
+                await db.execute(
+                    f"DELETE FROM read_progress WHERE user_id = ? AND book_id IN ({placeholders})",
+                    [user_id] + chunk,
+                )
+            await db.commit()
+
+    async def upsert_read_progress_batch(self, records: List[Dict[str, Any]]) -> None:
+        if not records:
+            return
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.executemany(
+                """
+                INSERT INTO read_progress (user_id, book_id, page, completed, read_date, updated_at)
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(user_id, book_id) DO UPDATE SET
+                    page = excluded.page,
+                    completed = excluded.completed,
+                    read_date = excluded.read_date,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                [
+                    (
+                        r["user_id"],
+                        r["book_id"],
+                        r.get("page", 1),
+                        1 if r.get("completed") else 0,
+                        r["read_date"],
+                    )
+                    for r in records
+                ],
+            )
+            await db.commit()
+
     async def get_book_read_progress(self, user_id: int, book_id: int) -> Optional[Dict[str, Any]]:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("SELECT * FROM read_progress WHERE user_id = ? AND book_id = ?", (user_id, book_id))
             row = await cursor.fetchone()
             return dict(row) if row else None
+
+    # ---------------- User Operations ----------------
+
+    async def upsert_user(
+        self,
+        user_id: int,
+        username: str,
+        token: Optional[str] = None,
+        is_admin: bool = False,
+        assigned_libraries: Optional[List[int]] = None,
+    ) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO users (id, username, token, is_admin, assigned_libraries, last_connected_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                ON CONFLICT(id) DO UPDATE SET
+                    username = excluded.username,
+                    token = COALESCE(excluded.token, users.token),
+                    is_admin = excluded.is_admin,
+                    assigned_libraries = excluded.assigned_libraries,
+                    last_connected_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    user_id,
+                    username,
+                    token,
+                    1 if is_admin else 0,
+                    json.dumps(assigned_libraries or []),
+                ),
+            )
+            await db.commit()
+
+    async def get_user_by_id(self, user_id: int) -> Optional[Dict[str, Any]]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def update_user_progress_sync_time(self, user_id: int) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "UPDATE users SET last_sync_progress_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (user_id,),
+            )
+            await db.commit()
 
     async def get_books_list(
         self,

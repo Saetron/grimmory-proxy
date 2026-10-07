@@ -8,6 +8,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from app.clients.grimmory import grimmory_client
 from app.config import settings
 from app.models.internal import UserSession
+from app.services.user_sync import user_sync_service
 
 logger = logging.getLogger("grimmory_proxy.auth")
 
@@ -56,6 +57,10 @@ class AuthService:
         if cached_token:
             cached_session = cls.get_cached_session(cached_token)
             if cached_session:
+                try:
+                    await user_sync_service.capture_and_sync_user(cached_session)
+                except Exception as e:
+                    logger.debug(f"Error checking read states on cached login: {e}")
                 return cached_session
 
         try:
@@ -74,6 +79,13 @@ class AuthService:
             )
             cls.cache_session(session)
             _credential_tokens[cache_key] = token
+
+            # Capture user connection data and synchronize read states from Grimmory
+            try:
+                await user_sync_service.capture_and_sync_user(session)
+            except Exception as e:
+                logger.warning(f"Error checking Grimmory read states for user {username}: {e}")
+
             return session
         except Exception as e:
             logger.warning(f"Failed authentication for user {username}: {e}")
@@ -147,6 +159,10 @@ class AuthService:
                 detail="Authentication required",
                 headers={"WWW-Authenticate": 'Basic realm="Komga"'},
             )
+        try:
+            await user_sync_service.capture_and_sync_user(user)
+        except Exception as e:
+            logger.debug(f"Error checking Grimmory read states for user {user.username}: {e}")
         return user
 
     @classmethod

@@ -20,6 +20,7 @@ from app.routers.komga_progress import get_progress_router
 from app.routers.komga_series import get_series_router
 from app.services.page_calculator import PageCalculator
 from app.services.sync import SyncService
+from app.services.user_sync import user_sync_service
 
 # Configure logging
 log_level = getattr(logging, settings.log_level.upper(), logging.INFO)
@@ -31,6 +32,7 @@ logger = logging.getLogger("grimmory_proxy.main")
 
 # Database & Core Services
 db = Database(db_path=settings.database_path)
+user_sync_service.set_db(db)
 page_calculator = PageCalculator(db=db)
 sync_service = SyncService(db=db, page_calculator=page_calculator)
 

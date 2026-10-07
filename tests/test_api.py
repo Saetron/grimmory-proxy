@@ -219,6 +219,10 @@ async def test_ondeck_keep_reading_and_released_sorting():
     AuthService.cache_session(user)
     headers = {"Authorization": "Bearer token_reader_user"}
 
+    # Clean residual progress from previous runs if any
+    for bid in [301, 302, 303]:
+        await db.delete_read_progress(user_id, bid)
+
     # Setup library, series with 3 books
     await db.upsert_libraries([{"id": 30, "name": "Manga Lib", "paths": []}])
     await db.upsert_series_batch([{
@@ -413,6 +417,175 @@ async def test_removed_book_graceful_handling(monkeypatch):
 
     series_after = await db.get_series_by_id("99-deleted-series")
     assert series_after is None  # empty series cleaned up
+
+
+@pytest.mark.asyncio
+async def test_user_connect_captures_data_and_checks_grimmory_read_states(monkeypatch):
+    import base64
+    from app.main import db
+    from app.clients.grimmory import grimmory_client
+    from app.models.grimmory import GrimmoryLoginResponse, GrimmoryPermissions, GrimmoryUser
+    from app.services.user_sync import user_sync_service
+
+    await db.connect()
+
+    # 1. Populate test books in Library 40
+    await db.upsert_libraries([{"id": 40, "name": "Grimmory Test Lib", "paths": []}])
+    await db.upsert_series_batch([{
+        "id": "40-series1",
+        "library_id": 40,
+        "name": "Sync Series",
+        "slug": "sync-series",
+        "books_count": 3,
+    }])
+    await db.upsert_books_batch([
+        {
+            "id": 401,
+            "series_id": "40-series1",
+            "library_id": 40,
+            "name": "Sync Book 1",
+            "number": 1.0,
+            "page_count": 250,
+            "book_type": "EPUB",
+        },
+        {
+            "id": 402,
+            "series_id": "40-series1",
+            "library_id": 40,
+            "name": "Sync Book 2",
+            "number": 2.0,
+            "page_count": 120,
+            "book_type": "CBZ",
+        },
+        {
+            "id": 403,
+            "series_id": "40-series1",
+            "library_id": 40,
+            "name": "Sync Book 3",
+            "number": 3.0,
+            "page_count": 80,
+            "book_type": "PDF",
+        },
+    ])
+
+    test_user_id = 400
+    for bid in [401, 402, 403]:
+        await db.delete_read_progress(test_user_id, bid)
+
+    # 2. Mock Grimmory authentication and upstream book fetch
+    mock_login_resp = GrimmoryLoginResponse(accessToken="mock_token_alice_123", expires=3600)
+    mock_user_resp = GrimmoryUser(
+        id=test_user_id,
+        username="alice",
+        permissions=GrimmoryPermissions(admin=False),
+        assignedLibraries=[40],
+    )
+
+    async def mock_login(username, password):
+        assert username == "alice"
+        assert password == "secret123"
+        return mock_login_resp
+
+    async def mock_get_current_user(token):
+        assert token == "mock_token_alice_123"
+        return mock_user_resp
+
+    # Grimmory returns live reading states for alice
+    mock_grimmory_books = [
+        {
+            "id": 401,
+            "readStatus": "READ",
+            "dateFinished": "2026-10-05T12:00:00Z",
+            "metadata": {"pageCount": 250},
+        },
+        {
+            "id": 402,
+            "readStatus": "READING",
+            "cbxProgress": {"page": 60, "percentage": 50.0, "lastRead": "2026-10-06T15:30:00Z"},
+            "metadata": {"pageCount": 120},
+        },
+        {
+            "id": 403,
+            "readStatus": "UNREAD",
+            "metadata": {"pageCount": 80},
+        },
+    ]
+
+    async def mock_get_library_books(library_id, token=None):
+        assert token == "mock_token_alice_123"
+        return mock_grimmory_books
+
+    async def mock_get_all_books(token=None):
+        assert token == "mock_token_alice_123"
+        return mock_grimmory_books
+
+    async def mock_get_magic_shelves(token=None):
+        return []
+
+    monkeypatch.setattr(grimmory_client, "login", mock_login)
+    monkeypatch.setattr(grimmory_client, "get_current_user", mock_get_current_user)
+    monkeypatch.setattr(grimmory_client, "get_library_books", mock_get_library_books)
+    monkeypatch.setattr(grimmory_client, "get_all_books", mock_get_all_books)
+    monkeypatch.setattr(grimmory_client, "get_magic_shelves", mock_get_magic_shelves)
+
+    # 3. User connects to the server with Basic Auth (e.g. via Komic)
+    basic_creds = base64.b64encode(b"alice:secret123").decode("utf-8")
+    headers = {"Authorization": f"Basic {basic_creds}"}
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # Initial connection: GET /api/v1/users/me
+        resp_me = await client.get("/api/v1/users/me", headers=headers)
+        assert resp_me.status_code == 200
+        assert resp_me.json()["id"] == "400"
+
+        # 4. Verify user data was captured in SQLite users table
+        user_record = await db.get_user_by_id(test_user_id)
+        assert user_record is not None
+        assert user_record["username"] == "alice"
+        assert user_record["token"] == "mock_token_alice_123"
+        assert user_record["last_connected_at"] is not None
+        assert user_record["last_sync_progress_at"] is not None
+
+        # 5. Verify read states were captured and stored in read_progress table
+        # Book 401 is completed (READ)
+        p401 = await db.get_book_read_progress(test_user_id, 401)
+        assert p401 is not None
+        assert p401["completed"] == 1
+        assert p401["page"] == 250
+        assert "2026-10-05" in p401["read_date"]
+
+        # Book 402 is in-progress (READING, page 60)
+        p402 = await db.get_book_read_progress(test_user_id, 402)
+        assert p402 is not None
+        assert p402["completed"] == 0
+        assert p402["page"] == 60
+        assert "2026-10-06" in p402["read_date"]
+
+        # Book 403 is unread (not in read_progress)
+        p403 = await db.get_book_read_progress(test_user_id, 403)
+        assert p403 is None
+
+        # 6. Verify On Deck immediately returns Book 402 (in-progress book from Grimmory)
+        resp_ondeck = await client.get("/api/v1/books/ondeck?library_id=40", headers=headers)
+        assert resp_ondeck.status_code == 200
+        ondeck_content = resp_ondeck.json()["content"]
+        assert len(ondeck_content) == 1
+        assert ondeck_content[0]["id"] == "402"
+        assert ondeck_content[0]["readProgress"]["page"] == 60
+        assert ondeck_content[0]["readProgress"]["completed"] is False
+
+        # 7. Verify Keep Reading / Read More shelf returns [402, 401]
+        resp_read_more = await client.post(
+            "/api/v1/books/list?page=0&sort=readProgress.readDate,desc",
+            json={"condition": {"libraryId": {"operator": "is", "value": "40"}}},
+            headers=headers,
+        )
+        assert resp_read_more.status_code == 200
+        assert resp_read_more.json()["totalElements"] == 2
+        read_more_ids = [b["id"] for b in resp_read_more.json()["content"]]
+        assert read_more_ids == ["402", "401"]
+
 
 
 
