@@ -1,0 +1,256 @@
+from typing import Generic, List, Optional, TypeVar
+from pydantic import BaseModel, Field
+
+T = TypeVar("T")
+
+
+class AgeRestrictionDto(BaseModel):
+    age: int
+    restriction: str = "ALLOW_ONLY"
+
+
+class UserDto(BaseModel):
+    id: str
+    email: str
+    roles: List[str] = Field(default_factory=lambda: ["ROLE_USER", "ROLE_FILE_DOWNLOAD", "ROLE_PAGE_STREAMING"])
+    sharedAllLibraries: bool = True
+    sharedLibrariesIds: List[str] = Field(default_factory=list)
+    labelsAllow: List[str] = Field(default_factory=list)
+    labelsExclude: List[str] = Field(default_factory=list)
+    ageRestriction: Optional[AgeRestrictionDto] = None
+
+
+class LibraryDto(BaseModel):
+    id: str
+    name: str
+    root: str = ""
+    importComicInfoBook: bool = True
+    importComicInfoSeries: bool = True
+    importComicInfoCollection: bool = True
+    importComicInfoReadList: bool = True
+    importComicInfoSeriesAppendVolume: bool = True
+    importEpubBook: bool = True
+    importEpubSeries: bool = True
+    importMylarSeries: bool = True
+    importLocalArtwork: bool = True
+    importBarcodeIsbn: bool = True
+    scanForceModifiedTime: bool = False
+    scanInterval: str = "EVERY_6_HOURS"
+    scanOnStartup: bool = False
+    scanCbx: bool = True
+    scanPdf: bool = True
+    scanEpub: bool = True
+    scanDirectoryExclusions: List[str] = Field(default_factory=list)
+    repairExtensions: bool = False
+    convertToCbz: bool = False
+    emptyTrashAfterScan: bool = False
+    seriesCoverSort: str = "FIRST"
+    seriesPaging: str = "DEFAULT"
+    hashFiles: bool = False
+    hashPages: bool = False
+    hashKoreader: bool = False
+    analyzeDimensions: bool = True
+    unavailable: bool = False
+
+
+class AuthorDto(BaseModel):
+    name: str
+    role: str = "writer"
+
+
+class BookMetadataDto(BaseModel):
+    title: str = ""
+    titleLock: bool = False
+    summary: str = ""
+    summaryLock: bool = False
+    number: str = "1"
+    numberLock: bool = False
+    numberSort: float = 1.0
+    numberSortLock: bool = False
+    releaseDate: Optional[str] = None
+    releaseDateLock: bool = False
+    authors: List[AuthorDto] = Field(default_factory=list)
+    authorsLock: bool = False
+    tags: List[str] = Field(default_factory=list)
+    tagsLock: bool = False
+    isbn: Optional[str] = None
+    isbnLock: bool = False
+    links: List[dict] = Field(default_factory=list)
+    linksLock: bool = False
+
+
+class MediaDto(BaseModel):
+    status: str = "READY"
+    mediaType: str = "application/x-cbz"
+    pagesCount: int = 0
+    comment: str = ""
+    mediaProfile: str = "DIVINA"
+    epubDivinaCompatible: bool = False
+
+
+class ReadProgressDto(BaseModel):
+    page: int
+    completed: bool
+    readDate: Optional[str] = None
+    created: Optional[str] = None
+    lastModified: Optional[str] = None
+    deviceId: str = ""
+    deviceName: str = ""
+
+
+class ReadProgressUpdateDto(BaseModel):
+    page: Optional[int] = None
+    completed: Optional[bool] = None
+
+
+class BookDto(BaseModel):
+    id: str
+    seriesId: str
+    seriesTitle: str
+    libraryId: str
+    name: str
+    url: str = ""
+    number: int = 1
+    created: Optional[str] = None
+    lastModified: Optional[str] = None
+    fileLastModified: Optional[str] = None
+    sizeBytes: int = 0
+    size: str = "0 B"
+    media: MediaDto
+    metadata: BookMetadataDto
+    readProgress: Optional[ReadProgressDto] = None
+    deleted: bool = False
+    fileHash: str = ""
+    oneshot: bool = False
+
+
+class SeriesMetadataDto(BaseModel):
+    status: str = "ONGOING"
+    statusLock: bool = False
+    created: Optional[str] = None
+    lastModified: Optional[str] = None
+    title: str = ""
+    titleLock: bool = False
+    titleSort: str = ""
+    titleSortLock: bool = False
+    summary: str = ""
+    summaryLock: bool = False
+    readingDirection: str = "LEFT_TO_RIGHT"
+    readingDirectionLock: bool = False
+    publisher: str = ""
+    publisherLock: bool = False
+    ageRating: Optional[int] = None
+    ageRatingLock: bool = False
+    language: str = "en"
+    languageLock: bool = False
+    genres: List[str] = Field(default_factory=list)
+    genresLock: bool = False
+    tags: List[str] = Field(default_factory=list)
+    tagsLock: bool = False
+    totalBookCount: int = 0
+    totalBookCountLock: bool = False
+    sharingLabels: List[str] = Field(default_factory=list)
+    sharingLabelsLock: bool = False
+    links: List[dict] = Field(default_factory=list)
+    linksLock: bool = False
+    alternateTitles: List[dict] = Field(default_factory=list)
+    alternateTitlesLock: bool = False
+
+
+class BookMetadataAggregationDto(BaseModel):
+    authors: List[AuthorDto] = Field(default_factory=list)
+    tags: List[str] = Field(default_factory=list)
+    releaseDate: Optional[str] = None
+    summary: str = ""
+    summaryNumber: str = ""
+    created: Optional[str] = None
+    lastModified: Optional[str] = None
+
+
+class SeriesDto(BaseModel):
+    id: str
+    libraryId: str
+    name: str
+    url: str = ""
+    created: Optional[str] = None
+    lastModified: Optional[str] = None
+    fileLastModified: Optional[str] = None
+    booksCount: int = 0
+    booksReadCount: int = 0
+    booksUnreadCount: int = 0
+    booksInProgressCount: int = 0
+    metadata: SeriesMetadataDto
+    booksMetadata: BookMetadataAggregationDto
+    deleted: bool = False
+    oneshot: bool = False
+
+
+class PageDto(BaseModel):
+    number: int
+    fileName: str
+    mediaType: str = "image/jpeg"
+    width: Optional[int] = None
+    height: Optional[int] = None
+    sizeBytes: Optional[int] = None
+    size: Optional[str] = None
+
+
+class CollectionDto(BaseModel):
+    id: str
+    name: str
+    ordered: bool = False
+    seriesIds: List[str] = Field(default_factory=list)
+    createdDate: Optional[str] = None
+    lastModifiedDate: Optional[str] = None
+    filtered: bool = False
+
+
+class ReadListDto(BaseModel):
+    id: str
+    name: str
+    summary: str = ""
+    ordered: bool = False
+    bookIds: List[str] = Field(default_factory=list)
+    createdDate: Optional[str] = None
+    lastModifiedDate: Optional[str] = None
+    filtered: bool = False
+
+
+class PageableDto(BaseModel, Generic[T]):
+    content: List[T]
+    pageable: dict = Field(default_factory=lambda: {"pageNumber": 0, "pageSize": 20, "sort": {"empty": True, "sorted": False, "unsorted": True}, "offset": 0, "paged": True, "unpaged": False})
+    totalElements: int
+    totalPages: int
+    last: bool
+    first: bool
+    size: int
+    number: int
+    numberOfElements: int
+    empty: bool
+    sort: dict = Field(default_factory=lambda: {"empty": True, "sorted": False, "unsorted": True})
+
+
+def build_pageable(content: List[T], page: int, size: int, total_elements: int) -> PageableDto[T]:
+    total_pages = (total_elements + size - 1) // size if size > 0 else (1 if total_elements > 0 else 0)
+    is_first = page == 0
+    is_last = total_elements == 0 or page >= total_pages - 1
+    return PageableDto[T](
+        content=content,
+        pageable={
+            "pageNumber": page,
+            "pageSize": size,
+            "sort": {"empty": True, "sorted": False, "unsorted": True},
+            "offset": page * size,
+            "paged": True,
+            "unpaged": False,
+        },
+        totalElements=total_elements,
+        totalPages=total_pages,
+        last=is_last,
+        first=is_first,
+        size=size,
+        number=page,
+        numberOfElements=len(content),
+        empty=len(content) == 0,
+        sort={"empty": True, "sorted": False, "unsorted": True},
+    )
