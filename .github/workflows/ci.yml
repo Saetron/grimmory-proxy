@@ -32,6 +32,9 @@ jobs:
           pip install -r requirements.txt
 
       - name: Run pytest
+        env:
+          DATABASE_PATH: ./data/test_bridge.db
+          THUMBNAILS_DIR: ./data/test_thumbnails
         run: |
           pytest -v
 

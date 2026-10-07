@@ -87,10 +87,13 @@ class Settings(BaseSettings):
 
     def ensure_directories(self) -> None:
         """Ensure database parent directory and thumbnails directory exist."""
-        db_path = Path(self.database_path)
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-        thumb_path = Path(self.thumbnails_dir)
-        thumb_path.mkdir(parents=True, exist_ok=True)
+        try:
+            db_path = Path(self.database_path)
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            thumb_path = Path(self.thumbnails_dir)
+            thumb_path.mkdir(parents=True, exist_ok=True)
+        except (PermissionError, OSError):
+            pass
 
 
 settings = Settings()

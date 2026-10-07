@@ -43,26 +43,30 @@ class MemoryCache:
 class DiskThumbnailCache:
     def __init__(self, base_dir: str):
         self.base_dir = Path(base_dir)
-        self.base_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            self.base_dir.mkdir(parents=True, exist_ok=True)
+        except (PermissionError, OSError) as e:
+            logger.debug(f"Could not pre-create thumbnail cache directory {self.base_dir}: {e}")
 
     def _get_path(self, item_type: str, item_id: str) -> Path:
         return self.base_dir / f"{item_type}_{item_id}.jpg"
 
     def get_thumbnail(self, item_type: str, item_id: str) -> Optional[bytes]:
-        file_path = self._get_path(item_type, str(item_id))
-        if file_path.exists():
-            try:
+        try:
+            file_path = self._get_path(item_type, str(item_id))
+            if file_path.exists():
                 return file_path.read_bytes()
-            except Exception as e:
-                logger.warning(f"Error reading cached thumbnail {file_path}: {e}")
+        except Exception as e:
+            logger.warning(f"Error reading cached thumbnail: {e}")
         return None
 
     def save_thumbnail(self, item_type: str, item_id: str, data: bytes) -> None:
-        file_path = self._get_path(item_type, str(item_id))
         try:
+            self.base_dir.mkdir(parents=True, exist_ok=True)
+            file_path = self._get_path(item_type, str(item_id))
             file_path.write_bytes(data)
         except Exception as e:
-            logger.warning(f"Error writing thumbnail to {file_path}: {e}")
+            logger.warning(f"Error writing thumbnail to cache: {e}")
 
     def get_cache_size(self) -> Tuple[int, int]:
         """Returns (count of files, total bytes)."""

@@ -105,7 +105,10 @@ class Database:
         self._pool: Optional[aiosqlite.Connection] = None
 
     async def connect(self) -> None:
-        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+        try:
+            Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+        except (PermissionError, OSError):
+            pass
         async with aiosqlite.connect(self.db_path) as db:
             await db.executescript(SCHEMA_SQL)
             await db.commit()
