@@ -1,0 +1,154 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard & Stats - Komic Bridge{% endblock %}
+
+{% block content %}
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+  <div>
+    <h1 style="color: var(--text-bright); font-size: 1.6rem; font-weight: 700;">Dashboard & Statistics</h1>
+    <p style="color: var(--text-muted); font-size: 0.875rem;">Connected to Grimmory: <code style="color: var(--primary);">{{ grimmory_url }}</code></p>
+  </div>
+  <div>
+    <button onclick="triggerSync()" class="btn btn-secondary">
+      🔄 Sync Metadata Now
+    </button>
+  </div>
+</div>
+
+<!-- Primary Stats Grid -->
+<div class="stats-grid">
+  <div class="stat-card">
+    <div class="stat-title">Total Books</div>
+    <div class="stat-value" id="stat-books-count">{{ "{:,}".format(stats.books_count) }}</div>
+    <div class="stat-desc">Cached from Grimmory instance</div>
+  </div>
+
+  <div class="stat-card">
+    <div class="stat-title">Books with Pages</div>
+    <div class="stat-value" style="color: #3fb950;" id="stat-with-pages">{{ "{:,}".format(stats.books_with_pages) }}</div>
+    <div class="stat-desc">Enriched with page numbers</div>
+  </div>
+
+  <div class="stat-card">
+    <div class="stat-title">Missing Page Count</div>
+    <div class="stat-value" style="color: #f85149;" id="stat-missing-pages">{{ "{:,}".format(stats.books_missing_pages) }}</div>
+    <div class="stat-desc">Awaiting page calculation</div>
+  </div>
+
+  <div class="stat-card">
+    <div class="stat-title">Libraries & Series</div>
+    <div class="stat-value" id="stat-series-count">{{ "{:,}".format(stats.series_count) }}</div>
+    <div class="stat-desc"><span id="stat-libs-count">{{ stats.libraries_count }}</span> Libraries mapped</div>
+  </div>
+</div>
+
+<!-- Page Calculation Action Panel -->
+<div class="panel-card">
+  <div class="panel-header">
+    <div>
+      <div class="panel-title">📖 Book Page Calculation Engine</div>
+      <p style="color: var(--text-muted); font-size: 0.85rem; margin-top: 0.25rem;">
+        Calculates page counts for Komic readers and writes them directly to Grimmory.
+        Novels use the <strong>Calibre ADE algorithm</strong> (1,024 chars/page), and CBZ comics use <strong>1 image = 1 page</strong>.
+      </p>
+    </div>
+  </div>
+
+  <div>
+    <div style="display: flex; justify-content: space-between; font-size: 0.85rem; margin-bottom: 0.25rem;">
+      <span style="color: var(--text-muted);">Overall Page Count Enrichment Progress:</span>
+      <span id="pages-progress-text" style="color: var(--text-bright); font-weight: 600;">
+        {% if stats.books_count > 0 %}
+          {{ "{:.1f}%".format((stats.books_with_pages / stats.books_count) * 100) }} ({{ "{:,}".format(stats.books_with_pages) }} / {{ "{:,}".format(stats.books_count) }} books)
+        {% else %}
+          0% (0 books)
+        {% endif %}
+      </span>
+    </div>
+    <div class="progress-bar-container">
+      <div id="pages-progress-bar" class="progress-bar" style="width: {% if stats.books_count > 0 %}{{ (stats.books_with_pages / stats.books_count) * 100 }}{% else %}0{% endif %}%;"></div>
+    </div>
+  </div>
+
+  <!-- Live Job Status Card -->
+  <div id="active-job-box" class="live-job-status" style="{% if not calc_job or not calc_job.is_running %}display: none;{% endif %}">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+      <span style="font-weight: 600; color: var(--text-bright);">Active Page Calculation Task</span>
+      <span id="job-status-badge" class="status-badge {% if calc_job and calc_job.is_running %}status-running{% else %}status-completed{% endif %}">
+        {% if calc_job and calc_job.is_running %}RUNNING{% else %}IDLE{% endif %}
+      </span>
+    </div>
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.75rem; font-size: 0.85rem;">
+      <div>Progress: <strong id="job-processed" style="color: var(--text-bright);">{% if calc_job %}{{ calc_job.processed_books }} / {{ calc_job.total_books }}{% else %}0 / 0{% endif %}</strong></div>
+      <div>Successfully Updated: <strong id="job-updated" style="color: #3fb950;">{% if calc_job %}{{ calc_job.updated_books }}{% else %}0{% endif %}</strong></div>
+      <div>Errors: <strong id="job-errors" style="color: #f85149;">{% if calc_job %}{{ calc_job.error_count }}{% else %}0{% endif %}</strong></div>
+      <div>Current File: <code id="job-current-book" style="color: var(--primary);">{% if calc_job %}{{ calc_job.current_book or '-' }}{% else %}-{% endif %}</code></div>
+    </div>
+  </div>
+
+  <div class="action-buttons">
+    <button onclick="triggerPageCalc(true)" class="btn btn-primary">
+      ⚡ Calculate Missing Pages Only
+    </button>
+    <button onclick="triggerPageCalc(false)" class="btn btn-secondary">
+      🔁 Recalculate All Pages
+    </button>
+    <button onclick="stopPageCalc()" class="btn btn-danger">
+      ⏹ Stop Job
+    </button>
+  </div>
+</div>
+
+<!-- Formats & Storage Details -->
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.25rem;">
+  <div class="panel-card" style="margin-bottom: 0;">
+    <div class="panel-header">
+      <div class="panel-title" style="font-size: 1rem;">📁 Format Distribution</div>
+    </div>
+    <table style="width: 100%; border-collapse: collapse; font-size: 0.875rem;">
+      <thead>
+        <tr style="border-bottom: 1px solid var(--card-border); color: var(--text-muted); text-align: left;">
+          <th style="padding: 0.4rem 0;">Format</th>
+          <th style="padding: 0.4rem 0; text-align: right;">Books</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for fmt, count in stats.formats_breakdown.items() %}
+          <tr style="border-bottom: 1px solid rgba(48, 54, 61, 0.5);">
+            <td style="padding: 0.45rem 0; font-weight: 600; color: var(--text-bright);">{{ fmt }}</td>
+            <td style="padding: 0.45rem 0; text-align: right;">{{ "{:,}".format(count) }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="panel-card" style="margin-bottom: 0;">
+    <div class="panel-header">
+      <div class="panel-title" style="font-size: 1rem;">💾 System & Background Sync</div>
+    </div>
+    <div style="display: flex; flex-direction: column; gap: 0.75rem; font-size: 0.875rem;">
+      <div style="display: flex; justify-content: space-between;">
+        <span style="color: var(--text-muted);">Sync Status:</span>
+        <strong style="color: var(--text-bright);">{{ stats.sync_status | capitalize }}</strong>
+      </div>
+      <div style="display: flex; justify-content: space-between;">
+        <span style="color: var(--text-muted);">Last Sync Time:</span>
+        <strong style="color: var(--text-bright);">{{ stats.last_sync_time or 'Never' }}</strong>
+      </div>
+      <div style="display: flex; justify-content: space-between;">
+        <span style="color: var(--text-muted);">Sync Interval:</span>
+        <strong style="color: var(--text-bright);">Every {{ sync_interval_minutes }} minutes</strong>
+      </div>
+      <div style="display: flex; justify-content: space-between;">
+        <span style="color: var(--text-muted);">SQLite Cache Size:</span>
+        <strong style="color: var(--text-bright);">{{ "{:.2f} MB".format(stats.database_size_bytes / (1024 * 1024)) }}</strong>
+      </div>
+      <div style="display: flex; justify-content: space-between;">
+        <span style="color: var(--text-muted);">Thumbnail Cache:</span>
+        <strong style="color: var(--text-bright);">{{ thumbnail_count }} files ({{ "{:.2f} MB".format(thumbnail_bytes / (1024 * 1024)) }})</strong>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

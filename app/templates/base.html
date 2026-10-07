@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Komic Bridge Admin{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <nav class="navbar">
+    <a href="/admin" class="navbar-brand">
+      <span>📚 Komic</span>
+      <span class="badge">Grimmory Bridge</span>
+    </a>
+    <div class="nav-user">
+      {% if user %}
+        <span style="font-size: 0.85rem; color: var(--text-muted);">Admin: <strong style="color: var(--text-bright);">{{ user.username }}</strong></span>
+        <a href="/admin/logout" class="btn btn-secondary" style="padding: 0.35rem 0.75rem; font-size: 0.8rem;">Logout</a>
+      {% endif %}
+    </div>
+  </nav>
+
+  <main class="container">
+    {% block content %}{% endblock %}
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

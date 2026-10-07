@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+
+{% block title %}Login - Komic Bridge Admin{% endblock %}
+
+{% block content %}
+<div class="login-card">
+  <div style="text-align: center; margin-bottom: 1.5rem;">
+    <h2 style="color: var(--text-bright); font-size: 1.35rem; margin-bottom: 0.5rem;">Admin Sign In</h2>
+    <p style="color: var(--text-muted); font-size: 0.85rem;">Login with your Grimmory Administrator account to manage page calculation and metadata sync.</p>
+  </div>
+
+  {% if error %}
+    <div class="alert alert-danger">{{ error }}</div>
+  {% endif %}
+
+  <form method="POST" action="/admin/login">
+    <div class="form-group">
+      <label for="username">Grimmory Username</label>
+      <input type="text" id="username" name="username" class="form-control" required autofocus placeholder="Admin username">
+    </div>
+
+    <div class="form-group">
+      <label for="password">Grimmory Password</label>
+      <input type="password" id="password" name="password" class="form-control" required placeholder="Admin password">
+    </div>
+
+    <button type="submit" class="btn btn-primary" style="width: 100%; justify-content: center; padding: 0.65rem;">
+      Sign In
+    </button>
+  </form>
+</div>
+{% endblock %}
