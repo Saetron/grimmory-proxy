@@ -78,6 +78,27 @@ CREATE TABLE IF NOT EXISTS read_progress (
     FOREIGN KEY (book_id) REFERENCES books (id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS client_settings (
+    scope TEXT NOT NULL,
+    user_id INTEGER NOT NULL DEFAULT 0,
+    name TEXT NOT NULL,
+    value TEXT NOT NULL,
+    allow_unauthorized INTEGER DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (scope, user_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS r2_progression (
+    user_id INTEGER NOT NULL,
+    book_id INTEGER NOT NULL,
+    progression_json TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id, book_id),
+    FOREIGN KEY (book_id) REFERENCES books (id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS book_pages (
     book_id INTEGER NOT NULL,
     page_number INTEGER NOT NULL,
@@ -122,6 +143,8 @@ CREATE INDEX IF NOT EXISTS idx_books_created ON books(created);
 CREATE INDEX IF NOT EXISTS idx_read_progress_user ON read_progress(user_id);
 CREATE INDEX IF NOT EXISTS idx_read_progress_book ON read_progress(book_id);
 CREATE INDEX IF NOT EXISTS idx_read_progress_date ON read_progress(read_date);
+CREATE INDEX IF NOT EXISTS idx_r2_progression_user ON r2_progression(user_id);
+CREATE INDEX IF NOT EXISTS idx_r2_progression_book ON r2_progression(book_id);
 CREATE INDEX IF NOT EXISTS idx_series_library_id ON series(library_id);
 CREATE INDEX IF NOT EXISTS idx_series_name ON series(name);
 CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
@@ -602,6 +625,111 @@ class Database:
             await db.execute(
                 "UPDATE users SET last_sync_progress_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 (user_id,),
+            )
+            await db.commit()
+
+    # ---------------- Client Settings Operations ----------------
+
+    async def get_client_settings(
+        self, scope: str, user_id: int = 0, allow_unauthorized_only: bool = False
+    ) -> Dict[str, Dict[str, Any]]:
+        clause = "WHERE scope = ? AND user_id = ?"
+        params: List[Any] = [scope, user_id]
+        if allow_unauthorized_only:
+            clause += " AND allow_unauthorized = 1"
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(f"SELECT * FROM client_settings {clause}", params)
+            rows = await cursor.fetchall()
+            return {
+                r["name"]: {
+                    "value": r["value"],
+                    "allowUnauthorized": bool(r["allow_unauthorized"]),
+                }
+                for r in rows
+            }
+
+    async def save_client_settings(
+        self, scope: str, user_id: int, settings: Dict[str, Dict[str, Any]]
+    ) -> None:
+        if not settings:
+            return
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.executemany(
+                """
+                INSERT INTO client_settings (scope, user_id, name, value, allow_unauthorized, updated_at)
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(scope, user_id, name) DO UPDATE SET
+                    value = excluded.value,
+                    allow_unauthorized = excluded.allow_unauthorized,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                [
+                    (
+                        scope,
+                        user_id,
+                        name,
+                        data.get("value", ""),
+                        1 if data.get("allowUnauthorized") else 0,
+                    )
+                    for name, data in settings.items()
+                ],
+            )
+            await db.commit()
+
+    async def delete_client_settings(
+        self, scope: str, user_id: int, names: List[str]
+    ) -> None:
+        if not names:
+            return
+        async with aiosqlite.connect(self.db_path) as db:
+            placeholders = ",".join("?" for _ in names)
+            await db.execute(
+                f"DELETE FROM client_settings WHERE scope = ? AND user_id = ? AND name IN ({placeholders})",
+                [scope, user_id] + names,
+            )
+            await db.commit()
+
+    # ---------------- R2 Progression Operations ----------------
+
+    async def get_r2_progression(
+        self, user_id: int, book_id: int
+    ) -> Optional[Dict[str, Any]]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT progression_json FROM r2_progression WHERE user_id = ? AND book_id = ?",
+                (user_id, book_id),
+            )
+            row = await cursor.fetchone()
+            if row and row["progression_json"]:
+                try:
+                    return json.loads(row["progression_json"])
+                except Exception:
+                    return None
+            return None
+
+    async def upsert_r2_progression(
+        self, user_id: int, book_id: int, progression_json: str
+    ) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO r2_progression (user_id, book_id, progression_json, updated_at)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(user_id, book_id) DO UPDATE SET
+                    progression_json = excluded.progression_json,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (user_id, book_id, progression_json),
+            )
+            await db.commit()
+
+    async def delete_r2_progression(self, user_id: int, book_id: int) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "DELETE FROM r2_progression WHERE user_id = ? AND book_id = ?",
+                (user_id, book_id),
             )
             await db.commit()
 

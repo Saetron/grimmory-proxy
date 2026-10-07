@@ -14,6 +14,7 @@ from app.routers.admin_webui import get_admin_router
 from app.routers.komga_auth import router as auth_router
 from app.routers.komga_authors import get_authors_router
 from app.routers.komga_books import get_books_router
+from app.routers.komga_client_settings import get_client_settings_router
 from app.routers.komga_collections import router as collections_router
 from app.routers.komga_libraries import get_libraries_router
 from app.routers.komga_progress import get_progress_router
@@ -75,6 +76,7 @@ app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
 # Mount Routers
 app.include_router(auth_router)
+app.include_router(get_client_settings_router(db))
 app.include_router(get_libraries_router(db))
 app.include_router(get_series_router(db))
 app.include_router(get_books_router(db, page_calculator))

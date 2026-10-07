@@ -1,9 +1,9 @@
 import logging
-from typing import Dict
-from fastapi import APIRouter, Depends, Request, Response, status
+from typing import Dict, List
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
 from app.models.internal import UserSession
-from app.models.komga import UserDto
+from app.models.komga import ApiKeyDto, ClaimStatusDto, OAuth2ClientDto, UserDto
 from app.services.auth import AuthService
 
 logger = logging.getLogger("grimmory_proxy.komga_auth")
@@ -29,6 +29,27 @@ async def actuator_info() -> Dict[str, dict]:
     }
 
 
+@router.get("/api/v1/claim", response_model=ClaimStatusDto)
+async def get_claim_status() -> ClaimStatusDto:
+    """KMreader & Komga client claim check. Returns isClaimed=True."""
+    return ClaimStatusDto(isClaimed=True)
+
+
+@router.post("/api/v1/claim")
+async def claim_server():
+    """Attempting to claim an already claimed server returns 400 Bad Request."""
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail="Server has already been claimed",
+    )
+
+
+@router.get("/api/v1/oauth2/providers", response_model=List[OAuth2ClientDto])
+async def get_oauth2_providers() -> List[OAuth2ClientDto]:
+    """Returns available OAuth2 providers (empty list for proxy)."""
+    return []
+
+
 def _map_user_to_dto(user: UserSession) -> UserDto:
     roles = ["ROLE_USER", "ROLE_FILE_DOWNLOAD", "ROLE_PAGE_STREAMING"]
     if user.is_admin:
@@ -51,6 +72,12 @@ async def get_current_user_v1(user: UserSession = Depends(AuthService.require_us
 @router.get("/api/v2/users/me", response_model=UserDto)
 async def get_current_user_v2(user: UserSession = Depends(AuthService.require_user)) -> UserDto:
     return _map_user_to_dto(user)
+
+
+@router.get("/api/v2/users/me/api-keys", response_model=List[ApiKeyDto])
+async def get_current_user_api_keys(user: UserSession = Depends(AuthService.require_user)) -> List[ApiKeyDto]:
+    """Returns user API keys (empty list for proxy)."""
+    return []
 
 
 @router.get("/api/v1/login/set-cookie")

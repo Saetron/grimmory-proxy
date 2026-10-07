@@ -587,5 +587,301 @@ async def test_user_connect_captures_data_and_checks_grimmory_read_states(monkey
         assert read_more_ids == ["402", "401"]
 
 
+@pytest.mark.asyncio
+async def test_claim_and_oauth_endpoints():
+    from datetime import datetime, timezone, timedelta
+    from app.models.internal import UserSession
+    from app.services.auth import AuthService
+
+    session = UserSession(
+        user_id=1,
+        username="claim_user",
+        token="token_claim",
+        is_admin=True,
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    AuthService.cache_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # 1. Unauthenticated claim check
+        resp = await client.get("/api/v1/claim")
+        assert resp.status_code == 200
+        assert resp.json() == {"isClaimed": True}
+
+        # 2. Claim attempt returns 400
+        resp_post = await client.post("/api/v1/claim")
+        assert resp_post.status_code == 400
+        assert "already been claimed" in resp_post.json()["detail"]
+
+        # 3. OAuth2 providers check
+        resp_oauth = await client.get("/api/v1/oauth2/providers")
+        assert resp_oauth.status_code == 200
+        assert resp_oauth.json() == []
+
+        # 4. User API keys
+        resp_keys_unauth = await client.get("/api/v2/users/me/api-keys")
+        assert resp_keys_unauth.status_code == 401
+
+        resp_keys_auth = await client.get("/api/v2/users/me/api-keys", headers={"Authorization": "Bearer token_claim"})
+        assert resp_keys_auth.status_code == 200
+        assert resp_keys_auth.json() == []
+
+
+@pytest.mark.asyncio
+async def test_client_settings_endpoints():
+    from datetime import datetime, timezone, timedelta
+    from app.main import db
+    from app.models.internal import UserSession
+    from app.services.auth import AuthService
+
+    await db.connect()
+
+    admin = UserSession(
+        user_id=10,
+        username="settings_admin",
+        token="token_s_admin",
+        is_admin=True,
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    user = UserSession(
+        user_id=20,
+        username="settings_user",
+        token="token_s_user",
+        is_admin=False,
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    AuthService.cache_session(admin)
+    AuthService.cache_session(user)
+
+    admin_headers = {"Authorization": "Bearer token_s_admin"}
+    user_headers = {"Authorization": "Bearer token_s_user"}
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # 1. Global settings - unauthorized fetch only returns allowUnauthorized=True
+        resp = await client.get("/api/v1/client-settings/global/list")
+        assert resp.status_code == 200
+        assert isinstance(resp.json(), dict)
+
+        # 2. Admin saves global settings
+        patch_resp = await client.patch(
+            "/api/v1/client-settings/global",
+            json={
+                "webui.theme": {"value": "dark", "allowUnauthorized": True},
+                "server.internal_key": {"value": "secret", "allowUnauthorized": False},
+            },
+            headers=admin_headers,
+        )
+        assert patch_resp.status_code == 204
+
+        # Non-admin cannot save global settings
+        patch_user = await client.patch(
+            "/api/v1/client-settings/global",
+            json={"webui.theme": {"value": "light", "allowUnauthorized": True}},
+            headers=user_headers,
+        )
+        assert patch_user.status_code == 403
+
+        # 3. Unauthenticated GET receives only allowUnauthorized=True
+        unauth_get = await client.get("/api/v1/client-settings/global/list")
+        assert unauth_get.status_code == 200
+        unauth_data = unauth_get.json()
+        assert "webui.theme" in unauth_data
+        assert unauth_data["webui.theme"]["value"] == "dark"
+        assert "server.internal_key" not in unauth_data
+
+        # Admin GET receives all global settings
+        admin_get = await client.get("/api/v1/client-settings/global/list", headers=admin_headers)
+        assert admin_get.status_code == 200
+        admin_data = admin_get.json()
+        assert "webui.theme" in admin_data
+        assert "server.internal_key" in admin_data
+
+        # 4. User saves and retrieves user settings
+        user_patch = await client.patch(
+            "/api/v1/client-settings/user",
+            json={"reader.mode": {"value": "continuous"}},
+            headers=user_headers,
+        )
+        assert user_patch.status_code == 204
+
+        user_get = await client.get("/api/v1/client-settings/user/list", headers=user_headers)
+        assert user_get.status_code == 200
+        assert user_get.json().get("reader.mode") == {"value": "continuous", "allowUnauthorized": False}
+
+        # 5. User deletes user setting
+        user_del = await client.request(
+            "DELETE",
+            "/api/v1/client-settings/user",
+            json=["reader.mode"],
+            headers=user_headers,
+        )
+        assert user_del.status_code == 204
+
+        user_get_after = await client.get("/api/v1/client-settings/user/list", headers=user_headers)
+        assert user_get_after.status_code == 200
+        assert "reader.mode" not in user_get_after.json()
+
+
+@pytest.mark.asyncio
+async def test_r2_progression_endpoints_and_grimmory_sync(monkeypatch):
+    from datetime import datetime, timezone, timedelta
+    from unittest.mock import AsyncMock
+    from app.clients.grimmory import grimmory_client
+    from app.main import db
+    from app.models.internal import UserSession
+    from app.services.auth import AuthService
+
+    await db.connect()
+    # Insert test book
+    await db.upsert_libraries([{"id": 50, "name": "Novels", "paths": []}])
+    await db.upsert_series_batch([{"id": "50-series1", "library_id": 50, "name": "Prog Series", "slug": "prog-series"}])
+    await db.upsert_books_batch([{
+        "id": 501,
+        "series_id": "50-series1",
+        "library_id": 50,
+        "name": "Volume 1",
+        "number": 1.0,
+        "page_count": 200,
+    }])
+
+    user = UserSession(
+        user_id=50,
+        username="r2_reader",
+        token="token_r2",
+        is_admin=False,
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    AuthService.cache_session(user)
+    headers = {"Authorization": "Bearer token_r2"}
+
+    # Mock Grimmory update_read_progress call
+    mock_grimmory_update = AsyncMock(return_value=True)
+    monkeypatch.setattr(grimmory_client, "update_read_progress", mock_grimmory_update)
+    mock_grimmory_reset = AsyncMock(return_value=True)
+    monkeypatch.setattr(grimmory_client, "reset_read_progress", mock_grimmory_reset)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # 1. Non-existent book returns 404
+        resp_404 = await client.get("/api/v1/books/999999/progression", headers=headers)
+        assert resp_404.status_code == 404
+
+        # 2. Book with no stored progression returns 204 No Content
+        resp_initial = await client.get("/api/v1/books/501/progression", headers=headers)
+        assert resp_initial.status_code == 204
+
+        # 3. Client saves Readium R2 progression via PUT
+        r2_payload = {
+            "modified": "2026-10-07T19:35:00Z",
+            "device": {"id": "komic-app", "name": "Komic Reader"},
+            "locator": {
+                "href": "OEBPS/chapter3.xhtml",
+                "type": "application/xhtml+xml",
+                "title": "Chapter 3",
+                "locations": {
+                    "progression": 0.45,
+                    "totalProgression": 0.45,
+                    "position": 90,
+                },
+            },
+        }
+        resp_put = await client.put(
+            "/api/v1/books/501/progression",
+            json=r2_payload,
+            headers=headers,
+        )
+        assert resp_put.status_code == 204
+
+        # 4. Verify Grimmory client was called with epub, cbx, and pdf progress
+        assert mock_grimmory_update.called
+        req_sent = mock_grimmory_update.call_args[0][0]
+        assert req_sent.bookId == 501
+        assert req_sent.epubProgress.percentage == 45.0
+        assert req_sent.epubProgress.href == "OEBPS/chapter3.xhtml"
+        assert req_sent.cbxProgress.page == 90
+        assert req_sent.cbxProgress.percentage == 45.0
+
+        # 5. Subsequent GET /api/v1/books/501/progression returns stored JSON
+        resp_get = await client.get("/api/v1/books/501/progression", headers=headers)
+        assert resp_get.status_code == 200
+        saved_prog = resp_get.json()
+        assert saved_prog["device"]["name"] == "Komic Reader"
+        assert saved_prog["locator"]["href"] == "OEBPS/chapter3.xhtml"
+        assert saved_prog["locator"]["locations"]["position"] == 90
+
+        # 6. Verify local read_progress was updated for Komga home screen
+        resp_rp = await client.get("/api/v1/books/501/read-progress", headers=headers)
+        assert resp_rp.status_code == 200
+        assert resp_rp.json()["page"] == 90
+        assert resp_rp.json()["completed"] is False
+
+        # 7. DELETE progression removes both R2 and read_progress
+        resp_del = await client.delete("/api/v1/books/501/progression", headers=headers)
+        assert resp_del.status_code == 204
+        assert mock_grimmory_reset.called
+
+        resp_get_after = await client.get("/api/v1/books/501/progression", headers=headers)
+        assert resp_get_after.status_code == 204
+
+
+@pytest.mark.asyncio
+async def test_user_sync_handles_null_progress_fields(monkeypatch):
+    from datetime import datetime, timezone, timedelta
+    from unittest.mock import AsyncMock
+    from app.clients.grimmory import grimmory_client
+    from app.main import db
+    from app.models.internal import UserSession
+    from app.services.user_sync import user_sync_service
+
+    await db.connect()
+    user = UserSession(
+        user_id=88,
+        username="testuser",
+        token="token_testuser",
+        is_admin=False,
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+
+    # Mock Grimmory returning null values in cbxProgress, pdfProgress, epubProgress
+    mock_books = [
+        {
+            "id": 8801,
+            "title": "Novel with null progress",
+            "readStatus": "READING",
+            "metadata": {"pageCount": 150},
+            "cbxProgress": {"percentage": None, "page": None, "lastRead": None},
+            "pdfProgress": {"percentage": None, "page": None, "lastRead": None},
+            "epubProgress": {"percentage": None, "href": None, "lastRead": None},
+            "readProgress": None,
+        },
+        {
+            "id": 8802,
+            "title": "Completed novel",
+            "readStatus": "READ",
+            "dateFinished": "2026-10-07T12:00:00Z",
+            "metadata": {"pageCount": 200},
+            "cbxProgress": None,
+            "pdfProgress": None,
+            "epubProgress": None,
+        },
+    ]
+
+    monkeypatch.setattr(grimmory_client, "get_library_books", AsyncMock(return_value=[]))
+    monkeypatch.setattr(grimmory_client, "get_all_books", AsyncMock(return_value=mock_books))
+    monkeypatch.setattr(grimmory_client, "get_magic_shelves", AsyncMock(return_value=[]))
+
+    # Synchronizing read states should succeed without raising TypeError
+    success = await user_sync_service.capture_and_sync_user(user, force=True)
+    assert success is True
+
+    # Verify book 8802 was saved as completed
+    p8802 = await db.get_book_read_progress(88, 8802)
+    assert p8802 is not None
+    assert p8802["completed"] == 1
+    assert p8802["page"] == 200
+
+
 
 

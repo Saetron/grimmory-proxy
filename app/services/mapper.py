@@ -20,6 +20,24 @@ from app.models.komga import (
 logger = logging.getLogger("grimmory_proxy.mapper")
 
 
+def _safe_float(val: Any, default: float = 0.0) -> float:
+    if val is None:
+        return default
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return default
+
+
+def _safe_int(val: Any, default: int = 0) -> int:
+    if val is None:
+        return default
+    try:
+        return int(val)
+    except (ValueError, TypeError):
+        return default
+
+
 def format_file_size(size_kb: int) -> str:
     if not size_kb or size_kb <= 0:
         return "0 B"
@@ -182,27 +200,29 @@ class KomgaMapper:
                     created=book_created,
                     lastModified=book_modified,
                 )
-            elif raw.get("cbxProgress"):
+            elif raw.get("cbxProgress") and isinstance(raw["cbxProgress"], dict):
                 cbx = raw["cbxProgress"]
+                cbx_perc = _safe_float(cbx.get("percentage"))
                 read_progress = ReadProgressDto(
-                    page=cbx.get("page", 1),
-                    completed=cbx.get("percentage", 0.0) >= 99.0,
+                    page=_safe_int(cbx.get("page"), 1),
+                    completed=cbx_perc >= 99.0,
                     readDate=format_iso_timestamp(cbx.get("lastRead") or book_modified),
                     created=book_created,
                     lastModified=book_modified,
                 )
-            elif raw.get("pdfProgress"):
+            elif raw.get("pdfProgress") and isinstance(raw["pdfProgress"], dict):
                 pdf = raw["pdfProgress"]
+                pdf_perc = _safe_float(pdf.get("percentage"))
                 read_progress = ReadProgressDto(
-                    page=pdf.get("page", 1),
-                    completed=pdf.get("percentage", 0.0) >= 99.0,
+                    page=_safe_int(pdf.get("page"), 1),
+                    completed=pdf_perc >= 99.0,
                     readDate=format_iso_timestamp(pdf.get("lastRead") or book_modified),
                     created=book_created,
                     lastModified=book_modified,
                 )
-            elif raw.get("epubProgress"):
+            elif raw.get("epubProgress") and isinstance(raw["epubProgress"], dict):
                 epub = raw["epubProgress"]
-                perc = epub.get("percentage", 0.0)
+                perc = _safe_float(epub.get("percentage"))
                 calc_page = max(1, round((perc / 100.0) * page_count)) if page_count > 0 else 1
                 read_progress = ReadProgressDto(
                     page=calc_page,

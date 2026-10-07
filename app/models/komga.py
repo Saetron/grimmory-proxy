@@ -288,3 +288,45 @@ def build_pageable(
         empty=len(content) == 0,
         sort={"empty": True, "sorted": False, "unsorted": True},
     )
+
+
+class ClaimStatusDto(BaseModel):
+    isClaimed: bool = True
+
+
+class ClientSettingDto(BaseModel):
+    value: str
+    allowUnauthorized: bool = False
+
+
+class ClientSettingGlobalUpdateDto(BaseModel):
+    value: str
+    allowUnauthorized: bool = False
+
+
+class ClientSettingUserUpdateDto(BaseModel):
+    value: str
+
+
+class OAuth2ClientDto(BaseModel):
+    name: str
+    registrationId: str
+
+
+class ApiKeyDto(BaseModel):
+    id: str
+    key: str
+    comment: Optional[str] = None
+    created: Optional[str] = None
+    lastUsed: Optional[str] = None
+
+
+class R2Device(BaseModel):
+    id: Optional[str] = None
+    name: Optional[str] = None
+
+
+class R2Progression(BaseModel):
+    modified: Optional[str] = None
+    device: Optional[R2Device] = None
+    locator: Optional[Dict[str, Any]] = None
