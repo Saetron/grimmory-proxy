@@ -1229,6 +1229,158 @@ async def test_admin_webui_sync_logs_and_clear():
         assert resp_status_after.json()["sync_job"]["logs"] == []
 
 
+@pytest.mark.asyncio
+async def test_series_and_book_read_progress_endpoints(monkeypatch):
+    from datetime import datetime, timezone, timedelta
+    from app.main import db
+    from app.models.internal import UserSession
+    from app.services.auth import AuthService
+    from app.clients.grimmory import grimmory_client
+
+    await db.connect()
+    user_id = 880
+    user = UserSession(
+        user_id=user_id,
+        username="series_reader",
+        token="token_series_reader",
+        is_admin=True,
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    AuthService.cache_session(user)
+    headers = {"Authorization": "Bearer token_series_reader"}
+
+    # Mock grimmory client calls
+    async def mock_update_read_progress(req, token):
+        return True
+
+    async def mock_reset_read_progress(bids, token):
+        return True
+
+    monkeypatch.setattr(grimmory_client, "update_read_progress", mock_update_read_progress)
+    monkeypatch.setattr(grimmory_client, "reset_read_progress", mock_reset_read_progress)
+
+    # 1. Setup test library, series, and 3 books
+    await db.upsert_libraries([{"id": 88, "name": "Series Read Lib", "paths": []}])
+    await db.upsert_series_batch([
+        {
+            "id": "88-test-series",
+            "library_id": 88,
+            "name": "My Little Sister",
+            "slug": "my-little-sister",
+            "books_count": 3,
+        }
+    ])
+    await db.upsert_books_batch([
+        {
+            "id": 881,
+            "series_id": "88-test-series",
+            "library_id": 88,
+            "name": "Vol 1",
+            "number": 1.0,
+            "page_count": 100,
+        },
+        {
+            "id": 882,
+            "series_id": "88-test-series",
+            "library_id": 88,
+            "name": "Vol 2",
+            "number": 2.0,
+            "page_count": 100,
+        },
+        {
+            "id": 883,
+            "series_id": "88-test-series",
+            "library_id": 88,
+            "name": "Vol 3",
+            "number": 3.0,
+            "page_count": 100,
+        },
+    ])
+    for bid in [881, 882, 883]:
+        await db.delete_read_progress(user_id, bid)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # Initial series check: 0 read, 3 unread
+        resp_s = await client.get("/api/v1/series/88-test-series", headers=headers)
+        assert resp_s.status_code == 200
+        s_data = resp_s.json()
+        assert s_data["booksCount"] == 3
+        assert s_data["booksReadCount"] == 0
+        assert s_data["booksUnreadCount"] == 3
+
+        # 2. Test reading to page 100 of 100 (without completed=true) marks book completed automatically per Komga spec
+        resp_p = await client.patch(
+            "/api/v1/books/881/read-progress",
+            json={"page": 100},
+            headers=headers,
+        )
+        assert resp_p.status_code == 204
+
+        resp_b1 = await client.get("/api/v1/books/881", headers=headers)
+        assert resp_b1.status_code == 200
+        assert resp_b1.json()["readProgress"]["completed"] is True
+        assert resp_b1.json()["readProgress"]["page"] == 100
+
+        # Series now reflects 1 read, 2 unread
+        resp_s_after1 = await client.get("/api/v1/series/88-test-series", headers=headers)
+        assert resp_s_after1.json()["booksReadCount"] == 1
+        assert resp_s_after1.json()["booksUnreadCount"] == 2
+
+        # 3. Test POST /api/v1/series/{series_id}/read-progress marks entire series as read
+        resp_s_read = await client.post("/api/v1/series/88-test-series/read-progress", headers=headers)
+        assert resp_s_read.status_code == 204
+
+        resp_s_after_all = await client.get("/api/v1/series/88-test-series", headers=headers)
+        assert resp_s_after_all.json()["booksReadCount"] == 3
+        assert resp_s_after_all.json()["booksUnreadCount"] == 0
+
+        # Query books list with readStatus=READ returns all 3 books
+        resp_read_books = await client.post(
+            "/api/v1/books/list?page=0&size=20",
+            json={"condition": {"allOf": [{"readStatus": {"operator": "is", "value": "READ"}}]}},
+            headers=headers,
+        )
+        assert resp_read_books.status_code == 200
+        read_book_ids = [b["id"] for b in resp_read_books.json()["content"] if b["id"] in ["881", "882", "883"]]
+        assert len(read_book_ids) == 3
+
+        # 4. Test DELETE /api/v1/series/{series_id}/read-progress marks entire series as unread
+        resp_s_unread = await client.delete("/api/v1/series/88-test-series/read-progress", headers=headers)
+        assert resp_s_unread.status_code == 204
+
+        resp_s_after_del = await client.get("/api/v1/series/88-test-series", headers=headers)
+        assert resp_s_after_del.json()["booksReadCount"] == 0
+        assert resp_s_after_del.json()["booksUnreadCount"] == 3
+
+        # 5. Test Tachiyomi / Mihon v2 series endpoints
+        # PUT /api/v2/series/{series_id}/read-progress/tachiyomi sets read books up to number
+        resp_tachi_put = await client.put(
+            "/api/v2/series/88-test-series/read-progress/tachiyomi",
+            json={"lastBookNumberSortRead": 2.0},
+            headers=headers,
+        )
+        assert resp_tachi_put.status_code == 204
+
+        resp_tachi_get = await client.get("/api/v2/series/88-test-series/read-progress/tachiyomi", headers=headers)
+        assert resp_tachi_get.status_code == 200
+        tachi_data = resp_tachi_get.json()
+        assert tachi_data["booksCount"] == 3
+        assert tachi_data["booksReadCount"] == 2
+        assert tachi_data["booksUnreadCount"] == 1
+
+        # 6. Test POST /api/v1/books/{book_id}/read-progress with completed=false resets progress to UNREAD
+        resp_reset_b = await client.post(
+            "/api/v1/books/881/read-progress",
+            json={"completed": False},
+            headers=headers,
+        )
+        assert resp_reset_b.status_code == 204
+
+        resp_b1_reset = await client.get("/api/v1/books/881", headers=headers)
+        assert resp_b1_reset.json()["readProgress"] is None
+
+
 
 
 

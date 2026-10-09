@@ -51,6 +51,7 @@ def get_series_router(db: Database) -> APIRouter:
             sort_by=sort_by,
             sort_dir=sort_dir,
             unpaged=unpaged,
+            user_id=user.user_id if user else None,
         )
 
         content = [KomgaMapper.to_series_dto(r) for r in records]
@@ -195,9 +196,10 @@ def get_series_router(db: Database) -> APIRouter:
         series_id: str,
         user: UserSession = Depends(AuthService.require_user),
     ) -> SeriesDto:
-        record = await db.get_series_by_id(series_id)
+        uid = user.user_id if user else None
+        record = await db.get_series_by_id(series_id, user_id=uid)
         if not record:
-            record = await db.find_series_by_id_or_slug(series_id)
+            record = await db.find_series_by_id_or_slug(series_id, user_id=uid)
         if not record:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Series not found")
 

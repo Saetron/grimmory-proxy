@@ -331,3 +331,17 @@ class R2Progression(BaseModel):
     modified: Optional[str] = None
     device: Optional[R2Device] = None
     locator: Optional[Dict[str, Any]] = None
+
+
+class TachiyomiReadProgressV2Dto(BaseModel):
+    booksCount: int = 0
+    booksInProgressCount: int = 0
+    booksReadCount: int = 0
+    booksUnreadCount: int = 0
+    lastReadContinuousNumberSort: float = 0.0
+    maxNumberSort: float = 0.0
+
+
+class TachiyomiReadProgressUpdateV2Dto(BaseModel):
+    lastBookNumberSortRead: float
+
