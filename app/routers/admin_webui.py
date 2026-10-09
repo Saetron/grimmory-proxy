@@ -101,6 +101,7 @@ def get_admin_router(db: Database, page_calculator: PageCalculator, sync_service
                 "user": user,
                 "stats": stats,
                 "calc_job": page_calculator.status,
+                "sync_job": sync_service.status,
                 "thumbnail_count": thumb_count,
                 "thumbnail_bytes": thumb_bytes,
                 "grimmory_url": settings.grimmory_url,
@@ -121,6 +122,7 @@ def get_admin_router(db: Database, page_calculator: PageCalculator, sync_service
         return {
             "stats": stats,
             "calc_job": page_calculator.status.model_dump(),
+            "sync_job": sync_service.status.model_dump(),
             "thumbnails": {"count": thumb_count, "bytes": thumb_bytes},
             "sync_running": sync_service.status.is_running,
         }
@@ -160,5 +162,14 @@ def get_admin_router(db: Database, page_calculator: PageCalculator, sync_service
 
         asyncio.create_task(sync_service.sync_all_metadata())
         return {"status": "started"}
+
+    @router.post("/admin/api/sync/clear-logs")
+    async def clear_sync_logs(request: Request) -> Dict[str, Any]:
+        user = await AuthService.get_current_user_optional(request)
+        if not user or not user.is_admin:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+
+        sync_service.status.logs = []
+        return {"status": "cleared"}
 
     return router

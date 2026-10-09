@@ -9,10 +9,31 @@
     <p style="color: var(--text-muted); font-size: 0.875rem;">Connected to Grimmory: <code style="color: var(--primary);">{{ grimmory_url }}</code></p>
   </div>
   <div>
-    <button onclick="triggerSync()" class="btn btn-secondary">
+    <button id="btn-sync" onclick="triggerSync()" class="btn btn-secondary">
       🔄 Sync Metadata Now
     </button>
   </div>
+</div>
+
+<!-- Metadata Synchronization Activity & Live Log -->
+<div id="sync-log-card" class="panel-card" style="margin-bottom: 1.5rem; {% if not sync_job or (not sync_job.is_running and not sync_job.logs) %}display: none;{% endif %}">
+  <div class="panel-header" style="margin-bottom: 0.75rem;">
+    <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+      <div style="display: flex; align-items: center; gap: 0.75rem;">
+        <div class="panel-title" style="font-size: 1rem;">🔄 Metadata Synchronization Activity</div>
+        <span id="sync-status-badge" class="status-badge {% if sync_job and sync_job.is_running %}status-running{% elif sync_job and sync_job.error_message %}status-failed{% elif sync_job and sync_job.logs %}status-completed{% else %}status-idle{% endif %}">
+          {% if sync_job and sync_job.is_running %}SYNCING{% elif sync_job and sync_job.error_message %}FAILED{% elif sync_job and sync_job.logs %}COMPLETED{% else %}IDLE{% endif %}
+        </span>
+      </div>
+      <div>
+        <button onclick="clearSyncLogs()" class="btn btn-secondary" style="padding: 0.25rem 0.6rem; font-size: 0.75rem;">
+          Clear Log
+        </button>
+      </div>
+    </div>
+  </div>
+  <div id="sync-log-container" style="background: #0d1117; border: 1px solid var(--card-border); border-radius: 6px; padding: 0.85rem; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 0.82rem; color: #c9d1d9; max-height: 220px; overflow-y: auto; white-space: pre-wrap; line-height: 1.45;">{% if sync_job and sync_job.logs %}{% for l in sync_job.logs %}{{ l }}
+{% endfor %}{% else %}<span style="color: var(--text-muted);">No recent sync logs. Click "Sync Metadata Now" to start.</span>{% endif %}</div>
 </div>
 
 <!-- Primary Stats Grid -->

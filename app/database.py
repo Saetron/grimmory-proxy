@@ -634,6 +634,31 @@ class Database:
             row = await cursor.fetchone()
             return dict(row) if row else None
 
+    async def get_user_by_token(self, token: str) -> Optional[Dict[str, Any]]:
+        if not token:
+            return None
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("SELECT * FROM users WHERE token = ?", (token,))
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def get_all_users(self) -> List[Dict[str, Any]]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("SELECT * FROM users ORDER BY last_connected_at DESC")
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+    async def get_users_with_tokens(self) -> List[Dict[str, Any]]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT * FROM users WHERE token IS NOT NULL AND token != '' ORDER BY last_connected_at DESC"
+            )
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
     async def update_user_progress_sync_time(self, user_id: int) -> None:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
@@ -885,10 +910,16 @@ class Database:
             if status_clauses:
                 conditions.append(f"({' OR '.join(status_clauses)})")
 
+        eff_release_date = "COALESCE(b.released, json_extract(b.raw_json, '$.metadata.released'), json_extract(b.raw_json, '$.released'), json_extract(b.raw_json, '$.metadata.releaseDate'), json_extract(b.raw_json, '$.releaseDate'), json_extract(b.raw_json, '$.metadata.publishedDate'))"
+
         clean_sort = sort_by.lower().replace("metadata.", "").replace("sort", "")
         if clean_sort in ("readprogress.readdate", "readdate", "readprogress") and not read_status:
             # When sorting by read date without explicit read_status, only include books with read progress
             conditions.append(f"{eff_read_date} IS NOT NULL")
+
+        if clean_sort in ("release", "releasedate"):
+            # Ignore books without release data in Grimmory in the new releases list
+            conditions.append(f"({eff_release_date} IS NOT NULL AND {eff_release_date} != '')")
 
         where_clause = f"WHERE {' AND '.join(conditions)}"
 
@@ -901,8 +932,8 @@ class Database:
             "lastmodified": "b.last_modified",
             "lastmodifieddate": "b.last_modified",
             "filelastmodified": "b.last_modified",
-            "release": "COALESCE(b.released, json_extract(b.raw_json, '$.metadata.released'), b.created)",
-            "releasedate": "COALESCE(b.released, json_extract(b.raw_json, '$.metadata.released'), b.created)",
+            "release": eff_release_date,
+            "releasedate": eff_release_date,
             "readdate": eff_read_date,
             "readprogress.readdate": eff_read_date,
         }

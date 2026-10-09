@@ -44,13 +44,15 @@ async def lifespan(app: FastAPI):
     settings.ensure_directories()
     await db.connect()
 
-    # Start background sync task
+    # Start background sync tasks
     sync_task = asyncio.create_task(sync_service.start_background_loop())
+    user_sync_task = asyncio.create_task(user_sync_service.start_background_loop())
 
     yield
 
     logger.info("Shutting down Grimmory Proxy...")
     sync_task.cancel()
+    user_sync_task.cancel()
     await grimmory_client.close()
 
 

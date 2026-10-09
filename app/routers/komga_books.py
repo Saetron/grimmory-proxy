@@ -218,14 +218,7 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
         if not user.is_admin and user.assigned_library_ids and record["library_id"] not in user.assigned_library_ids:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
 
-        # Query user-specific live reading state from Grimmory
-        try:
-            user_book_data = await grimmory_client.get_book(book_id, token=user.token)
-            merged_record = dict(record)
-            merged_record["raw_json"] = user_book_data
-            return KomgaMapper.to_book_dto(merged_record)
-        except Exception:
-            return KomgaMapper.to_book_dto(record)
+        return KomgaMapper.to_book_dto(record)
 
     @router.get("/api/v1/books/{book_id}/thumbnail")
     async def get_book_thumbnail(
