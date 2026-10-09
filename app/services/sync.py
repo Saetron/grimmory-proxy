@@ -35,6 +35,13 @@ class SyncService:
         self._background_task: asyncio.Task | None = None
         self._lock = asyncio.Lock()
 
+    def _log(self, message: str) -> None:
+        timestamp = datetime.now(timezone.utc).strftime("%H:%M:%S")
+        log_line = f"[{timestamp}] {message}"
+        self.status.logs.append(log_line)
+        if len(self.status.logs) > 200:
+            self.status.logs = self.status.logs[-200:]
+
     async def sync_all_metadata(self) -> SyncStatus:
         """
         Executes a complete metadata sync from Grimmory into SQLite cache.
@@ -49,6 +56,7 @@ class SyncService:
             self.status.error_message = None
 
         try:
+            self._log("Starting Grimmory metadata synchronization cycle...")
             # Check if this is initial startup / empty database
             initial_stats = await self.db.get_stats()
             was_database_empty = initial_stats["books_count"] == 0
@@ -60,6 +68,7 @@ class SyncService:
             self.status.current_phase = "fetching_libraries"
             libraries = await grimmory_client.get_libraries()
             await self.db.upsert_libraries(libraries)
+            self._log(f"Synchronized {len(libraries)} libraries from Grimmory")
             logger.info(f"Synchronized {len(libraries)} libraries from Grimmory")
 
             # 2. Fetch all books (per library for authoritative libraryId, with fallback to get_all_books)
@@ -90,6 +99,7 @@ class SyncService:
                     logger.debug(f"get_all_books fallback: {e}")
 
             books_raw = list(all_books_map.values())
+            self._log(f"Fetched {len(books_raw)} total books from Grimmory")
             logger.info(f"Fetched {len(books_raw)} total books from Grimmory")
 
             # Detect and handle books removed upstream on Grimmory
@@ -98,6 +108,7 @@ class SyncService:
             removed_ids = [bid for bid in active_db_ids if bid not in current_remote_book_ids]
             if removed_ids:
                 marked = await self.db.mark_books_deleted(removed_ids)
+                self._log(f"Detected and marked {marked} removed books as deleted")
                 logger.info(f"Detected and marked {marked} removed books as deleted from database")
 
             # 3. Group books into series and map book records
@@ -178,10 +189,12 @@ class SyncService:
 
             # Upsert series
             await self.db.upsert_series_batch(list(series_dict.values()))
+            self._log(f"Upserted {len(series_dict)} series into database")
             logger.info(f"Upserted {len(series_dict)} series into database")
 
             # Upsert books
             await self.db.upsert_books_batch(book_records)
+            self._log(f"Upserted {len(book_records)} books into database")
             logger.info(f"Upserted {len(book_records)} books into database")
 
             # Prune any empty series
@@ -206,14 +219,17 @@ class SyncService:
             self.status.last_sync_time = now_str
             self.status.current_phase = "completed"
 
+            self._log("Metadata sync cycle successfully completed!")
             logger.info("Metadata sync cycle successfully completed")
 
             # If this was initial startup with an empty database, trigger automatic page calculation!
             if was_database_empty and settings.sync_on_startup:
+                self._log("First startup with empty database detected: triggering background page calculation...")
                 logger.info("First startup with empty database detected: triggering background page calculation for all missing pages...")
                 asyncio.create_task(self.page_calculator.run_calculation_job(missing_only=True))
 
         except Exception as e:
+            self._log(f"ERROR: Sync cycle failed: {e}")
             logger.error(f"Sync cycle failed: {e}", exc_info=True)
             self.status.is_running = False
             self.status.error_message = str(e)

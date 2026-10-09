@@ -38,10 +38,24 @@ async function stopPageCalc() {
 }
 
 async function triggerSync() {
-  const btn = event.target;
-  const originalText = btn.innerText;
-  btn.disabled = true;
-  btn.innerText = "Syncing...";
+  const btn = document.getElementById("btn-sync") || (window.event && window.event.target);
+  if (btn) {
+    btn.disabled = true;
+    btn.innerText = "Syncing...";
+  }
+
+  const logCard = document.getElementById("sync-log-card");
+  if (logCard) logCard.style.display = "block";
+  const logCont = document.getElementById("sync-log-container");
+  if (logCont) {
+    const timeStr = new Date().toTimeString().split(' ')[0];
+    logCont.innerText = `[${timeStr}] Triggering Grimmory metadata synchronization...\n`;
+  }
+  const badge = document.getElementById("sync-status-badge");
+  if (badge) {
+    badge.innerText = "SYNCING";
+    badge.className = "status-badge status-running";
+  }
 
   try {
     const res = await fetch("/admin/api/sync", { method: "POST" });
@@ -50,9 +64,19 @@ async function triggerSync() {
   } catch (err) {
     alert("Request failed: " + err);
   } finally {
-    btn.disabled = false;
-    btn.innerText = originalText;
     pollStatus();
+  }
+}
+
+async function clearSyncLogs() {
+  try {
+    await fetch("/admin/api/sync/clear-logs", { method: "POST" });
+    const logCont = document.getElementById("sync-log-container");
+    if (logCont) logCont.innerHTML = '<span style="color: var(--text-muted);">Log cleared.</span>';
+    const logCard = document.getElementById("sync-log-card");
+    if (logCard) logCard.style.display = "none";
+  } catch (err) {
+    console.debug("Failed to clear sync logs:", err);
   }
 }
 
@@ -88,6 +112,53 @@ async function pollStatus() {
       pbar.style.width = pct + "%";
       const ptext = document.getElementById("pages-progress-text");
       if (ptext) ptext.innerText = pct + "% (" + withPages.toLocaleString() + " / " + total.toLocaleString() + " books)";
+    }
+
+    // Update Metadata Sync Job Info and Logs
+    const syncStatus = data.sync_job;
+    const syncCard = document.getElementById("sync-log-card");
+    const syncBadge = document.getElementById("sync-status-badge");
+    const syncLogCont = document.getElementById("sync-log-container");
+    const syncBtn = document.getElementById("btn-sync");
+
+    if (syncStatus) {
+      if (syncStatus.is_running) {
+        if (syncCard) syncCard.style.display = "block";
+        if (syncBadge) {
+          syncBadge.innerText = "SYNCING";
+          syncBadge.className = "status-badge status-running";
+        }
+        if (syncBtn) {
+          syncBtn.disabled = true;
+          syncBtn.innerText = "Syncing...";
+        }
+      } else {
+        if (syncBtn && syncBtn.disabled) {
+          syncBtn.disabled = false;
+          syncBtn.innerText = "🔄 Sync Metadata Now";
+        }
+        if (syncBadge) {
+          if (syncStatus.error_message) {
+            syncBadge.innerText = "FAILED";
+            syncBadge.className = "status-badge status-failed";
+          } else if (syncStatus.logs && syncStatus.logs.length > 0) {
+            syncBadge.innerText = "COMPLETED";
+            syncBadge.className = "status-badge status-completed";
+          } else {
+            syncBadge.innerText = "IDLE";
+            syncBadge.className = "status-badge status-idle";
+          }
+        }
+      }
+
+      if (syncLogCont && syncStatus.logs && syncStatus.logs.length > 0) {
+        if (syncCard) syncCard.style.display = "block";
+        const newText = syncStatus.logs.join("\n");
+        if (syncLogCont.innerText.trim() !== newText.trim()) {
+          syncLogCont.innerText = newText;
+          syncLogCont.scrollTop = syncLogCont.scrollHeight;
+        }
+      }
     }
 
     // Update Active Calculation Job Info

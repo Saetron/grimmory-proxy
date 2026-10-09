@@ -34,3 +34,4 @@ class SyncStatus(BaseModel):
     total_items: int = 0
     processed_items: int = 0
     error_message: Optional[str] = None
+    logs: List[str] = Field(default_factory=list)

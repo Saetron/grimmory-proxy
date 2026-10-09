@@ -910,10 +910,16 @@ class Database:
             if status_clauses:
                 conditions.append(f"({' OR '.join(status_clauses)})")
 
+        eff_release_date = "COALESCE(b.released, json_extract(b.raw_json, '$.metadata.released'), json_extract(b.raw_json, '$.released'), json_extract(b.raw_json, '$.metadata.releaseDate'), json_extract(b.raw_json, '$.releaseDate'), json_extract(b.raw_json, '$.metadata.publishedDate'))"
+
         clean_sort = sort_by.lower().replace("metadata.", "").replace("sort", "")
         if clean_sort in ("readprogress.readdate", "readdate", "readprogress") and not read_status:
             # When sorting by read date without explicit read_status, only include books with read progress
             conditions.append(f"{eff_read_date} IS NOT NULL")
+
+        if clean_sort in ("release", "releasedate"):
+            # Ignore books without release data in Grimmory in the new releases list
+            conditions.append(f"({eff_release_date} IS NOT NULL AND {eff_release_date} != '')")
 
         where_clause = f"WHERE {' AND '.join(conditions)}"
 
@@ -926,8 +932,8 @@ class Database:
             "lastmodified": "b.last_modified",
             "lastmodifieddate": "b.last_modified",
             "filelastmodified": "b.last_modified",
-            "release": "COALESCE(b.released, json_extract(b.raw_json, '$.metadata.released'), b.created)",
-            "releasedate": "COALESCE(b.released, json_extract(b.raw_json, '$.metadata.released'), b.created)",
+            "release": eff_release_date,
+            "releasedate": eff_release_date,
             "readdate": eff_read_date,
             "readprogress.readdate": eff_read_date,
         }

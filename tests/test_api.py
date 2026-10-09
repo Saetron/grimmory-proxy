@@ -220,18 +220,27 @@ async def test_ondeck_keep_reading_and_released_sorting():
     headers = {"Authorization": "Bearer token_reader_user"}
 
     # Clean residual progress from previous runs if any
-    for bid in [301, 302, 303]:
+    for bid in [301, 302, 303, 304]:
         await db.delete_read_progress(user_id, bid)
 
-    # Setup library, series with 3 books
+    # Setup library, series with 3 books plus an unreleased series
     await db.upsert_libraries([{"id": 30, "name": "Manga Lib", "paths": []}])
-    await db.upsert_series_batch([{
-        "id": "30-manga1",
-        "library_id": 30,
-        "name": "One Piece",
-        "slug": "one-piece",
-        "books_count": 3,
-    }])
+    await db.upsert_series_batch([
+        {
+            "id": "30-manga1",
+            "library_id": 30,
+            "name": "One Piece",
+            "slug": "one-piece",
+            "books_count": 3,
+        },
+        {
+            "id": "30-manga-unreleased",
+            "library_id": 30,
+            "name": "Unreleased Series",
+            "slug": "unreleased-series",
+            "books_count": 1,
+        },
+    ])
     await db.upsert_books_batch([
         {
             "id": 301,
@@ -259,6 +268,15 @@ async def test_ondeck_keep_reading_and_released_sorting():
             "number": 3.0,
             "released": "2024-10-01",
             "created": "2023-01-03T00:00:00Z",
+        },
+        {
+            "id": 304,
+            "series_id": "30-manga-unreleased",
+            "library_id": 30,
+            "name": "One Piece Vol 4 (No release date)",
+            "number": 4.0,
+            "released": None,
+            "created": "2025-01-01T00:00:00Z",
         },
     ])
 
@@ -1165,6 +1183,50 @@ async def test_periodic_user_sync_and_data_persistence(monkeypatch):
         # Request uses token_p_a: resolves via db.get_user_by_token
         resp = await client.get("/api/v1/libraries", headers={"Authorization": "Bearer token_p_a"})
         assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_admin_webui_sync_logs_and_clear():
+    from datetime import datetime, timezone, timedelta
+    from app.main import sync_service
+    from app.models.internal import UserSession
+    from app.services.auth import AuthService
+
+    # Create admin session
+    admin = UserSession(
+        user_id=1,
+        username="admin_logger",
+        token="token_admin_log",
+        is_admin=True,
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    AuthService.cache_session(admin)
+
+    # Populate sample sync logs
+    sync_service.status.logs = ["[12:00:00] Synchronized 3 libraries", "[12:00:01] Fetched 100 books"]
+    sync_service.status.is_running = False
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        headers = {"Authorization": "Bearer token_admin_log"}
+
+        # 1. Status API includes sync_job with logs
+        resp_status = await client.get("/admin/api/status", headers=headers)
+        assert resp_status.status_code == 200
+        data = resp_status.json()
+        assert "sync_job" in data
+        assert len(data["sync_job"]["logs"]) == 2
+        assert "Synchronized 3 libraries" in data["sync_job"]["logs"][0]
+
+        # 2. Clear logs endpoint
+        resp_clear = await client.post("/admin/api/sync/clear-logs", headers=headers)
+        assert resp_clear.status_code == 200
+        assert resp_clear.json() == {"status": "cleared"}
+
+        # 3. Status API now reflects empty logs
+        resp_status_after = await client.get("/admin/api/status", headers=headers)
+        assert resp_status_after.status_code == 200
+        assert resp_status_after.json()["sync_job"]["logs"] == []
 
 
 
