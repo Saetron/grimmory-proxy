@@ -152,9 +152,11 @@ CREATE INDEX IF NOT EXISTS idx_books_series_id ON books(series_id);
 CREATE INDEX IF NOT EXISTS idx_books_library_id ON books(library_id);
 CREATE INDEX IF NOT EXISTS idx_books_page_count ON books(page_count);
 CREATE INDEX IF NOT EXISTS idx_books_created ON books(created);
+CREATE INDEX IF NOT EXISTS idx_books_deleted ON books(deleted);
 CREATE INDEX IF NOT EXISTS idx_read_progress_user ON read_progress(user_id);
 CREATE INDEX IF NOT EXISTS idx_read_progress_book ON read_progress(book_id);
 CREATE INDEX IF NOT EXISTS idx_read_progress_date ON read_progress(read_date);
+CREATE INDEX IF NOT EXISTS idx_read_progress_user_comp ON read_progress(user_id, completed);
 CREATE INDEX IF NOT EXISTS idx_r2_progression_user ON r2_progression(user_id);
 CREATE INDEX IF NOT EXISTS idx_r2_progression_book ON r2_progression(book_id);
 CREATE INDEX IF NOT EXISTS idx_api_keys_key ON api_keys(key);
@@ -295,6 +297,7 @@ class Database:
         sort_by: str = "name",
         sort_dir: str = "asc",
         unpaged: bool = False,
+        user_id: Optional[int] = None,
     ) -> Tuple[List[Dict[str, Any]], int]:
         conditions = []
         params: List[Any] = []
@@ -334,27 +337,61 @@ class Database:
             count_row = await count_cursor.fetchone()
             total = count_row["total"] if count_row else 0
 
-            if unpaged:
-                query = f"""
-                    SELECT * FROM series {where_clause}
-                    ORDER BY {order_col} {order_direction}
-                """
-                cursor = await db.execute(query, params)
+            if user_id is not None:
+                if unpaged:
+                    query = f"""
+                        SELECT s.*,
+                               (SELECT COUNT(*) FROM books b JOIN read_progress rp ON b.id = rp.book_id WHERE b.series_id = s.id AND b.deleted = 0 AND rp.user_id = ? AND rp.completed = 1) as books_read_count,
+                               (SELECT COUNT(*) FROM books b JOIN read_progress rp ON b.id = rp.book_id WHERE b.series_id = s.id AND b.deleted = 0 AND rp.user_id = ? AND rp.completed = 0 AND (rp.page > 0 OR rp.read_date IS NOT NULL)) as books_in_progress_count
+                        FROM (
+                            SELECT * FROM series {where_clause}
+                            ORDER BY {order_col} {order_direction}
+                        ) s
+                    """
+                    cursor = await db.execute(query, [user_id, user_id] + params)
+                else:
+                    query = f"""
+                        SELECT s.*,
+                               (SELECT COUNT(*) FROM books b JOIN read_progress rp ON b.id = rp.book_id WHERE b.series_id = s.id AND b.deleted = 0 AND rp.user_id = ? AND rp.completed = 1) as books_read_count,
+                               (SELECT COUNT(*) FROM books b JOIN read_progress rp ON b.id = rp.book_id WHERE b.series_id = s.id AND b.deleted = 0 AND rp.user_id = ? AND rp.completed = 0 AND (rp.page > 0 OR rp.read_date IS NOT NULL)) as books_in_progress_count
+                        FROM (
+                            SELECT * FROM series {where_clause}
+                            ORDER BY {order_col} {order_direction}
+                            LIMIT ? OFFSET ?
+                        ) s
+                    """
+                    cursor = await db.execute(query, [user_id, user_id] + params + [limit, offset])
             else:
-                query = f"""
-                    SELECT * FROM series {where_clause}
-                    ORDER BY {order_col} {order_direction}
-                    LIMIT ? OFFSET ?
-                """
-                cursor = await db.execute(query, params + [limit, offset])
+                if unpaged:
+                    query = f"""
+                        SELECT * FROM series {where_clause}
+                        ORDER BY {order_col} {order_direction}
+                    """
+                    cursor = await db.execute(query, params)
+                else:
+                    query = f"""
+                        SELECT * FROM series {where_clause}
+                        ORDER BY {order_col} {order_direction}
+                        LIMIT ? OFFSET ?
+                    """
+                    cursor = await db.execute(query, params + [limit, offset])
 
             rows = await cursor.fetchall()
             return [dict(r) for r in rows], total
 
-    async def get_series_by_id(self, series_id: str) -> Optional[Dict[str, Any]]:
+    async def get_series_by_id(self, series_id: str, user_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
-            cursor = await db.execute("SELECT * FROM series WHERE id = ?", (series_id,))
+            if user_id is not None:
+                query = """
+                    SELECT s.*,
+                           (SELECT COUNT(*) FROM books b JOIN read_progress rp ON b.id = rp.book_id WHERE b.series_id = s.id AND b.deleted = 0 AND rp.user_id = ? AND rp.completed = 1) as books_read_count,
+                           (SELECT COUNT(*) FROM books b JOIN read_progress rp ON b.id = rp.book_id WHERE b.series_id = s.id AND b.deleted = 0 AND rp.user_id = ? AND rp.completed = 0 AND (rp.page > 0 OR rp.read_date IS NOT NULL)) as books_in_progress_count
+                    FROM series s WHERE s.id = ?
+                """
+                cursor = await db.execute(query, (user_id, user_id, series_id))
+            else:
+                cursor = await db.execute("SELECT * FROM series WHERE id = ?", (series_id,))
             row = await cursor.fetchone()
             return dict(row) if row else None
 
@@ -374,31 +411,48 @@ class Database:
             """)
             await db.commit()
 
-    async def find_series_by_id_or_slug(self, identifier: str) -> Optional[Dict[str, Any]]:
+    async def find_series_by_id_or_slug(self, identifier: str, user_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
-            cursor = await db.execute("SELECT * FROM series WHERE id = ?", (identifier,))
+            cursor = await db.execute("SELECT id FROM series WHERE id = ?", (identifier,))
             row = await cursor.fetchone()
+            if not row:
+                cursor = await db.execute("SELECT id FROM series WHERE id LIKE ? ORDER BY id ASC LIMIT 1", (f"{identifier}-%",))
+                row = await cursor.fetchone()
+            if not row:
+                cursor = await db.execute("SELECT id FROM series WHERE slug = ? OR slug LIKE ? ORDER BY id ASC LIMIT 1", (identifier, f"{identifier}-%"))
+                row = await cursor.fetchone()
+            if not row:
+                cursor = await db.execute("SELECT id FROM series WHERE id LIKE ? ORDER BY id ASC LIMIT 1", (f"%-{identifier}",))
+                row = await cursor.fetchone()
             if row:
-                return dict(row)
-
-            cursor = await db.execute("SELECT * FROM series WHERE id LIKE ? ORDER BY id ASC LIMIT 1", (f"{identifier}-%",))
-            row = await cursor.fetchone()
-            if row:
-                return dict(row)
-
-            cursor = await db.execute("SELECT * FROM series WHERE slug = ? OR slug LIKE ? ORDER BY id ASC LIMIT 1", (identifier, f"{identifier}-%"))
-            row = await cursor.fetchone()
-            if row:
-                return dict(row)
-
-            # 4. Suffix match by id (e.g. if identifier is a slug without library prefix)
-            cursor = await db.execute("SELECT * FROM series WHERE id LIKE ? ORDER BY id ASC LIMIT 1", (f"%-{identifier}",))
-            row = await cursor.fetchone()
-            if row:
-                return dict(row)
-
+                actual_id = row["id"]
+                return await self.get_series_by_id(actual_id, user_id=user_id)
             return None
+
+    async def get_books_by_series(self, series_id: str) -> List[Dict[str, Any]]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            s_cursor = await db.execute(
+                "SELECT id FROM series WHERE id = ? OR slug = ? OR id LIKE ? OR id LIKE ?",
+                (series_id, series_id, f"{series_id}-%", f"%-{series_id}"),
+            )
+            s_rows = await s_cursor.fetchall()
+            target_series_ids = {r["id"] for r in s_rows}
+            target_series_ids.add(series_id)
+
+            placeholders = ",".join("?" for _ in target_series_ids)
+            query = f"""
+                SELECT id, series_id, library_id, name, number, book_type, page_count, raw_json
+                FROM books
+                WHERE (series_id IN ({placeholders}) OR series_id LIKE ? OR series_id LIKE ?)
+                  AND deleted = 0
+                ORDER BY number ASC
+            """
+            params = list(target_series_ids) + [f"{series_id}-%", f"%-{series_id}"]
+            cursor = await db.execute(query, params)
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
 
     # ---------------- Books Operations ----------------
 
@@ -770,6 +824,20 @@ class Database:
                 "DELETE FROM r2_progression WHERE user_id = ? AND book_id = ?",
                 (user_id, book_id),
             )
+            await db.commit()
+
+    async def delete_r2_progression_batch(self, user_id: int, book_ids: List[int]) -> None:
+        if not book_ids:
+            return
+        async with aiosqlite.connect(self.db_path) as db:
+            chunk_size = 500
+            for i in range(0, len(book_ids), chunk_size):
+                chunk = book_ids[i : i + chunk_size]
+                placeholders = ",".join("?" for _ in chunk)
+                await db.execute(
+                    f"DELETE FROM r2_progression WHERE user_id = ? AND book_id IN ({placeholders})",
+                    [user_id] + chunk,
+                )
             await db.commit()
 
     # ---------------- API Key Operations ----------------

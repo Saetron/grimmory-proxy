@@ -271,13 +271,17 @@ class KomgaMapper:
     def to_series_dto(
         record: Dict[str, Any],
         books_count: Optional[int] = None,
-        books_read_count: int = 0,
-        books_in_progress_count: int = 0,
+        books_read_count: Optional[int] = None,
+        books_in_progress_count: Optional[int] = None,
     ) -> SeriesDto:
         series_id = str(record["id"])
         library_id = str(record["library_id"])
         name = record.get("name", "Unknown Series")
         count = books_count if books_count is not None else record.get("books_count", 0)
+
+        read_count = books_read_count if books_read_count is not None else (record.get("books_read_count", 0) or 0)
+        in_prog_count = books_in_progress_count if books_in_progress_count is not None else (record.get("books_in_progress_count", 0) or 0)
+        unread_count = max(0, count - read_count - in_prog_count)
 
         series_created = format_iso_timestamp(record.get("created"))
         series_modified = format_iso_timestamp(record.get("last_modified"))
@@ -298,8 +302,6 @@ class KomgaMapper:
             lastModified=series_modified,
         )
 
-        unread_count = max(0, count - books_read_count - books_in_progress_count)
-
         return SeriesDto(
             id=series_id,
             libraryId=library_id,
@@ -309,9 +311,9 @@ class KomgaMapper:
             lastModified=series_modified,
             fileLastModified=series_modified,
             booksCount=count,
-            booksReadCount=books_read_count,
+            booksReadCount=read_count,
             booksUnreadCount=unread_count,
-            booksInProgressCount=books_in_progress_count,
+            booksInProgressCount=in_prog_count,
             metadata=meta,
             booksMetadata=books_meta,
             deleted=False,

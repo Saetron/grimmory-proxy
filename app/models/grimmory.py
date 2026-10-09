@@ -57,3 +57,4 @@ class GrimmoryReadProgressRequest(BaseModel):
     pdfProgress: Optional[GrimmoryPdfProgress] = None
     epubProgress: Optional[GrimmoryEpubProgress] = None
     dateFinished: Optional[str] = None
+    readStatus: Optional[str] = None
