@@ -1113,6 +1113,60 @@ async def test_download_fallback_on_403(monkeypatch):
         assert resp.content == b"PK\x03\x04mock_epub_data"
 
 
+@pytest.mark.asyncio
+async def test_periodic_user_sync_and_data_persistence(monkeypatch):
+    from unittest.mock import AsyncMock
+    from app.main import db
+    from app.services.user_sync import user_sync_service
+
+    await db.connect()
+
+    # 1. Store users with tokens in SQLite
+    await db.upsert_user(
+        user_id=801,
+        username="user_periodic_a",
+        token="token_p_a",
+        is_admin=False,
+        assigned_libraries=[70],
+    )
+    await db.upsert_user(
+        user_id=802,
+        username="user_periodic_b",
+        token="token_p_b",
+        is_admin=False,
+        assigned_libraries=[70],
+    )
+
+    # 2. Verify get_user_by_token and get_users_with_tokens
+    user_a = await db.get_user_by_token("token_p_a")
+    assert user_a is not None
+    assert user_a["id"] == 801
+    assert user_a["username"] == "user_periodic_a"
+
+    active_users = await db.get_users_with_tokens()
+    active_ids = [u["id"] for u in active_users]
+    assert 801 in active_ids
+    assert 802 in active_ids
+
+    # 3. Test sync_all_active_users invokes sync for both users
+    sync_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr(user_sync_service, "capture_and_sync_user", sync_mock)
+
+    await user_sync_service.sync_all_active_users()
+
+    # Verify capture_and_sync_user was called for each active user
+    called_user_ids = [call.args[0].user_id for call in sync_mock.call_args_list]
+    assert 801 in called_user_ids
+    assert 802 in called_user_ids
+
+    # 4. Verify request handling uses SQLite cache directly without blocking sync
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # Request uses token_p_a: resolves via db.get_user_by_token
+        resp = await client.get("/api/v1/libraries", headers={"Authorization": "Bearer token_p_a"})
+        assert resp.status_code == 200
+
+
 
 
 

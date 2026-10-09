@@ -634,6 +634,31 @@ class Database:
             row = await cursor.fetchone()
             return dict(row) if row else None
 
+    async def get_user_by_token(self, token: str) -> Optional[Dict[str, Any]]:
+        if not token:
+            return None
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("SELECT * FROM users WHERE token = ?", (token,))
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def get_all_users(self) -> List[Dict[str, Any]]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("SELECT * FROM users ORDER BY last_connected_at DESC")
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+    async def get_users_with_tokens(self) -> List[Dict[str, Any]]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT * FROM users WHERE token IS NOT NULL AND token != '' ORDER BY last_connected_at DESC"
+            )
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
     async def update_user_progress_sync_time(self, user_id: int) -> None:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(

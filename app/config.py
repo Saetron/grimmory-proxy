@@ -39,6 +39,10 @@ class Settings(BaseSettings):
         default=6,
         description="Concurrency limit for background series/book page inspection",
     )
+    user_sync_interval_minutes: int = Field(
+        default=5,
+        description="Interval in minutes between background user read status sync cycles (0 to disable)",
+    )
 
     # Storage and paths
     database_path: str = Field(

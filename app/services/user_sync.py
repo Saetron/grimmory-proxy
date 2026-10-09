@@ -1,10 +1,12 @@
 import asyncio
+import json
 import logging
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from datetime import datetime, timezone, timedelta
+from typing import Any, Dict, List, Optional, Set
 import httpx
 
 from app.clients.grimmory import grimmory_client
+from app.config import settings
 from app.database import Database
 from app.models.internal import UserSession
 from app.services.mapper import format_iso_timestamp
@@ -37,6 +39,7 @@ class UserSyncService:
         self._user_locks: Dict[int, asyncio.Lock] = {}
         self._last_sync_times: Dict[int, datetime] = {}
         self._global_lock = asyncio.Lock()
+        self._background_tasks: Set[asyncio.Task] = set()
 
     def set_db(self, db: Database) -> None:
         self._db = db
@@ -47,6 +50,87 @@ class UserSyncService:
             return self._db
         from app.main import db
         return db
+
+    async def save_user_data(self, user: UserSession) -> None:
+        """Stores or updates the user profile and Grimmory token in the persistent database."""
+        try:
+            await self.database.upsert_user(
+                user_id=user.user_id,
+                username=user.username,
+                token=user.token,
+                is_admin=user.is_admin,
+                assigned_libraries=user.assigned_library_ids,
+            )
+        except Exception as e:
+            logger.warning(f"Error saving user record for {user.username}: {e}")
+
+    def trigger_background_sync(self, user: UserSession, force: bool = False) -> None:
+        """Schedules a non-blocking background read status sync for the user."""
+        try:
+            loop = asyncio.get_running_loop()
+            task = loop.create_task(self.capture_and_sync_user(user, force=force))
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+        except RuntimeError:
+            pass
+
+    async def sync_all_active_users(self) -> None:
+        """
+        Periodically syncs read states for all registered users who have a token stored in SQLite.
+        """
+        try:
+            users = await self.database.get_users_with_tokens()
+            if not users:
+                logger.debug("No active users with tokens found for periodic read state sync")
+                return
+
+            for u_row in users:
+                try:
+                    assigned_libs = []
+                    try:
+                        assigned_libs = json.loads(u_row.get("assigned_libraries") or "[]")
+                    except Exception:
+                        pass
+                    user = UserSession(
+                        user_id=u_row["id"],
+                        username=u_row["username"],
+                        token=u_row["token"],
+                        is_admin=bool(u_row["is_admin"]),
+                        assigned_library_ids=assigned_libs,
+                        expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
+                    )
+                    await self.capture_and_sync_user(user, force=True)
+                except Exception as e:
+                    logger.debug(f"Periodic sync failed for user {u_row.get('username')}: {e}")
+        except Exception as e:
+            logger.error(f"Error during periodic user read status sync: {e}")
+
+    async def start_background_loop(self) -> None:
+        """
+        Starts periodic background loop syncing read states for all active users.
+        """
+        interval_minutes = settings.user_sync_interval_minutes
+        if interval_minutes <= 0:
+            logger.info("Periodic user read status sync is disabled (USER_SYNC_INTERVAL_MINUTES=0)")
+            return
+
+        interval_sec = interval_minutes * 60
+        logger.info(f"Starting periodic user read status sync scheduler every {interval_minutes} minutes")
+
+        # Initial delay before the first periodic cycle so startup metadata sync finishes
+        await asyncio.sleep(15)
+
+        while True:
+            try:
+                logger.info("Periodic user read status sync interval elapsed, checking users...")
+                await self.sync_all_active_users()
+                await asyncio.sleep(interval_sec)
+            except asyncio.CancelledError:
+                logger.info("Periodic user read status sync task cancelled")
+                break
+            except Exception as e:
+                logger.error(f"Error in periodic user read status sync loop: {e}")
+                await asyncio.sleep(30)
 
     async def _get_user_lock(self, user_id: int) -> asyncio.Lock:
         async with self._global_lock:

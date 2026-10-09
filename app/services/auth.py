@@ -58,10 +58,6 @@ class AuthService:
         if cached_token:
             cached_session = cls.get_cached_session(cached_token)
             if cached_session:
-                try:
-                    await user_sync_service.capture_and_sync_user(cached_session)
-                except Exception as e:
-                    logger.debug(f"Error checking read states on cached login: {e}")
                 return cached_session
 
         try:
@@ -81,7 +77,13 @@ class AuthService:
             cls.cache_session(session)
             _credential_tokens[cache_key] = token
 
-            # Capture user connection data and synchronize read states from Grimmory
+            # Store user data in SQLite once upon login
+            try:
+                await user_sync_service.save_user_data(session)
+            except Exception as e:
+                logger.warning(f"Error saving user login record for {username}: {e}")
+
+            # Capture initial read states from Grimmory upon login
             try:
                 await user_sync_service.capture_and_sync_user(session)
             except Exception as e:
@@ -102,6 +104,29 @@ class AuthService:
         if cached:
             return cached
 
+        # Check SQLite if user was previously stored with this token
+        try:
+            from app.main import db
+            user_row = await db.get_user_by_token(token)
+            if user_row:
+                assigned_libs = []
+                try:
+                    assigned_libs = json.loads(user_row.get("assigned_libraries") or "[]")
+                except Exception:
+                    pass
+                session = UserSession(
+                    user_id=user_row["id"],
+                    username=user_row["username"],
+                    token=user_row["token"] or token,
+                    is_admin=bool(user_row["is_admin"]),
+                    assigned_library_ids=assigned_libs,
+                    expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
+                )
+                cls.cache_session(session)
+                return session
+        except Exception as e:
+            logger.debug(f"Error checking SQLite for token: {e}")
+
         try:
             user = await grimmory_client.get_current_user(token)
             assigned_libs = parse_assigned_libraries(user.assignedLibraries)
@@ -114,6 +139,10 @@ class AuthService:
                 expires_at=datetime.now(timezone.utc) + timedelta(hours=2),
             )
             cls.cache_session(session)
+            try:
+                await user_sync_service.save_user_data(session)
+            except Exception:
+                pass
             return session
         except Exception as e:
             logger.debug(f"Invalid token: {e}")
@@ -194,10 +223,6 @@ class AuthService:
                 detail="Authentication required",
                 headers={"WWW-Authenticate": 'Basic realm="Komga"'},
             )
-        try:
-            await user_sync_service.capture_and_sync_user(user)
-        except Exception as e:
-            logger.debug(f"Error checking Grimmory read states for user {user.username}: {e}")
         return user
 
     @classmethod
