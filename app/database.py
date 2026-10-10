@@ -798,28 +798,36 @@ class Database:
         is_admin: bool = False,
         assigned_libraries: Optional[List[int]] = None,
     ) -> None:
-        async with self.get_db() as db:
-            await db.execute(
-                """
-                INSERT INTO users (id, username, token, is_admin, assigned_libraries, last_connected_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                ON CONFLICT(id) DO UPDATE SET
-                    username = excluded.username,
-                    token = COALESCE(excluded.token, users.token),
-                    is_admin = excluded.is_admin,
-                    assigned_libraries = excluded.assigned_libraries,
-                    last_connected_at = CURRENT_TIMESTAMP,
-                    updated_at = CURRENT_TIMESTAMP
-                """,
-                (
-                    user_id,
-                    username,
-                    token,
-                    1 if is_admin else 0,
-                    json.dumps(assigned_libraries or []),
-                ),
-            )
-            await db.commit()
+        for attempt in range(5):
+            try:
+                async with self.get_db() as db:
+                    await db.execute(
+                        """
+                        INSERT INTO users (id, username, token, is_admin, assigned_libraries, last_connected_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                        ON CONFLICT(id) DO UPDATE SET
+                            username = excluded.username,
+                            token = COALESCE(excluded.token, users.token),
+                            is_admin = excluded.is_admin,
+                            assigned_libraries = excluded.assigned_libraries,
+                            last_connected_at = CURRENT_TIMESTAMP,
+                            updated_at = CURRENT_TIMESTAMP
+                        """,
+                        (
+                            user_id,
+                            username,
+                            token,
+                            1 if is_admin else 0,
+                            json.dumps(assigned_libraries or []),
+                        ),
+                    )
+                    await db.commit()
+                break
+            except sqlite3.OperationalError as e:
+                if "locked" in str(e).lower() and attempt < 4:
+                    await asyncio.sleep(0.1 * (2 ** attempt))
+                else:
+                    raise
 
     async def get_user_by_id(self, user_id: int) -> Optional[Dict[str, Any]]:
         async with self.get_db() as db:

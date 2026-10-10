@@ -41,6 +41,56 @@ async def test_admin_login_page_renders():
 
 
 @pytest.mark.asyncio
+async def test_admin_login_flow(monkeypatch):
+    from app.main import db
+    from app.models.grimmory import GrimmoryLoginResponse, GrimmoryUser, GrimmoryPermissions
+    from app.clients import grimmory as grimmory_module
+
+    await db.connect()
+
+    async def mock_login(username, password):
+        return GrimmoryLoginResponse(accessToken="tok_admin_test_flow", expires=3600)
+
+    async def mock_get_current_user(token):
+        return GrimmoryUser(
+            id=1,
+            username="admin",
+            permissions=GrimmoryPermissions(admin=True),
+            assignedLibraries=[],
+        )
+
+    async def mock_get_library_books(library_id, token=None):
+        return []
+
+    async def mock_get_all_books(token=None):
+        return []
+
+    async def mock_get_magic_shelves(token=None):
+        return []
+
+    monkeypatch.setattr(grimmory_module.grimmory_client, "login", mock_login)
+    monkeypatch.setattr(grimmory_module.grimmory_client, "get_current_user", mock_get_current_user)
+    monkeypatch.setattr(grimmory_module.grimmory_client, "get_library_books", mock_get_library_books)
+    monkeypatch.setattr(grimmory_module.grimmory_client, "get_all_books", mock_get_all_books)
+    monkeypatch.setattr(grimmory_module.grimmory_client, "get_magic_shelves", mock_get_magic_shelves)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/admin/login", data={"username": "admin", "password": "password"})
+        assert resp.status_code == 303
+        assert resp.headers["location"] == "/admin"
+        set_cookie = resp.headers.get("set-cookie", "")
+        assert "admin_session=tok_admin_test_flow" in set_cookie
+        assert "samesite=lax" in set_cookie.lower()
+
+        # Follow redirect with the cookie
+        client.cookies.set("admin_session", "tok_admin_test_flow")
+        resp_admin = await client.get("/admin")
+        assert resp_admin.status_code == 200
+        assert "Bridge Overview" in resp_admin.text
+
+
+@pytest.mark.asyncio
 async def test_root_api_returns_version():
     from app.config import settings
     transport = ASGITransport(app=app)
