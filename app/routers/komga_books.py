@@ -216,6 +216,46 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
 
         return KomgaMapper.to_book_dto(record)
 
+    @router.get("/api/v1/books/{book_id}/previous", response_model=BookDto)
+    async def get_previous_book(
+        book_id: int,
+        user: UserSession = Depends(AuthService.require_user),
+    ) -> BookDto:
+        curr = await db.get_book_by_id(book_id)
+        if not curr:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
+        if not user.is_admin and user.assigned_library_ids and curr["library_id"] not in user.assigned_library_ids:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
+
+        prev_book = await db.get_adjacent_book(book_id, direction="previous", user_id=user.user_id if user else None)
+        if not prev_book:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No previous book found")
+
+        if not user.is_admin and user.assigned_library_ids and prev_book["library_id"] not in user.assigned_library_ids:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No previous book found")
+
+        return KomgaMapper.to_book_dto(prev_book)
+
+    @router.get("/api/v1/books/{book_id}/next", response_model=BookDto)
+    async def get_next_book(
+        book_id: int,
+        user: UserSession = Depends(AuthService.require_user),
+    ) -> BookDto:
+        curr = await db.get_book_by_id(book_id)
+        if not curr:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
+        if not user.is_admin and user.assigned_library_ids and curr["library_id"] not in user.assigned_library_ids:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
+
+        next_book = await db.get_adjacent_book(book_id, direction="next", user_id=user.user_id if user else None)
+        if not next_book:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No next book found")
+
+        if not user.is_admin and user.assigned_library_ids and next_book["library_id"] not in user.assigned_library_ids:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No next book found")
+
+        return KomgaMapper.to_book_dto(next_book)
+
     @router.get("/api/v1/books/{book_id}/thumbnail")
     async def get_book_thumbnail(
         book_id: int,
@@ -316,6 +356,38 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
                 logger.warning(f"Error converting page image to PNG: {e}")
 
         return Response(content=img_bytes, media_type=content_type)
+
+    @router.get("/api/v1/books/{book_id}/pages/{page_number}/thumbnail")
+    async def get_book_page_thumbnail(
+        book_id: int,
+        page_number: int,
+        user: UserSession = Depends(AuthService.require_user),
+    ) -> Response:
+        cached = thumbnail_cache.get_thumbnail("page", f"{book_id}_{page_number}")
+        if cached:
+            return Response(content=cached, media_type="image/jpeg")
+
+        img_bytes = await grimmory_client.stream_page_image(book_id, page_number, token=user.token)
+        if not img_bytes:
+            img_bytes = thumbnail_cache.get_thumbnail("book", str(book_id))
+            if not img_bytes:
+                img_bytes = await grimmory_client.stream_thumbnail(book_id, token=user.token)
+
+        if not img_bytes:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Page thumbnail not found")
+
+        try:
+            with Image.open(io.BytesIO(img_bytes)) as img:
+                img.thumbnail((300, 400))
+                out = io.BytesIO()
+                img.convert("RGB").save(out, format="JPEG", quality=80)
+                thumb_bytes = out.getvalue()
+                thumbnail_cache.save_thumbnail("page", f"{book_id}_{page_number}", thumb_bytes)
+                return Response(content=thumb_bytes, media_type="image/jpeg")
+        except Exception as e:
+            logger.warning(f"Error generating thumbnail for page {page_number} of book {book_id}: {e}")
+            thumbnail_cache.save_thumbnail("page", f"{book_id}_{page_number}", img_bytes)
+            return Response(content=img_bytes, media_type="image/jpeg")
 
     @router.get("/api/v1/books/{book_id}/file")
     async def download_book_file(

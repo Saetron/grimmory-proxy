@@ -550,6 +550,55 @@ class Database:
             row = await cursor.fetchone()
             return dict(row) if row else None
 
+    async def get_adjacent_book(
+        self, book_id: int, direction: str = "next", user_id: Optional[int] = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Find the next or previous book in the same series.
+        direction: 'next' or 'previous'
+        """
+        target = await self.get_book_by_id(book_id, include_deleted=True)
+        if not target:
+            return None
+
+        series_id = target["series_id"]
+        curr_num = target.get("number", 1.0)
+        curr_id = target["id"]
+
+        user_select = ""
+        user_join = ""
+        params: List[Any] = []
+
+        if user_id is not None:
+            user_select = ", rp.page as user_page, rp.completed as user_completed, rp.read_date as user_read_date"
+            user_join = "LEFT JOIN read_progress rp ON rp.book_id = b.id AND rp.user_id = ?"
+            params.append(user_id)
+
+        params.extend([series_id, curr_num, curr_num, curr_id])
+
+        if direction.lower() == "next":
+            order_clause = "ORDER BY b.number ASC, b.id ASC"
+            comp_clause = "(b.number > ? OR (b.number = ? AND b.id > ?))"
+        else:
+            order_clause = "ORDER BY b.number DESC, b.id DESC"
+            comp_clause = "(b.number < ? OR (b.number = ? AND b.id < ?))"
+
+        query = f"""
+            SELECT b.*, s.name as series_name{user_select}
+            FROM books b
+            JOIN series s ON b.series_id = s.id
+            {user_join}
+            WHERE b.series_id = ? AND b.deleted = 0 AND {comp_clause}
+            {order_clause}
+            LIMIT 1
+        """
+
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(query, tuple(params))
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
     async def mark_book_deleted(self, book_id: int) -> None:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("UPDATE books SET deleted = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (book_id,))

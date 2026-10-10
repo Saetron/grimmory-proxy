@@ -94,9 +94,14 @@ def get_progress_router(db: Database) -> APIRouter:
             try:
                 raw_data = json.loads(record["raw_json"]) if isinstance(record["raw_json"], str) else record["raw_json"]
                 if isinstance(raw_data, dict):
-                    page_count = raw_data.get("metadata", {}).get("pageCount") or 0
+                    page_count = raw_data.get("metadata", {}).get("pageCount") or raw_data.get("pageCount") or 0
             except Exception:
                 pass
+        if page_count <= 0:
+            pages = await db.get_book_pages(book_id)
+            if pages:
+                page_count = len(pages)
+                await db.update_book_page_count(book_id, page_count)
         if page_count <= 0:
             page_count = 1
 
@@ -110,23 +115,30 @@ def get_progress_router(db: Database) -> APIRouter:
                 logger.warning(f"Failed to reset progress on Grimmory for book {book_id}: {e}")
             return Response(status_code=status.HTTP_204_NO_CONTENT)
 
-        # Determine completion and page position according to Komga specification
+        # Determine completion and page position according to Komga & reader application behavior
         if dto.completed is True:
             completed = True
-            page_num = dto.page if dto.page is not None else page_count
+            page_num = dto.page if dto.page is not None else (page_count if page_count > 0 else 1)
             percentage = 100.0
         else:
             page_num = dto.page if dto.page is not None else 1
             if page_count > 1:
                 percentage = min(100.0, max(0.0, (page_num / page_count) * 100.0))
             else:
-                percentage = 0.0
+                percentage = 100.0 if (page_count == 1 and page_num >= 1 and dto.completed is None) else 0.0
 
-            if dto.completed is None:
-                # Per Komga spec: completed can be omitted, set according to page passed and total pages
-                completed = (page_count > 1 and page_num >= page_count) or (page_count > 1 and percentage >= 99.0)
-            else:
+            # Reaching or passing the last page in reader applications (like Komic) automatically marks as read
+            is_at_end = (page_count > 0 and page_num >= page_count) or (page_count > 1 and percentage >= 95.0)
+
+            if dto.completed is False and page_num <= 1:
+                # Explicit unread / rewind to start
+                completed = False
+            elif is_at_end:
+                completed = True
+            elif dto.completed is not None:
                 completed = bool(dto.completed)
+            else:
+                completed = False
 
         if completed:
             percentage = 100.0
@@ -373,7 +385,22 @@ def get_progress_router(db: Database) -> APIRouter:
         if not record:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
 
-        page_count = record.get("page_count", 1) or 1
+        page_count = record.get("page_count", 0) or 0
+        if page_count <= 0 and record and record.get("raw_json"):
+            try:
+                raw_data = json.loads(record["raw_json"]) if isinstance(record["raw_json"], str) else record["raw_json"]
+                if isinstance(raw_data, dict):
+                    page_count = raw_data.get("metadata", {}).get("pageCount") or raw_data.get("pageCount") or 0
+            except Exception:
+                pass
+        if page_count <= 0:
+            pages = await db.get_book_pages(book_id)
+            if pages:
+                page_count = len(pages)
+                await db.update_book_page_count(book_id, page_count)
+        if page_count <= 0:
+            page_count = 1
+
         now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
         # Extract Readium locator information
@@ -415,9 +442,9 @@ def get_progress_router(db: Database) -> APIRouter:
         if is_explicit_completed:
             completed = True
         elif page_count > 1:
-            completed = percentage >= 99.0 or page_num >= page_count
+            completed = percentage >= 95.0 or page_num >= page_count
         else:
-            completed = percentage >= 99.0 and prog_val is not None
+            completed = percentage >= 95.0 and prog_val is not None
 
         if completed:
             percentage = 100.0

@@ -304,16 +304,16 @@ class UserSyncService:
             if read_status == "READ" or date_finished:
                 is_completed = True
                 read_date = date_finished
-            elif cbx and cbx_perc >= 99.0:
+            elif cbx and (cbx_perc >= 95.0 or (page_count > 0 and cbx_page >= page_count)):
                 is_completed = True
                 read_date = cbx.get("lastRead")
-            elif pdf and pdf_perc >= 99.0:
+            elif pdf and (pdf_perc >= 95.0 or (page_count > 0 and pdf_page >= page_count)):
                 is_completed = True
                 read_date = pdf.get("lastRead")
-            elif epub and epub_perc >= 99.0:
+            elif epub and epub_perc >= 95.0:
                 is_completed = True
                 read_date = epub.get("lastRead")
-            elif rp and rp.get("completed"):
+            elif rp and (rp.get("completed") or (page_count > 0 and _safe_int(rp.get("page")) >= page_count)):
                 is_completed = True
                 read_date = rp.get("readDate")
 

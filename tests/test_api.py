@@ -1622,6 +1622,151 @@ async def test_admin_read_sync_endpoints():
         assert resp_clear.json()["status"] == "cleared"
 
 
+@pytest.mark.asyncio
+async def test_book_adjacency_and_page_thumbnail():
+    from app.main import db
+    from app.models.internal import UserSession
+    from app.services.auth import AuthService
+    from app.clients.grimmory import grimmory_client
+
+    await db.connect()
+    # Create library 80, series 80-series, and 3 consecutive books
+    await db.upsert_libraries([{"id": 80, "name": "Adj Lib", "paths": []}])
+    await db.upsert_series_batch([{"id": "80-series", "library_id": 80, "name": "Adj Series", "slug": "adj-series"}])
+    await db.upsert_books_batch([
+        {"id": 801, "series_id": "80-series", "library_id": 80, "name": "Book 1", "number": 1.0, "page_count": 20},
+        {"id": 802, "series_id": "80-series", "library_id": 80, "name": "Book 2", "number": 2.0, "page_count": 25},
+        {"id": 803, "series_id": "80-series", "library_id": 80, "name": "Book 3", "number": 3.0, "page_count": 30},
+    ])
+
+    user = UserSession(
+        user_id=1,
+        username="adj_user",
+        token="token_adj",
+        is_admin=True,
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    AuthService.cache_session(user)
+    headers = {"Authorization": "Bearer token_adj"}
+
+    # Mock page thumbnail stream
+    import io
+    from PIL import Image
+
+    img = Image.new("RGB", (100, 100), color="blue")
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG")
+    fake_img_bytes = buf.getvalue()
+
+    async def mock_stream_page(book_id, page_num, token=None):
+        return fake_img_bytes
+
+    grimmory_client.stream_page_image = mock_stream_page
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # Book 801 (first book)
+        resp_next = await client.get("/api/v1/books/801/next", headers=headers)
+        assert resp_next.status_code == 200
+        assert resp_next.json()["id"] == "802"
+
+        resp_prev = await client.get("/api/v1/books/801/previous", headers=headers)
+        assert resp_prev.status_code == 404
+
+        # Book 802 (middle book)
+        resp_next = await client.get("/api/v1/books/802/next", headers=headers)
+        assert resp_next.status_code == 200
+        assert resp_next.json()["id"] == "803"
+
+        resp_prev = await client.get("/api/v1/books/802/previous", headers=headers)
+        assert resp_prev.status_code == 200
+        assert resp_prev.json()["id"] == "801"
+
+        # Book 803 (last book)
+        resp_next = await client.get("/api/v1/books/803/next", headers=headers)
+        assert resp_next.status_code == 404
+
+        resp_prev = await client.get("/api/v1/books/803/previous", headers=headers)
+        assert resp_prev.status_code == 200
+        assert resp_prev.json()["id"] == "802"
+
+        # Page thumbnail
+        resp_thumb = await client.get("/api/v1/books/801/pages/1/thumbnail", headers=headers)
+        assert resp_thumb.status_code == 200
+        assert resp_thumb.headers.get("content-type") == "image/jpeg"
+        assert len(resp_thumb.content) > 0
+
+
+@pytest.mark.asyncio
+async def test_auto_mark_completed_when_reading_to_end():
+    from app.main import db
+    from app.models.internal import UserSession
+    from app.services.auth import AuthService
+    from app.clients.grimmory import grimmory_client
+
+    await db.connect()
+    await db.upsert_libraries([{"id": 85, "name": "Read Lib", "paths": []}])
+    await db.upsert_series_batch([{"id": "85-series", "library_id": 85, "name": "Read Series", "slug": "read-series"}])
+    await db.upsert_books_batch([
+        {"id": 850, "series_id": "85-series", "library_id": 85, "name": "Book 850", "number": 1.0, "page_count": 20},
+        {"id": 851, "series_id": "85-series", "library_id": 85, "name": "Book 851", "number": 2.0, "page_count": 100},
+        {"id": 852, "series_id": "85-series", "library_id": 85, "name": "Book 852", "number": 3.0, "page_count": 50},
+    ])
+
+    user = UserSession(
+        user_id=1,
+        username="reader_user",
+        token="token_reader",
+        is_admin=True,
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    AuthService.cache_session(user)
+    headers = {"Authorization": "Bearer token_reader"}
+
+    # Mock Grimmory update_read_progress to succeed
+    async def mock_update_read_progress(req, token=None):
+        return True
+
+    grimmory_client.update_read_progress = mock_update_read_progress
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # 1. Reading mid-way: page 5 of 20 with completed=False -> completed should be False
+        resp = await client.patch("/api/v1/books/850/read-progress", json={"page": 5, "completed": False}, headers=headers)
+        assert resp.status_code == 204
+        prog = await client.get("/api/v1/books/850/read-progress", headers=headers)
+        assert prog.status_code == 200
+        assert prog.json()["page"] == 5
+        assert prog.json()["completed"] is False
+
+        # 2. Reading to last page: page 20 of 20 with completed=False -> automatically marked as completed!
+        resp = await client.patch("/api/v1/books/850/read-progress", json={"page": 20, "completed": False}, headers=headers)
+        assert resp.status_code == 204
+        prog = await client.get("/api/v1/books/850/read-progress", headers=headers)
+        assert prog.status_code == 200
+        assert prog.json()["page"] == 20
+        assert prog.json()["completed"] is True
+
+        # 3. Reading past 95%: page 96 of 100 with completed=False -> automatically marked as completed!
+        resp = await client.patch("/api/v1/books/851/read-progress", json={"page": 96, "completed": False}, headers=headers)
+        assert resp.status_code == 204
+        prog = await client.get("/api/v1/books/851/read-progress", headers=headers)
+        assert prog.status_code == 200
+        assert prog.json()["completed"] is True
+
+        # 4. Readium R2 progression >= 95%: 96% -> automatically marked as completed!
+        resp = await client.put(
+            "/api/v1/books/852/progression",
+            json={"locations": {"totalProgression": 0.96}},
+            headers=headers,
+        )
+        assert resp.status_code == 204
+        prog = await client.get("/api/v1/books/852/read-progress", headers=headers)
+        assert prog.status_code == 200
+        assert prog.json()["completed"] is True
+
+
+
 
 
 
