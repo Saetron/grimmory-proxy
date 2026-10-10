@@ -317,8 +317,20 @@ async function purgeUser(userId, username) {
   }
 }
 
-async function syncSingleUser(userId, username) {
-  const btn = window.event && window.event.target ? window.event.target.closest("button") : null;
+// Delegated handler for user action buttons (values come from data-* attributes, never inline JS)
+document.addEventListener("click", (event) => {
+  const btn = event.target.closest("button[data-action]");
+  if (!btn) return;
+  const userId = Number(btn.dataset.userId);
+  const username = btn.dataset.username || "";
+  if (btn.dataset.action === "purge-user") {
+    purgeUser(userId, username);
+  } else if (btn.dataset.action === "sync-user") {
+    syncSingleUser(userId, username, btn);
+  }
+});
+
+async function syncSingleUser(userId, username, btn) {
   const originalText = btn ? btn.innerHTML : "";
   if (btn) {
     btn.disabled = true;
@@ -393,7 +405,7 @@ function renderUsersTable(users) {
       ? `<span style="color: var(--color-success); font-size: 0.75rem; margin-left: 0.25rem;">(${u.completed_count} read)</span>` 
       : '';
     const syncBtn = u.has_token 
-      ? `<button onclick="syncSingleUser(${u.id}, '${escapeHtml(u.username)}')" class="btn btn-ghost btn-sm" title="Sync Grimmory read status for ${escapeHtml(u.username)}">
+      ? `<button data-action="sync-user" data-user-id="${Number(u.id)}" data-username="${escapeHtml(u.username)}" class="btn btn-ghost btn-sm" title="Sync Grimmory read status for ${escapeHtml(u.username)}">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
           </svg>
@@ -429,15 +441,15 @@ function renderUsersTable(users) {
           ${completedText}
         </td>
         <td style="padding: 0.75rem; color: var(--color-text-muted); font-size: 0.825rem;">
-          ${u.last_connected_at || '-'}
+          ${escapeHtml(u.last_connected_at || '-')}
         </td>
         <td style="padding: 0.75rem; color: var(--color-text-muted); font-size: 0.825rem;">
-          ${u.last_sync_progress_at || 'Never'}
+          ${escapeHtml(u.last_sync_progress_at || 'Never')}
         </td>
         <td style="padding: 0.75rem; text-align: right;">
           <div style="display: flex; gap: 0.4rem; justify-content: flex-end; align-items: center;">
             ${syncBtn}
-            <button onclick="purgeUser(${u.id}, '${escapeHtml(u.username)}')" class="btn btn-danger-ghost btn-sm" title="Purge user and clear cached read progress for ${escapeHtml(u.username)}">
+            <button data-action="purge-user" data-user-id="${Number(u.id)}" data-username="${escapeHtml(u.username)}" class="btn btn-danger-ghost btn-sm" title="Purge user and clear cached read progress for ${escapeHtml(u.username)}">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <polyline points="3 6 5 6 21 6"></polyline>
                 <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
