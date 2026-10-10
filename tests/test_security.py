@@ -127,3 +127,10 @@ async def test_admin_endpoints_never_send_basic_auth_challenge():
         bad_key = await client.get("/admin/api/status", headers={"X-API-Key": "nope"})
         assert bad_key.status_code == 401
         assert "www-authenticate" not in bad_key.headers
+
+
+def test_app_js_prevents_login_refresh_loop():
+    """Admin JS controller must guard against 401 redirect loops when already on the login page."""
+    app_js = (ROOT / "app/static/app.js").read_text(encoding="utf-8")
+    assert "!window.location.pathname.startsWith(\"/admin/login\")" in app_js
+    assert "initPolling" in app_js

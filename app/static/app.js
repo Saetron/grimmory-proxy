@@ -5,7 +5,7 @@
 const _nativeFetch = window.fetch.bind(window);
 window.fetch = async (...args) => {
   const res = await _nativeFetch(...args);
-  if (res.status === 401) {
+  if (res.status === 401 && !window.location.pathname.startsWith("/admin/login")) {
     window.location.href = "/admin/login";
   }
   return res;
@@ -485,6 +485,16 @@ function escapeHtml(str) {
     .replace(/'/g, "&#039;");
 }
 
-// Start polling every 3 seconds
-setInterval(pollStatus, 3000);
+// Start polling every 3 seconds only on the admin dashboard
+function initPolling() {
+  if (document.getElementById("btn-sync") || document.getElementById("stat-books-count") || document.getElementById("active-job-box")) {
+    setInterval(pollStatus, 3000);
+  }
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", initPolling);
+} else {
+  initPolling();
+}
 
