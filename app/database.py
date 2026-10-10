@@ -1,8 +1,11 @@
+import asyncio
+from contextlib import asynccontextmanager
 import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
 import secrets
+import sqlite3
 from typing import Any, Dict, List, Optional, Tuple, Union
 import uuid
 import aiosqlite
@@ -172,12 +175,22 @@ class Database:
         self.db_path = db_path
         self._pool: Optional[aiosqlite.Connection] = None
 
+    @asynccontextmanager
+    async def get_db(self):
+        async with aiosqlite.connect(self.db_path, timeout=60.0) as db:
+            await db.execute("PRAGMA busy_timeout = 60000")
+            yield db
+
     async def connect(self) -> None:
         try:
             Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         except (PermissionError, OSError):
             pass
-        async with aiosqlite.connect(self.db_path) as db:
+        async with aiosqlite.connect(self.db_path, timeout=60.0) as db:
+            await db.execute("PRAGMA journal_mode = WAL")
+            await db.execute("PRAGMA busy_timeout = 60000")
+            await db.execute("PRAGMA synchronous = NORMAL")
+            await db.execute("PRAGMA foreign_keys = ON")
             await db.executescript(SCHEMA_SQL)
             # Automatic schema migration for existing databases
             try:
@@ -208,15 +221,15 @@ class Database:
             except Exception:
                 pass
             await db.commit()
-        logger.info(f"Database initialized at {self.db_path}")
+        logger.info(f"Database initialized at {self.db_path} (WAL mode enabled, busy_timeout=60s)")
 
     def get_connection(self) -> aiosqlite.Connection:
-        return aiosqlite.connect(self.db_path)
+        return aiosqlite.connect(self.db_path, timeout=60.0)
 
     # ---------------- Library Operations ----------------
 
     async def upsert_libraries(self, libraries: List[Dict[str, Any]]) -> None:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_db() as db:
             for lib in libraries:
                 paths = lib.get("paths", [])
                 root = paths[0].get("path", "") if paths else ""
@@ -242,14 +255,14 @@ class Database:
             await db.commit()
 
     async def get_libraries(self) -> List[Dict[str, Any]]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_db() as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("SELECT * FROM libraries ORDER BY name ASC")
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
 
     async def get_library(self, library_id: int) -> Optional[Dict[str, Any]]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_db() as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("SELECT * FROM libraries WHERE id = ?", (library_id,))
             row = await cursor.fetchone()
@@ -258,34 +271,50 @@ class Database:
     # ---------------- Series Operations ----------------
 
     async def upsert_series_batch(self, series_list: List[Dict[str, Any]]) -> None:
-        async with aiosqlite.connect(self.db_path) as db:
-            for s in series_list:
-                await db.execute(
-                    """
-                    INSERT INTO series (id, library_id, name, slug, sort_title, books_count, created, last_modified, raw_json, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                    ON CONFLICT(id) DO UPDATE SET
-                        name = excluded.name,
-                        slug = excluded.slug,
-                        sort_title = excluded.sort_title,
-                        books_count = excluded.books_count,
-                        last_modified = excluded.last_modified,
-                        raw_json = excluded.raw_json,
-                        updated_at = CURRENT_TIMESTAMP
-                    """,
-                    (
-                        s["id"],
-                        s["library_id"],
-                        s["name"],
-                        s["slug"],
-                        s.get("sort_title", s["name"]),
-                        s.get("books_count", 0),
-                        s.get("created"),
-                        s.get("last_modified"),
-                        json.dumps(s.get("raw_json", {})),
-                    ),
-                )
-            await db.commit()
+        if not series_list:
+            return
+        chunk_size = 1000
+        for i in range(0, len(series_list), chunk_size):
+            chunk = series_list[i : i + chunk_size]
+            for attempt in range(5):
+                try:
+                    async with self.get_db() as db:
+                        await db.executemany(
+                            """
+                            INSERT INTO series (id, library_id, name, slug, sort_title, books_count, created, last_modified, raw_json, updated_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                            ON CONFLICT(id) DO UPDATE SET
+                                name = excluded.name,
+                                slug = excluded.slug,
+                                sort_title = excluded.sort_title,
+                                books_count = excluded.books_count,
+                                last_modified = excluded.last_modified,
+                                raw_json = excluded.raw_json,
+                                updated_at = CURRENT_TIMESTAMP
+                            """,
+                            [
+                                (
+                                    s["id"],
+                                    s["library_id"],
+                                    s["name"],
+                                    s["slug"],
+                                    s.get("sort_title", s["name"]),
+                                    s.get("books_count", 0),
+                                    s.get("created"),
+                                    s.get("last_modified"),
+                                    json.dumps(s.get("raw_json", {})),
+                                )
+                                for s in chunk
+                            ],
+                        )
+                        await db.commit()
+                    break
+                except sqlite3.OperationalError as e:
+                    if "locked" in str(e).lower() and attempt < 4:
+                        await asyncio.sleep(0.1 * (2 ** attempt))
+                    else:
+                        raise
+            await asyncio.sleep(0)
 
     async def get_series_list(
         self,
@@ -331,7 +360,7 @@ class Database:
         order_col = allowed_sorts.get(clean_sort, "sort_title")
         order_direction = "DESC" if sort_dir.lower() == "desc" else "ASC"
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_db() as db:
             db.row_factory = aiosqlite.Row
             count_cursor = await db.execute(f"SELECT COUNT(*) as total FROM series {where_clause}", params)
             count_row = await count_cursor.fetchone()
@@ -380,7 +409,7 @@ class Database:
             return [dict(r) for r in rows], total
 
     async def get_series_by_id(self, series_id: str, user_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_db() as db:
             db.row_factory = aiosqlite.Row
             if user_id is not None:
                 query = """
@@ -396,7 +425,7 @@ class Database:
             return dict(row) if row else None
 
     async def cleanup_empty_series(self) -> None:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_db() as db:
             # Recalculate books_count on series for accuracy
             await db.execute("""
                 UPDATE series SET books_count = (
@@ -412,7 +441,7 @@ class Database:
             await db.commit()
 
     async def find_series_by_id_or_slug(self, identifier: str, user_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_db() as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("SELECT id FROM series WHERE id = ?", (identifier,))
             row = await cursor.fetchone()
@@ -438,7 +467,7 @@ class Database:
             return None
 
     async def get_books_by_series(self, series_id: str) -> List[Dict[str, Any]]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_db() as db:
             db.row_factory = aiosqlite.Row
             s_cursor = await db.execute(
                 "SELECT id FROM series WHERE id = ? OR slug = ? OR id LIKE ? OR id LIKE ?",
@@ -464,78 +493,104 @@ class Database:
     # ---------------- Books Operations ----------------
 
     async def upsert_books_batch(self, books: List[Dict[str, Any]]) -> None:
-        async with aiosqlite.connect(self.db_path) as db:
-            for b in books:
-                await db.execute(
-                    """
-                    INSERT INTO books (id, series_id, library_id, name, number, book_type, file_path, file_size_kb, page_count, deleted, released, created, last_modified, raw_json, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                    ON CONFLICT(id) DO UPDATE SET
-                        series_id = excluded.series_id,
-                        library_id = excluded.library_id,
-                        name = excluded.name,
-                        number = excluded.number,
-                        book_type = excluded.book_type,
-                        file_path = excluded.file_path,
-                        file_size_kb = excluded.file_size_kb,
-                        page_count = CASE WHEN excluded.page_count > 0 THEN excluded.page_count ELSE books.page_count END,
-                        deleted = excluded.deleted,
-                        released = excluded.released,
-                        last_modified = excluded.last_modified,
-                        raw_json = excluded.raw_json,
-                        updated_at = CURRENT_TIMESTAMP
-                    """,
-                    (
-                        b["id"],
-                        b["series_id"],
-                        b["library_id"],
-                        b["name"],
-                        b.get("number", 1.0),
-                        b.get("book_type"),
-                        b.get("file_path"),
-                        b.get("file_size_kb", 0),
-                        b.get("page_count", 0),
-                        b.get("deleted", 0),
-                        b.get("released"),
-                        b.get("created"),
-                        b.get("last_modified"),
-                        b.get("raw_json") if isinstance(b.get("raw_json"), str) else json.dumps(b.get("raw_json", {})),
-                    ),
-                )
-            await db.commit()
+        if not books:
+            return
+        chunk_size = 1000
+        for i in range(0, len(books), chunk_size):
+            chunk = books[i : i + chunk_size]
+            for attempt in range(5):
+                try:
+                    async with self.get_db() as db:
+                        await db.executemany(
+                            """
+                            INSERT INTO books (id, series_id, library_id, name, number, book_type, file_path, file_size_kb, page_count, deleted, released, created, last_modified, raw_json, updated_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                            ON CONFLICT(id) DO UPDATE SET
+                                series_id = excluded.series_id,
+                                library_id = excluded.library_id,
+                                name = excluded.name,
+                                number = excluded.number,
+                                book_type = excluded.book_type,
+                                file_path = excluded.file_path,
+                                file_size_kb = excluded.file_size_kb,
+                                page_count = CASE WHEN excluded.page_count > 0 THEN excluded.page_count ELSE books.page_count END,
+                                deleted = excluded.deleted,
+                                released = excluded.released,
+                                last_modified = excluded.last_modified,
+                                raw_json = excluded.raw_json,
+                                updated_at = CURRENT_TIMESTAMP
+                            """,
+                            [
+                                (
+                                    b["id"],
+                                    b["series_id"],
+                                    b["library_id"],
+                                    b["name"],
+                                    b.get("number", 1.0),
+                                    b.get("book_type"),
+                                    b.get("file_path"),
+                                    b.get("file_size_kb", 0),
+                                    b.get("page_count", 0),
+                                    b.get("deleted", 0),
+                                    b.get("released"),
+                                    b.get("created"),
+                                    b.get("last_modified"),
+                                    b.get("raw_json") if isinstance(b.get("raw_json"), str) else json.dumps(b.get("raw_json", {})),
+                                )
+                                for b in chunk
+                            ],
+                        )
+                        await db.commit()
+                    break
+                except sqlite3.OperationalError as e:
+                    if "locked" in str(e).lower() and attempt < 4:
+                        await asyncio.sleep(0.1 * (2 ** attempt))
+                    else:
+                        raise
+            await asyncio.sleep(0)
 
     async def update_book_page_count(self, book_id: int, page_count: int) -> None:
-        async with aiosqlite.connect(self.db_path) as db:
-            # Also update pageCount in raw_json
-            cursor = await db.execute("SELECT raw_json FROM books WHERE id = ?", (book_id,))
-            row = await cursor.fetchone()
-            if row and row[0]:
-                try:
-                    data = json.loads(row[0])
-                    if "metadata" in data and isinstance(data["metadata"], dict):
-                        data["metadata"]["pageCount"] = page_count
-                    updated_json = json.dumps(data)
-                    await db.execute(
-                        "UPDATE books SET page_count = ?, raw_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                        (page_count, updated_json, book_id),
-                    )
-                except Exception:
-                    await db.execute(
-                        "UPDATE books SET page_count = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                        (page_count, book_id),
-                    )
-            else:
-                await db.execute(
-                    "UPDATE books SET page_count = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                    (page_count, book_id),
-                )
-            await db.commit()
+        for attempt in range(5):
+            try:
+                async with self.get_db() as db:
+                    # Also update pageCount in raw_json
+                    cursor = await db.execute("SELECT raw_json FROM books WHERE id = ?", (book_id,))
+                    row = await cursor.fetchone()
+                    if row and row[0]:
+                        try:
+                            data = json.loads(row[0])
+                            if "metadata" in data and isinstance(data["metadata"], dict):
+                                data["metadata"]["pageCount"] = page_count
+                            updated_json = json.dumps(data)
+                            await db.execute(
+                                "UPDATE books SET page_count = ?, raw_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                                (page_count, updated_json, book_id),
+                            )
+                        except Exception:
+                            await db.execute(
+                                "UPDATE books SET page_count = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                                (page_count, book_id),
+                            )
+                    else:
+                        await db.execute(
+                            "UPDATE books SET page_count = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                            (page_count, book_id),
+                        )
+                    await db.commit()
+                return
+            except sqlite3.OperationalError as e:
+                if "locked" in str(e).lower() and attempt < 4:
+                    wait_time = 0.1 * (2 ** attempt)
+                    logger.warning(f"Database locked in update_book_page_count, retrying in {wait_time:.2f}s (attempt {attempt + 1}/5)...")
+                    await asyncio.sleep(wait_time)
+                else:
+                    raise
 
     async def get_book_by_id(
         self, book_id: int, include_deleted: bool = False, user_id: Optional[int] = None
     ) -> Optional[Dict[str, Any]]:
         clause = "WHERE b.id = ?" if include_deleted else "WHERE b.id = ? AND b.deleted = 0"
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_db() as db:
             db.row_factory = aiosqlite.Row
             if user_id is not None:
                 query = f"""
@@ -593,14 +648,14 @@ class Database:
             LIMIT 1
         """
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_db() as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(query, tuple(params))
             row = await cursor.fetchone()
             return dict(row) if row else None
 
     async def mark_book_deleted(self, book_id: int) -> None:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_db() as db:
             await db.execute("UPDATE books SET deleted = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (book_id,))
             await db.execute("DELETE FROM book_pages WHERE book_id = ?", (book_id,))
             await db.commit()
@@ -609,7 +664,7 @@ class Database:
     async def mark_books_deleted(self, book_ids: List[int]) -> int:
         if not book_ids:
             return 0
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_db() as db:
             chunk_size = 500
             for i in range(0, len(book_ids), chunk_size):
                 chunk = book_ids[i:i + chunk_size]
@@ -621,7 +676,7 @@ class Database:
         return len(book_ids)
 
     async def get_active_book_ids(self) -> List[int]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_db() as db:
             cursor = await db.execute("SELECT id FROM books WHERE deleted = 0")
             rows = await cursor.fetchall()
             return [r[0] for r in rows]
@@ -636,30 +691,40 @@ class Database:
         completed: bool,
         read_date: str,
     ) -> None:
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(
-                """
-                INSERT INTO read_progress (user_id, book_id, page, completed, read_date, updated_at)
-                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(user_id, book_id) DO UPDATE SET
-                    page = excluded.page,
-                    completed = excluded.completed,
-                    read_date = excluded.read_date,
-                    updated_at = CURRENT_TIMESTAMP
-                """,
-                (user_id, book_id, page, 1 if completed else 0, read_date),
-            )
-            await db.commit()
+        for attempt in range(5):
+            try:
+                async with self.get_db() as db:
+                    await db.execute(
+                        """
+                        INSERT INTO read_progress (user_id, book_id, page, completed, read_date, updated_at)
+                        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                        ON CONFLICT(user_id, book_id) DO UPDATE SET
+                            page = excluded.page,
+                            completed = excluded.completed,
+                            read_date = excluded.read_date,
+                            updated_at = CURRENT_TIMESTAMP
+                        """,
+                        (user_id, book_id, page, 1 if completed else 0, read_date),
+                    )
+                    await db.commit()
+                return
+            except sqlite3.OperationalError as e:
+                if "locked" in str(e).lower() and attempt < 4:
+                    wait_time = 0.1 * (2 ** attempt)
+                    logger.warning(f"Database locked in upsert_read_progress, retrying in {wait_time:.2f}s (attempt {attempt + 1}/5)...")
+                    await asyncio.sleep(wait_time)
+                else:
+                    raise
 
     async def delete_read_progress(self, user_id: int, book_id: int) -> None:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_db() as db:
             await db.execute("DELETE FROM read_progress WHERE user_id = ? AND book_id = ?", (user_id, book_id))
             await db.commit()
 
     async def delete_read_progress_batch(self, user_id: int, book_ids: List[int]) -> None:
         if not book_ids:
             return
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_db() as db:
             chunk_size = 500
             for i in range(0, len(book_ids), chunk_size):
                 chunk = book_ids[i : i + chunk_size]
@@ -673,39 +738,51 @@ class Database:
     async def upsert_read_progress_batch(self, records: List[Dict[str, Any]]) -> None:
         if not records:
             return
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.executemany(
-                """
-                INSERT INTO read_progress (user_id, book_id, page, completed, read_date, updated_at)
-                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(user_id, book_id) DO UPDATE SET
-                    page = excluded.page,
-                    completed = excluded.completed,
-                    read_date = excluded.read_date,
-                    updated_at = CURRENT_TIMESTAMP
-                """,
-                [
-                    (
-                        r["user_id"],
-                        r["book_id"],
-                        r.get("page", 1),
-                        1 if r.get("completed") else 0,
-                        r["read_date"],
-                    )
-                    for r in records
-                ],
-            )
-            await db.commit()
+        chunk_size = 1000
+        for i in range(0, len(records), chunk_size):
+            chunk = records[i : i + chunk_size]
+            for attempt in range(5):
+                try:
+                    async with self.get_db() as db:
+                        await db.executemany(
+                            """
+                            INSERT INTO read_progress (user_id, book_id, page, completed, read_date, updated_at)
+                            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                            ON CONFLICT(user_id, book_id) DO UPDATE SET
+                                page = excluded.page,
+                                completed = excluded.completed,
+                                read_date = excluded.read_date,
+                                updated_at = CURRENT_TIMESTAMP
+                            """,
+                            [
+                                (
+                                    r["user_id"],
+                                    r["book_id"],
+                                    r.get("page", 1),
+                                    1 if r.get("completed") else 0,
+                                    r["read_date"],
+                                )
+                                for r in chunk
+                            ],
+                        )
+                        await db.commit()
+                    break
+                except sqlite3.OperationalError as e:
+                    if "locked" in str(e).lower() and attempt < 4:
+                        await asyncio.sleep(0.1 * (2 ** attempt))
+                    else:
+                        raise
+            await asyncio.sleep(0)
 
     async def get_book_read_progress(self, user_id: int, book_id: int) -> Optional[Dict[str, Any]]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_db() as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("SELECT * FROM read_progress WHERE user_id = ? AND book_id = ?", (user_id, book_id))
             row = await cursor.fetchone()
             return dict(row) if row else None
 
     async def get_all_user_read_progress(self, user_id: int) -> Dict[int, Dict[str, Any]]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_db() as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("SELECT * FROM read_progress WHERE user_id = ?", (user_id,))
             rows = await cursor.fetchall()
@@ -721,7 +798,7 @@ class Database:
         is_admin: bool = False,
         assigned_libraries: Optional[List[int]] = None,
     ) -> None:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_db() as db:
             await db.execute(
                 """
                 INSERT INTO users (id, username, token, is_admin, assigned_libraries, last_connected_at, updated_at)
@@ -745,7 +822,7 @@ class Database:
             await db.commit()
 
     async def get_user_by_id(self, user_id: int) -> Optional[Dict[str, Any]]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_db() as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("SELECT * FROM users WHERE id = ?", (user_id,))
             row = await cursor.fetchone()
@@ -754,21 +831,21 @@ class Database:
     async def get_user_by_token(self, token: str) -> Optional[Dict[str, Any]]:
         if not token:
             return None
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_db() as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("SELECT * FROM users WHERE token = ?", (token,))
             row = await cursor.fetchone()
             return dict(row) if row else None
 
     async def get_all_users(self) -> List[Dict[str, Any]]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_db() as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("SELECT * FROM users ORDER BY last_connected_at DESC")
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
 
     async def get_users_with_tokens(self) -> List[Dict[str, Any]]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_db() as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
                 "SELECT * FROM users WHERE token IS NOT NULL AND token != '' ORDER BY last_connected_at DESC"
@@ -777,7 +854,7 @@ class Database:
             return [dict(r) for r in rows]
 
     async def update_user_progress_sync_time(self, user_id: int) -> None:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_db() as db:
             await db.execute(
                 "UPDATE users SET last_sync_progress_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 (user_id,),
@@ -793,7 +870,7 @@ class Database:
         params: List[Any] = [scope, user_id]
         if allow_unauthorized_only:
             clause += " AND allow_unauthorized = 1"
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_db() as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(f"SELECT * FROM client_settings {clause}", params)
             rows = await cursor.fetchall()
@@ -810,7 +887,7 @@ class Database:
     ) -> None:
         if not settings:
             return
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_db() as db:
             await db.executemany(
                 """
                 INSERT INTO client_settings (scope, user_id, name, value, allow_unauthorized, updated_at)
@@ -838,7 +915,7 @@ class Database:
     ) -> None:
         if not names:
             return
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_db() as db:
             placeholders = ",".join("?" for _ in names)
             await db.execute(
                 f"DELETE FROM client_settings WHERE scope = ? AND user_id = ? AND name IN ({placeholders})",
@@ -851,7 +928,7 @@ class Database:
     async def get_r2_progression(
         self, user_id: int, book_id: int
     ) -> Optional[Dict[str, Any]]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_db() as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
                 "SELECT progression_json FROM r2_progression WHERE user_id = ? AND book_id = ?",
@@ -868,21 +945,31 @@ class Database:
     async def upsert_r2_progression(
         self, user_id: int, book_id: int, progression_json: str
     ) -> None:
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(
-                """
-                INSERT INTO r2_progression (user_id, book_id, progression_json, updated_at)
-                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(user_id, book_id) DO UPDATE SET
-                    progression_json = excluded.progression_json,
-                    updated_at = CURRENT_TIMESTAMP
-                """,
-                (user_id, book_id, progression_json),
-            )
-            await db.commit()
+        for attempt in range(5):
+            try:
+                async with self.get_db() as db:
+                    await db.execute(
+                        """
+                        INSERT INTO r2_progression (user_id, book_id, progression_json, updated_at)
+                        VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                        ON CONFLICT(user_id, book_id) DO UPDATE SET
+                            progression_json = excluded.progression_json,
+                            updated_at = CURRENT_TIMESTAMP
+                        """,
+                        (user_id, book_id, progression_json),
+                    )
+                    await db.commit()
+                return
+            except sqlite3.OperationalError as e:
+                if "locked" in str(e).lower() and attempt < 4:
+                    wait_time = 0.1 * (2 ** attempt)
+                    logger.warning(f"Database locked in upsert_r2_progression, retrying in {wait_time:.2f}s (attempt {attempt + 1}/5)...")
+                    await asyncio.sleep(wait_time)
+                else:
+                    raise
 
     async def delete_r2_progression(self, user_id: int, book_id: int) -> None:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_db() as db:
             await db.execute(
                 "DELETE FROM r2_progression WHERE user_id = ? AND book_id = ?",
                 (user_id, book_id),
@@ -892,7 +979,7 @@ class Database:
     async def delete_r2_progression_batch(self, user_id: int, book_ids: List[int]) -> None:
         if not book_ids:
             return
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_db() as db:
             chunk_size = 500
             for i in range(0, len(book_ids), chunk_size):
                 chunk = book_ids[i : i + chunk_size]
@@ -911,7 +998,7 @@ class Database:
         key_id = str(uuid.uuid4())
         key_val = secrets.token_urlsafe(32)
         now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_db() as db:
             await db.execute(
                 """
                 INSERT INTO api_keys (id, user_id, key, comment, created_at)
@@ -929,7 +1016,7 @@ class Database:
         }
 
     async def get_api_keys(self, user_id: int) -> List[Dict[str, Any]]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_db() as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
                 "SELECT * FROM api_keys WHERE user_id = ? ORDER BY created_at DESC",
@@ -948,7 +1035,7 @@ class Database:
             ]
 
     async def get_user_id_by_api_key(self, key: str) -> Optional[int]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_db() as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
                 "SELECT user_id FROM api_keys WHERE key = ?",
@@ -966,7 +1053,7 @@ class Database:
             return None
 
     async def delete_api_key(self, user_id: int, key_id: str) -> bool:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_db() as db:
             cursor = await db.execute(
                 "DELETE FROM api_keys WHERE user_id = ? AND id = ?",
                 (user_id, key_id),
@@ -1122,7 +1209,7 @@ class Database:
         order_by_sql = ", ".join(order_clauses)
         where_clause = f"WHERE {' AND '.join(conditions)}"
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_db() as db:
             db.row_factory = aiosqlite.Row
             count_query = f"""
                 SELECT COUNT(*) as total FROM books b
@@ -1192,7 +1279,7 @@ class Database:
             join_rp_clause = "LEFT JOIN read_progress rp ON (1 = 0)"
             rp_params = []
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_db() as db:
             db.row_factory = aiosqlite.Row
             query = f"""
                 SELECT b.*, s.name as series_name,
@@ -1284,7 +1371,7 @@ class Database:
         query = "SELECT * FROM books WHERE deleted = 0 AND (page_count IS NULL OR page_count <= 0) ORDER BY id ASC"
         if limit:
             query += f" LIMIT {limit}"
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_db() as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(query)
             rows = await cursor.fetchall()
@@ -1292,7 +1379,7 @@ class Database:
 
     async def get_all_books_for_page_calc(self) -> List[Dict[str, Any]]:
         query = "SELECT * FROM books WHERE deleted = 0 ORDER BY id ASC"
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_db() as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(query)
             rows = await cursor.fetchall()
@@ -1301,7 +1388,7 @@ class Database:
     # ---------------- Page Dimension / Detail Cache ----------------
 
     async def upsert_book_pages(self, book_id: int, pages: List[Dict[str, Any]]) -> None:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_db() as db:
             await db.execute("DELETE FROM book_pages WHERE book_id = ?", (book_id,))
             for p in pages:
                 await db.execute(
@@ -1322,7 +1409,7 @@ class Database:
             await db.commit()
 
     async def get_book_pages(self, book_id: int) -> List[Dict[str, Any]]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_db() as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
                 "SELECT * FROM book_pages WHERE book_id = ? ORDER BY page_number ASC",
@@ -1334,7 +1421,7 @@ class Database:
     # ---------------- Sync & Stats State ----------------
 
     async def set_state(self, key: str, value: str) -> None:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_db() as db:
             await db.execute(
                 """
                 INSERT INTO sync_state (key, value, updated_at)
@@ -1346,13 +1433,13 @@ class Database:
             await db.commit()
 
     async def get_state(self, key: str) -> Optional[str]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_db() as db:
             cursor = await db.execute("SELECT value FROM sync_state WHERE key = ?", (key,))
             row = await cursor.fetchone()
             return row[0] if row else None
 
     async def get_stats(self) -> Dict[str, Any]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_db() as db:
             db.row_factory = aiosqlite.Row
 
             lib_count = (await (await db.execute("SELECT COUNT(*) as count FROM libraries")).fetchone())["count"]
@@ -1390,7 +1477,7 @@ class Database:
 
     async def create_page_calc_job(self, total_books: int) -> int:
         now = datetime.now(timezone.utc).isoformat()
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_db() as db:
             cursor = await db.execute(
                 """
                 INSERT INTO page_calc_jobs (status, total_books, processed_books, updated_books, error_count, started_at)
@@ -1412,7 +1499,7 @@ class Database:
         status: Optional[str] = None,
         error_message: Optional[str] = None,
     ) -> None:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_db() as db:
             completed_at = datetime.now(timezone.utc).isoformat() if status in ["completed", "failed", "stopped"] else None
             if status:
                 await db.execute(
@@ -1436,7 +1523,7 @@ class Database:
             await db.commit()
 
     async def get_latest_page_calc_job(self) -> Optional[Dict[str, Any]]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_db() as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("SELECT * FROM page_calc_jobs ORDER BY id DESC LIMIT 1")
             row = await cursor.fetchone()
