@@ -1833,7 +1833,7 @@ async def test_connected_users_and_purge():
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         # A. Non-admin attempting GET /admin/api/users gets 401/403
         resp_unauth = await client.get("/admin/api/users", headers=reader_headers)
-        assert resp_unauth.status_code == 401
+        assert resp_unauth.status_code in (401, 403)
 
         # B. Admin GET /admin/api/users succeeds
         resp_users = await client.get("/admin/api/users", headers=admin_headers)
