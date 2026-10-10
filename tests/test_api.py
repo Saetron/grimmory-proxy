@@ -1385,24 +1385,82 @@ async def test_series_and_book_read_progress_endpoints(monkeypatch):
 @pytest.mark.asyncio
 async def test_grimmory_url_redirects(monkeypatch):
     from app.config import settings
+    from app.main import db
+
+    await db.connect()
+    # Insert series and book to test DB resolution
+    await db.upsert_libraries([{"id": 20, "name": "Light Novel"}])
+    await db.upsert_series_batch([
+        {
+            "id": "20-86-eighty-six-alter-ae04b64f",
+            "library_id": 20,
+            "name": "86-EIGHTY-SIX Alter",
+            "slug": "86-eighty-six-alter-ae04b64f",
+            "books_count": 1,
+        }
+    ])
+    await db.upsert_books_batch([
+        {
+            "id": 12345,
+            "series_id": "20-86-eighty-six-alter-ae04b64f",
+            "library_id": 20,
+            "name": "86 Vol 1",
+            "book_type": "EPUB",
+        },
+        {
+            "id": 12346,
+            "series_id": "20-86-eighty-six-alter-ae04b64f",
+            "library_id": 20,
+            "name": "86 Manga 1",
+            "book_type": "CBZ",
+        },
+    ])
 
     monkeypatch.setattr(settings, "grimmory_public_url", "http://public-grimmory:9090")
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test", follow_redirects=False) as client:
-        # 1. /series/{id} redirects to public Grimmory URL
+        # 1. /series/{id} maps composite ID to Grimmory's /series/:seriesName scheme
         resp_s = await client.get("/series/20-86-eighty-six-alter-ae04b64f?tab=books")
         assert resp_s.status_code == 307
-        assert resp_s.headers["location"] == "http://public-grimmory:9090/series/20-86-eighty-six-alter-ae04b64f?tab=books"
+        assert resp_s.headers["location"] == "http://public-grimmory:9090/series/86-EIGHTY-SIX%20Alter?tab=books"
 
-        # 2. /book/{id} redirects
+        # 1b. /series empty redirects to series browser
+        resp_s_empty = await client.get("/series")
+        assert resp_s_empty.status_code == 307
+        assert resp_s_empty.headers["location"] == "http://public-grimmory:9090/series"
+
+        # 2. /book/{id} redirects to Grimmory's /book/:bookId scheme
         resp_b = await client.get("/book/12345")
         assert resp_b.status_code == 307
         assert resp_b.headers["location"] == "http://public-grimmory:9090/book/12345"
 
-        # 3. /library/{id} redirects
+        # 2b. /book/{id}/read maps to reader component (/ebook-reader/book/:id or /cbx-reader/book/:id)
+        resp_read_epub = await client.get("/book/12345/read")
+        assert resp_read_epub.status_code == 307
+        assert resp_read_epub.headers["location"] == "http://public-grimmory:9090/ebook-reader/book/12345"
+
+        resp_read_cbz = await client.get("/book/12346/read")
+        assert resp_read_cbz.status_code == 307
+        assert resp_read_cbz.headers["location"] == "http://public-grimmory:9090/cbx-reader/book/12346"
+
+        # 3. /library/{id} redirects to Grimmory's /library/:libraryId/books scheme
         resp_l = await client.get("/library/14")
         assert resp_l.status_code == 307
-        assert resp_l.headers["location"] == "http://public-grimmory:9090/library/14"
+        assert resp_l.headers["location"] == "http://public-grimmory:9090/library/14/books"
+
+        resp_l_empty = await client.get("/library")
+        assert resp_l_empty.status_code == 307
+        assert resp_l_empty.headers["location"] == "http://public-grimmory:9090/all-books"
+
+        # 4. /shelf/{id} and /collection/{id} redirect to /shelf/:shelfId/books
+        resp_shelf = await client.get("/collection/7")
+        assert resp_shelf.status_code == 307
+        assert resp_shelf.headers["location"] == "http://public-grimmory:9090/shelf/7/books"
+
+        # 5. /authors redirects to /authors
+        resp_authors = await client.get("/authors")
+        assert resp_authors.status_code == 307
+        assert resp_authors.headers["location"] == "http://public-grimmory:9090/authors"
 
 
 @pytest.mark.asyncio

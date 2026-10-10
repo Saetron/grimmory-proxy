@@ -425,6 +425,13 @@ class Database:
             if not row:
                 cursor = await db.execute("SELECT id FROM series WHERE id LIKE ? ORDER BY id ASC LIMIT 1", (f"%-{identifier}",))
                 row = await cursor.fetchone()
+            if not row:
+                cursor = await db.execute("SELECT id FROM series WHERE name = ? COLLATE NOCASE ORDER BY id ASC LIMIT 1", (identifier,))
+                row = await cursor.fetchone()
+            if not row and "-" in identifier and identifier.split("-")[0].isdigit():
+                slug_part = identifier.split("-", 1)[1]
+                cursor = await db.execute("SELECT id FROM series WHERE slug = ? OR slug LIKE ? OR id LIKE ? ORDER BY id ASC LIMIT 1", (slug_part, f"{slug_part}-%", f"%-{slug_part}"))
+                row = await cursor.fetchone()
             if row:
                 actual_id = row["id"]
                 return await self.get_series_by_id(actual_id, user_id=user_id)

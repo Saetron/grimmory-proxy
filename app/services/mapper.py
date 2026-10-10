@@ -1,7 +1,9 @@
 import json
 import logging
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote
 
+from app.config import settings
 from app.models.komga import (
     AuthorDto,
     BookDto,
@@ -171,6 +173,16 @@ class KomgaMapper:
         book_created = format_iso_timestamp(record.get("created"))
         book_modified = format_iso_timestamp(record.get("last_modified"))
 
+        book_links = []
+        for l in metadata_obj.get("links", []):
+            if isinstance(l, dict) and "url" in l:
+                book_links.append(l)
+        if settings.public_grimmory_url:
+            book_links.append({
+                "label": "Grimmory",
+                "url": f"{settings.public_grimmory_url}/book/{book_id}",
+            })
+
         metadata = BookMetadataDto(
             title=title,
             summary=summary,
@@ -180,6 +192,7 @@ class KomgaMapper:
             authors=authors_list,
             tags=tags_list,
             isbn=isbn or "",
+            links=book_links,
             created=book_created,
             lastModified=book_modified,
         )
@@ -286,6 +299,13 @@ class KomgaMapper:
         series_created = format_iso_timestamp(record.get("created"))
         series_modified = format_iso_timestamp(record.get("last_modified"))
 
+        series_links = []
+        if settings.public_grimmory_url:
+            series_links.append({
+                "label": "Grimmory",
+                "url": f"{settings.public_grimmory_url}/series/{quote(name, safe='')}",
+            })
+
         meta = SeriesMetadataDto(
             status="ONGOING",
             created=series_created,
@@ -294,6 +314,7 @@ class KomgaMapper:
             titleSort=record.get("sort_title", name),
             readingDirection="LEFT_TO_RIGHT",
             totalBookCount=count,
+            links=series_links,
         )
 
         books_meta = BookMetadataAggregationDto(
