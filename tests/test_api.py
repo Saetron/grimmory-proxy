@@ -57,9 +57,11 @@ def test_load_version_logic(monkeypatch):
     assert _load_version() == "9.9.9"
 
     monkeypatch.delenv("APP_VERSION", raising=False)
-    # Test file read from VERSION
+    # Test file read from VERSION (the release workflow bumps it, so don't hard-code the value)
+    from pathlib import Path
+    expected = (Path(__file__).resolve().parent.parent / "VERSION").read_text(encoding="utf-8").strip()
     ver = _load_version()
-    assert ver == "0.3"
+    assert ver == expected
 
 
 
