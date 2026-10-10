@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Literal
+from typing import List, Literal
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -109,10 +109,17 @@ class Settings(BaseSettings):
         description="Logging verbosity (debug, info, warning, error)",
     )
 
-    # WebUI admin session secret key
-    admin_session_secret: str = Field(
-        default="grimmory-proxy-secret-key-change-me",
-        description="Secret key for signing WebUI admin session cookies",
+    # Web security
+    cors_allow_origins: str = Field(
+        default="*",
+        description=(
+            "Comma-separated list of browser origins allowed by CORS. '*' allows any origin "
+            "but disables credentialed (cookie) cross-origin requests."
+        ),
+    )
+    cookie_secure: bool = Field(
+        default=False,
+        description="Set the Secure flag on the admin session cookie (enable when served over HTTPS)",
     )
 
     # Calibre page calculation characters per page
@@ -120,6 +127,11 @@ class Settings(BaseSettings):
         default=1024,
         description="Number of text characters considered one page for novels (Calibre ADE standard: 1024)",
     )
+
+    @property
+    def cors_origins_list(self) -> List[str]:
+        origins = [o.strip().rstrip("/") for o in self.cors_allow_origins.split(",") if o.strip()]
+        return origins or ["*"]
 
     @property
     def public_grimmory_url(self) -> str:

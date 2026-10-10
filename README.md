@@ -101,7 +101,8 @@ A high-performance Python and Docker proxy/bridge that translates the **Grimmory
 | `SYNC_ON_STARTUP` | `true` | Whether to trigger background metadata sync on startup. |
 | `SYNC_CONCURRENCY` | `6` | Concurrency limit for background series/book page inspection. |
 | `NOVEL_CHARS_PER_PAGE` | `1024` | Number of characters per page for novels (Calibre ADE standard: 1024). |
-| `ADMIN_SESSION_SECRET` | `grimmory-proxy-secret-key-change-me` | Secret key for signing WebUI admin session cookies. |
+| `CORS_ALLOW_ORIGINS` | `*` | Comma-separated browser origins allowed by CORS. With `*` credentialed (cookie) cross-origin requests are disabled; list explicit origins to enable them. |
+| `COOKIE_SECURE` | `false` | Set the `Secure` flag on the admin session cookie (enable when served over HTTPS). |
 | `DATABASE_PATH` | `/app/data/bridge.db` | Path to persistent SQLite cache database. |
 | `THUMBNAILS_DIR` | `/app/data/thumbnails` | Path to disk cache for cover thumbnails. |
 | `PORT` | `8080` | Port the proxy listens on inside the container. |

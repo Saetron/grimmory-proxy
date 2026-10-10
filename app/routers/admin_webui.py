@@ -81,8 +81,9 @@ def get_admin_router(
                 key="admin_session",
                 value=user.token,
                 httponly=True,
-                samesite="lax",
-                max_age=86400 * 7,
+                secure=settings.cookie_secure,
+                samesite="strict",
+                max_age=86400,
             )
             return redirect
         except Exception as e:
