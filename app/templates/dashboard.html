@@ -154,6 +154,142 @@
   </div>
 </div>
 
+<!-- Connected Users & Reader Clients -->
+<div class="panel-card" style="margin-bottom: 1.5rem;">
+  <div class="panel-header" style="margin-bottom: 1rem;">
+    <div style="display: flex; justify-content: space-between; align-items: center; width: 100%; flex-wrap: wrap; gap: 0.75rem;">
+      <div>
+        <div class="panel-title">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--color-primary)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+            <circle cx="9" cy="7" r="4"></circle>
+            <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+            <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+          </svg>
+          <span>Connected Users & Readers</span>
+          <span id="users-count-pill" class="brand-badge" style="font-size: 0.72rem; padding: 0.15rem 0.55rem;">
+            {{ users|length if users else 0 }} User{% if not users or users|length != 1 %}s{% endif %}
+          </span>
+        </div>
+        <p style="color: var(--color-text-muted); font-size: 0.85rem; margin-top: 0.35rem; line-height: 1.45;">
+          Authenticated readers (Komic, Mihon, Tachiyomi, Kuro Reader, WebUI) currently connecting through the bridge.
+        </p>
+      </div>
+      <div>
+        <button onclick="refreshUsers()" class="btn btn-ghost" style="padding: 0.35rem 0.75rem; font-size: 0.8rem;" title="Refresh connected users">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+          </svg>
+          <span>Refresh</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div class="table-container" style="overflow-x: auto;">
+    <table style="width: 100%; border-collapse: collapse; min-width: 680px;" id="users-table">
+      <thead>
+        <tr>
+          <th style="text-align: left; padding: 0.6rem 0.75rem;">User</th>
+          <th style="text-align: left; padding: 0.6rem 0.75rem;">Role</th>
+          <th style="text-align: left; padding: 0.6rem 0.75rem;">Library Access</th>
+          <th style="text-align: left; padding: 0.6rem 0.75rem;">Read Progress</th>
+          <th style="text-align: left; padding: 0.6rem 0.75rem;">Last Connected</th>
+          <th style="text-align: left; padding: 0.6rem 0.75rem;">Last Read Sync</th>
+          <th style="text-align: right; padding: 0.6rem 0.75rem;">Actions</th>
+        </tr>
+      </thead>
+      <tbody id="users-table-body">
+        {% if users and users|length > 0 %}
+          {% for u in users %}
+            <tr id="user-row-{{ u.id }}">
+              <td style="padding: 0.75rem;">
+                <div style="display: flex; align-items: center; gap: 0.65rem;">
+                  <div style="position: relative; width: 32px; height: 32px; border-radius: 50%; background: var(--color-primary-light); display: flex; align-items: center; justify-content: center; color: var(--color-primary); font-weight: 700; font-size: 0.85rem; border: 1px solid rgba(249, 115, 22, 0.25);">
+                    {{ u.username[:1].upper() }}
+                    {% if u.is_online %}
+                      <span title="Active in last 15 min" style="position: absolute; bottom: -1px; right: -1px; width: 9px; height: 9px; border-radius: 50%; background: #22c55e; border: 2px solid var(--color-card); box-shadow: 0 0 6px #22c55e;"></span>
+                    {% endif %}
+                  </div>
+                  <div>
+                    <div style="font-weight: 600; color: var(--color-text-strong); display: flex; align-items: center; gap: 0.35rem;">
+                      <span>{{ u.username }}</span>
+                      {% if user and user.user_id == u.id %}
+                        <span style="font-size: 0.68rem; color: var(--color-primary); font-weight: 700; background: var(--color-primary-light); padding: 0.05rem 0.35rem; border-radius: 4px;">YOU</span>
+                      {% endif %}
+                    </div>
+                    <div style="font-size: 0.72rem; color: var(--color-text-muted);">ID: {{ u.id }}</div>
+                  </div>
+                </div>
+              </td>
+              <td style="padding: 0.75rem;">
+                {% if u.is_admin %}
+                  <span class="user-role-badge role-admin">Administrator</span>
+                {% else %}
+                  <span class="user-role-badge role-user">User</span>
+                {% endif %}
+              </td>
+              <td style="padding: 0.75rem; color: var(--color-text); font-size: 0.85rem;">
+                {{ u.libraries_display }}
+              </td>
+              <td style="padding: 0.75rem; font-size: 0.85rem;">
+                <strong style="color: var(--color-text-strong);">{{ u.progress_count }}</strong>
+                <span style="color: var(--color-text-muted);">books</span>
+                {% if u.completed_count > 0 %}
+                  <span style="color: var(--color-success); font-size: 0.75rem; margin-left: 0.25rem;">({{ u.completed_count }} read)</span>
+                {% endif %}
+              </td>
+              <td style="padding: 0.75rem; color: var(--color-text-muted); font-size: 0.825rem;">
+                {{ u.last_connected_at or '-' }}
+              </td>
+              <td style="padding: 0.75rem; color: var(--color-text-muted); font-size: 0.825rem;">
+                {{ u.last_sync_progress_at or 'Never' }}
+              </td>
+              <td style="padding: 0.75rem; text-align: right;">
+                <div style="display: flex; gap: 0.4rem; justify-content: flex-end; align-items: center;">
+                  {% if u.has_token %}
+                    <button data-action="sync-user" data-user-id="{{ u.id }}" data-username="{{ u.username }}" class="btn btn-ghost btn-sm" title="Sync Grimmory read status for {{ u.username }}">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+                      </svg>
+                      <span>Sync</span>
+                    </button>
+                  {% endif %}
+                  {% if user and user.user_id == u.id %}
+                    <button class="btn btn-ghost btn-sm" disabled title="Cannot purge your own currently active admin session" style="opacity: 0.4; cursor: not-allowed;">
+                      <span>Purge</span>
+                    </button>
+                  {% else %}
+                    <button data-action="purge-user" data-user-id="{{ u.id }}" data-username="{{ u.username }}" class="btn btn-danger-ghost btn-sm" title="Purge user and clear cached read progress for {{ u.username }}">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="3 6 5 6 21 6"></polyline>
+                        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                      </svg>
+                      <span>Purge</span>
+                    </button>
+                  {% endif %}
+                </div>
+              </td>
+            </tr>
+          {% endfor %}
+        {% else %}
+          <tr id="no-users-row">
+            <td colspan="7" style="text-align: center; padding: 2.5rem 1rem; color: var(--color-text-muted); font-size: 0.875rem;">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="opacity: 0.4; margin-bottom: 0.5rem; display: block; margin-left: auto; margin-right: auto;">
+                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+                <circle cx="9" cy="7" r="4"></circle>
+                <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+                <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+              </svg>
+              No reader clients have connected yet. Connect using <strong>Komic</strong>, <strong>Mihon</strong>, or <strong>Komga apps</strong> with your Grimmory credentials to register users here.
+            </td>
+          </tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
 <!-- Page Calculation Action Panel -->
 <div class="panel-card">
   <div class="panel-header">

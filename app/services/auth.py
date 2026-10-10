@@ -1,6 +1,10 @@
 import base64
+import hashlib
+import hmac
 import json
 import logging
+import secrets
+import time
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
 from fastapi import Depends, HTTPException, Request, Response, status
@@ -17,8 +21,19 @@ security_basic = HTTPBasic(auto_error=False)
 
 # In-memory session cache: token/session_key -> UserSession
 _active_sessions: Dict[str, UserSession] = {}
-# Cache username:password -> token for quick Basic Auth re-use
+# Cache keyed-hash(username, password) -> token for quick Basic Auth re-use
 _credential_tokens: Dict[str, str] = {}
+_last_user_touch: Dict[int, float] = {}
+
+# Per-process random key for hashing cached credentials
+_CREDENTIAL_CACHE_KEY = secrets.token_bytes(32)
+_MAX_CACHED_SESSIONS = 5000
+
+# Failed-login throttling (per client IP + username)
+_failed_logins: Dict[str, List[float]] = {}
+_MAX_FAILED_LOGINS = 10
+_LOGIN_WINDOW_SECONDS = 300
+_MAX_THROTTLE_ENTRIES = 10000
 
 
 def parse_assigned_libraries(assigned_raw: Any) -> List[int]:
@@ -49,16 +64,97 @@ class AuthService:
 
     @staticmethod
     def cache_session(session: UserSession) -> None:
+        if len(_active_sessions) >= _MAX_CACHED_SESSIONS:
+            AuthService._prune_expired()
         _active_sessions[session.token] = session
 
+    @staticmethod
+    def _prune_expired() -> None:
+        now = datetime.now(timezone.utc)
+        for token in [t for t, s in list(_active_sessions.items()) if s.expires_at <= now]:
+            _active_sessions.pop(token, None)
+        for key in [k for k, t in list(_credential_tokens.items()) if t not in _active_sessions]:
+            _credential_tokens.pop(key, None)
+
+    @staticmethod
+    def _credential_key(username: str, password: str) -> str:
+        """Keyed hash so plaintext passwords are never held as dictionary keys."""
+        msg = f"{username}\x00{password}".encode("utf-8")
+        return hmac.new(_CREDENTIAL_CACHE_KEY, msg, hashlib.sha256).hexdigest()
+
+    @staticmethod
+    def _throttle_key(username: str, client_ip: str) -> str:
+        return f"{client_ip}|{username.lower()}"
+
     @classmethod
-    async def authenticate_credentials(cls, username: str, password: str) -> UserSession:
-        cache_key = f"{username}:{password}"
+    def _check_throttle(cls, key: str) -> None:
+        now = time.monotonic()
+        attempts = [t for t in _failed_logins.get(key, []) if now - t < _LOGIN_WINDOW_SECONDS]
+        if attempts:
+            _failed_logins[key] = attempts
+        else:
+            _failed_logins.pop(key, None)
+        if len(attempts) >= _MAX_FAILED_LOGINS:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Too many failed login attempts. Try again later.",
+                headers={"Retry-After": str(_LOGIN_WINDOW_SECONDS)},
+            )
+
+    @classmethod
+    def _record_failure(cls, key: str) -> None:
+        if len(_failed_logins) >= _MAX_THROTTLE_ENTRIES:
+            now = time.monotonic()
+            for k in [k for k, v in list(_failed_logins.items()) if not v or now - v[-1] >= _LOGIN_WINDOW_SECONDS]:
+                _failed_logins.pop(k, None)
+        _failed_logins.setdefault(key, []).append(time.monotonic())
+
+    @classmethod
+    def purge_user_sessions(cls, user_id: int, username: Optional[str] = None) -> int:
+        """
+        Evicts all in-memory sessions and credential caches associated with the specified user ID.
+        """
+        tokens_to_remove = {
+            token for token, session in list(_active_sessions.items())
+            if session.user_id == user_id
+        }
+        for token in tokens_to_remove:
+            _active_sessions.pop(token, None)
+
+        # Credential cache entries are hashed, so match them via the token they resolve to.
+        for key in [k for k, t in list(_credential_tokens.items()) if t in tokens_to_remove]:
+            _credential_tokens.pop(key, None)
+        return len(tokens_to_remove)
+
+    @classmethod
+    async def touch_user_activity(cls, user_id: int) -> None:
+        """
+        Updates the last connected timestamp for the user in the database (throttled to at most once per 60s).
+        """
+        import time
+        now = time.time()
+        last = _last_user_touch.get(user_id, 0.0)
+        if now - last > 60.0:
+            _last_user_touch[user_id] = now
+            try:
+                from app.main import db
+                await db.touch_user_last_connected(user_id)
+            except Exception:
+                pass
+
+    @classmethod
+    async def authenticate_credentials(
+        cls, username: str, password: str, client_ip: str = "unknown"
+    ) -> UserSession:
+        cache_key = cls._credential_key(username, password)
         cached_token = _credential_tokens.get(cache_key)
         if cached_token:
             cached_session = cls.get_cached_session(cached_token)
             if cached_session:
                 return cached_session
+
+        throttle_key = cls._throttle_key(username, client_ip)
+        cls._check_throttle(throttle_key)
 
         try:
             login_resp = await grimmory_client.login(username, password)
@@ -91,6 +187,7 @@ class AuthService:
 
             return session
         except Exception as e:
+            cls._record_failure(throttle_key)
             logger.warning(f"Failed authentication for user {username}: {e}")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -157,7 +254,9 @@ class AuthService:
                 b64_creds = auth_header[6:].strip()
                 decoded = base64.b64decode(b64_creds).decode("utf-8")
                 username, password = decoded.split(":", 1)
-                return await cls.authenticate_credentials(username, password)
+                return await cls.authenticate_credentials(
+                    username, password, client_ip=request.client.host if request.client else "unknown"
+                )
             except HTTPException:
                 raise
             except Exception as e:
@@ -168,6 +267,7 @@ class AuthService:
             token = auth_header[7:].strip()
             session = await cls.get_session_from_token(token)
             if session:
+                await cls.touch_user_activity(session.user_id)
                 return session
 
         # 3. Check API Key Headers or Query Parameter
@@ -190,6 +290,7 @@ class AuthService:
                         assigned_libs = json.loads(user_row["assigned_libraries"] or "[]")
                     except Exception:
                         pass
+                    await cls.touch_user_activity(user_row["id"])
                     return UserSession(
                         user_id=user_row["id"],
                         username=user_row["username"],
@@ -210,6 +311,7 @@ class AuthService:
             if cookie_token:
                 session = await cls.get_session_from_token(cookie_token)
                 if session:
+                    await cls.touch_user_activity(session.user_id)
                     return session
 
         return None

@@ -10,15 +10,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
+# Build arguments and environment variables for versioning
+ARG APP_VERSION="0.3"
+ENV APP_VERSION=${APP_VERSION}
+
 # Install Python requirements
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application source code
+# Copy version file and application source code
+COPY VERSION* ./
 COPY app/ ./app/
 
-# Create persistent data and thumbnails directories
-RUN mkdir -p /app/data /app/data/thumbnails
+# Create persistent data and thumbnails directories, owned by an unprivileged user
+RUN useradd --system --uid 10001 --no-create-home appuser \
+    && mkdir -p /app/data /app/data/thumbnails \
+    && chown -R appuser:appuser /app/data
+USER appuser
 
 # Environment defaults
 ENV GRIMMORY_URL=http://localhost:8080 \

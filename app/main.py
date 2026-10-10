@@ -66,10 +66,13 @@ app = FastAPI(
 )
 
 # CORS Middleware (allows web readers like Komic, Mihon, Tachiyomi, Kuro, etc.)
+# Credentialed cross-origin requests are only enabled for an explicit origin allow-list;
+# a wildcard origin with credentials would let any site act with the admin's cookie.
+_cors_origins = settings.cors_origins_list
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=_cors_origins,
+    allow_credentials="*" not in _cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )

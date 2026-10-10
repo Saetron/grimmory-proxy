@@ -165,6 +165,13 @@ class UserSyncService:
                 self._user_locks[user_id] = asyncio.Lock()
             return self._user_locks[user_id]
 
+    def purge_user_cache(self, user_id: int) -> None:
+        """
+        Clears local tracking states (lock, cooldown timestamp) for a purged user.
+        """
+        self._last_sync_times.pop(user_id, None)
+        self._user_locks.pop(user_id, None)
+
     async def capture_and_sync_user(self, user: UserSession, force: bool = False) -> bool:
         """
         Captures user connection data and synchronizes read states from Grimmory.

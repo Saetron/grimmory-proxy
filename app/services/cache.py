@@ -1,5 +1,7 @@
 import asyncio
+import hashlib
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -7,6 +9,9 @@ from typing import Any, Dict, Optional, Tuple
 from app.config import settings
 
 logger = logging.getLogger("grimmory_proxy.cache")
+
+# Allowed characters for thumbnail cache file name components (no path separators or dots)
+_SAFE_CACHE_NAME = re.compile(r"[A-Za-z0-9_\-]{1,200}")
 
 
 class MemoryCache:
@@ -48,8 +53,14 @@ class DiskThumbnailCache:
         except (PermissionError, OSError) as e:
             logger.debug(f"Could not pre-create thumbnail cache directory {self.base_dir}: {e}")
 
+    @staticmethod
+    def _safe_component(value: str) -> str:
+        if _SAFE_CACHE_NAME.fullmatch(value):
+            return value
+        return "h" + hashlib.sha256(value.encode("utf-8")).hexdigest()
+
     def _get_path(self, item_type: str, item_id: str) -> Path:
-        return self.base_dir / f"{item_type}_{item_id}.jpg"
+        return self.base_dir / f"{self._safe_component(item_type)}_{self._safe_component(item_id)}.jpg"
 
     def get_thumbnail(self, item_type: str, item_id: str) -> Optional[bytes]:
         try:

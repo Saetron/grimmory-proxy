@@ -1,19 +1,35 @@
 from pathlib import Path
-from typing import Literal
+from typing import List, Literal
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+import os
+
+
 def _load_version() -> str:
-    try:
-        ver_path = Path(__file__).resolve().parent.parent / "VERSION"
-        if ver_path.exists():
-            content = ver_path.read_text(encoding="utf-8").strip()
-            if content:
-                return content
-    except Exception:
-        pass
-    return "0.1"
+    # 1. Check environment variable override
+    env_ver = os.environ.get("APP_VERSION", "").strip()
+    if env_ver:
+        return env_ver
+
+    # 2. Check candidate paths for VERSION file
+    candidates = [
+        Path(__file__).resolve().parent.parent / "VERSION",  # /app/VERSION or repo/VERSION
+        Path(__file__).resolve().parent / "VERSION",         # /app/app/VERSION
+        Path.cwd() / "VERSION",                              # working directory
+        Path("/app/VERSION"),                                # container default root
+    ]
+    for p in candidates:
+        try:
+            if p.exists() and p.is_file():
+                content = p.read_text(encoding="utf-8").strip()
+                if content:
+                    return content
+        except Exception:
+            pass
+    return "0.3"
+
 
 
 class Settings(BaseSettings):
@@ -93,10 +109,17 @@ class Settings(BaseSettings):
         description="Logging verbosity (debug, info, warning, error)",
     )
 
-    # WebUI admin session secret key
-    admin_session_secret: str = Field(
-        default="grimmory-proxy-secret-key-change-me",
-        description="Secret key for signing WebUI admin session cookies",
+    # Web security
+    cors_allow_origins: str = Field(
+        default="*",
+        description=(
+            "Comma-separated list of browser origins allowed by CORS. '*' allows any origin "
+            "but disables credentialed (cookie) cross-origin requests."
+        ),
+    )
+    cookie_secure: bool = Field(
+        default=False,
+        description="Set the Secure flag on the admin session cookie (enable when served over HTTPS)",
     )
 
     # Calibre page calculation characters per page
@@ -104,6 +127,11 @@ class Settings(BaseSettings):
         default=1024,
         description="Number of text characters considered one page for novels (Calibre ADE standard: 1024)",
     )
+
+    @property
+    def cors_origins_list(self) -> List[str]:
+        origins = [o.strip().rstrip("/") for o in self.cors_allow_origins.split(",") if o.strip()]
+        return origins or ["*"]
 
     @property
     def public_grimmory_url(self) -> str:

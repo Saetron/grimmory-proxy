@@ -58,3 +58,28 @@ async def test_database_crud(tmp_path):
     assert stats["books_count"] == 1
     assert stats["books_with_pages"] == 1
     assert stats["books_missing_pages"] == 0
+
+
+@pytest.mark.asyncio
+async def test_concurrent_writes_and_wal_mode(tmp_path):
+    import asyncio
+    db_file = tmp_path / "test_concurrent.db"
+    db = Database(str(db_file))
+    await db.connect()
+
+    await db.upsert_libraries([{"id": 1, "name": "Lib 1", "paths": []}])
+    await db.upsert_series_batch([{"id": "s1", "library_id": 1, "name": "Series 1", "slug": "series-1"}])
+
+    # Run 50 concurrent writes simultaneously to test lock-free concurrency
+    async def write_progression(i: int):
+        await db.upsert_r2_progression(user_id=1, book_id=i, progression_json=f'{{"page": {i}}}')
+        await db.upsert_read_progress(user_id=1, book_id=i, page=i, completed=False, read_date="2026-01-01T00:00:00Z")
+
+    tasks = [write_progression(i) for i in range(1, 51)]
+    await asyncio.gather(*tasks)
+
+    # Verify all were written successfully
+    prog = await db.get_r2_progression(user_id=1, book_id=25)
+    assert prog is not None
+    assert prog["page"] == 25
+

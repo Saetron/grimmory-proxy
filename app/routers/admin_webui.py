@@ -1,7 +1,9 @@
 import asyncio
+import json
 import logging
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
@@ -20,6 +22,9 @@ logger = logging.getLogger("grimmory_proxy.admin_webui")
 
 templates_dir = Path(__file__).parent.parent / "templates"
 templates = Jinja2Templates(directory=str(templates_dir))
+templates.env.globals["app_version"] = settings.app_version
+templates.env.globals["grimmory_url"] = settings.grimmory_url
+templates.env.globals["grimmory_public_url"] = settings.public_grimmory_url
 
 
 class CalcPagesRequest(BaseModel):
@@ -47,7 +52,7 @@ def get_admin_router(
         return templates.TemplateResponse(
             request=request,
             name="login.html",
-            context={"user": None, "error": None},
+            context={"user": None, "error": None, "app_version": settings.app_version},
         )
 
     @router.post("/admin/login", response_class=HTMLResponse)
@@ -58,7 +63,9 @@ def get_admin_router(
         password: str = Form(...),
     ) -> Response:
         try:
-            user = await AuthService.authenticate_credentials(username, password)
+            user = await AuthService.authenticate_credentials(
+                username, password, client_ip=request.client.host if request.client else "unknown"
+            )
             if not user.is_admin:
                 return templates.TemplateResponse(
                     request=request,
@@ -66,6 +73,7 @@ def get_admin_router(
                     context={
                         "user": None,
                         "error": "Access Denied: Only Grimmory Administrators are permitted to access this management dashboard.",
+                        "app_version": settings.app_version,
                     },
                     status_code=status.HTTP_403_FORBIDDEN,
                 )
@@ -75,16 +83,34 @@ def get_admin_router(
                 key="admin_session",
                 value=user.token,
                 httponly=True,
-                samesite="lax",
-                max_age=86400 * 7,
+                secure=settings.cookie_secure,
+                samesite="strict",
+                max_age=86400,
             )
             return redirect
+        except HTTPException as e:
+            logger.warning(f"Admin login failed: {e.detail}")
+            is_throttled = e.status_code == status.HTTP_429_TOO_MANY_REQUESTS
+            return templates.TemplateResponse(
+                request=request,
+                name="login.html",
+                context={
+                    "user": None,
+                    "error": e.detail if is_throttled else "Invalid Grimmory credentials or account not found.",
+                    "app_version": settings.app_version,
+                },
+                status_code=e.status_code if is_throttled else status.HTTP_401_UNAUTHORIZED,
+            )
         except Exception as e:
             logger.warning(f"Admin login failed: {e}")
             return templates.TemplateResponse(
                 request=request,
                 name="login.html",
-                context={"user": None, "error": "Invalid Grimmory credentials or account not found."},
+                context={
+                    "user": None,
+                    "error": "Invalid Grimmory credentials or account not found.",
+                    "app_version": settings.app_version,
+                },
                 status_code=status.HTTP_401_UNAUTHORIZED,
             )
 
@@ -103,12 +129,14 @@ def get_admin_router(
 
         stats = await db.get_stats()
         thumb_count, thumb_bytes = thumbnail_cache.get_cache_size()
+        users_list = await db.get_users_detailed()
 
         return templates.TemplateResponse(
             request=request,
             name="dashboard.html",
             context={
                 "user": user,
+                "users": users_list,
                 "stats": stats,
                 "calc_job": page_calculator.status,
                 "sync_job": sync_service.status,
@@ -127,12 +155,11 @@ def get_admin_router(
 
     @router.get("/admin/api/status")
     async def get_dashboard_status(request: Request) -> Dict[str, Any]:
-        user = await AuthService.get_current_user_optional(request)
-        if not user or not user.is_admin:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Admin access required")
+        user = await AuthService.require_admin(request)
 
         stats = await db.get_stats()
         thumb_count, thumb_bytes = thumbnail_cache.get_cache_size()
+        users_list = await db.get_users_detailed()
         return {
             "stats": stats,
             "calc_job": page_calculator.status.model_dump(),
@@ -142,6 +169,7 @@ def get_admin_router(
             "sync_running": sync_service.status.is_running,
             "read_sync_running": user_sync.status.is_running,
             "app_version": settings.app_version,
+            "users": users_list,
         }
 
     @router.post("/admin/api/calculate-pages")
@@ -149,9 +177,7 @@ def get_admin_router(
         payload: CalcPagesRequest,
         request: Request,
     ) -> Dict[str, Any]:
-        user = await AuthService.get_current_user_optional(request)
-        if not user or not user.is_admin:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+        user = await AuthService.require_admin(request)
 
         if page_calculator.status.is_running:
             return {"status": "already_running", "message": "A calculation job is already running"}
@@ -161,18 +187,14 @@ def get_admin_router(
 
     @router.post("/admin/api/stop-calculation")
     async def stop_calculate_pages(request: Request) -> Dict[str, Any]:
-        user = await AuthService.get_current_user_optional(request)
-        if not user or not user.is_admin:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+        user = await AuthService.require_admin(request)
 
         page_calculator.request_stop()
         return {"status": "stopping"}
 
     @router.post("/admin/api/sync")
     async def trigger_manual_sync(request: Request) -> Dict[str, Any]:
-        user = await AuthService.get_current_user_optional(request)
-        if not user or not user.is_admin:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+        user = await AuthService.require_admin(request)
 
         if sync_service.status.is_running:
             return {"status": "already_running", "message": "Sync is already in progress"}
@@ -182,18 +204,14 @@ def get_admin_router(
 
     @router.post("/admin/api/sync/clear-logs")
     async def clear_sync_logs(request: Request) -> Dict[str, Any]:
-        user = await AuthService.get_current_user_optional(request)
-        if not user or not user.is_admin:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+        user = await AuthService.require_admin(request)
 
         sync_service.status.logs = []
         return {"status": "cleared"}
 
     @router.post("/admin/api/read-sync")
     async def trigger_manual_read_sync(request: Request) -> Dict[str, Any]:
-        user = await AuthService.get_current_user_optional(request)
-        if not user or not user.is_admin:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+        user = await AuthService.require_admin(request)
 
         if user_sync.status.is_running:
             return {"status": "already_running", "message": "Read sync is already in progress"}
@@ -203,11 +221,79 @@ def get_admin_router(
 
     @router.post("/admin/api/read-sync/clear-logs")
     async def clear_read_sync_logs(request: Request) -> Dict[str, Any]:
-        user = await AuthService.get_current_user_optional(request)
-        if not user or not user.is_admin:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+        user = await AuthService.require_admin(request)
 
         user_sync.status.logs = []
         return {"status": "cleared"}
+
+    # ---------------- User Management Endpoints ----------------
+
+    @router.get("/admin/api/users")
+    async def get_users_list_endpoint(request: Request) -> Dict[str, Any]:
+        user = await AuthService.require_admin(request)
+
+        users_list = await db.get_users_detailed()
+        return {"users": users_list, "total": len(users_list)}
+
+    @router.post("/admin/api/users/{user_id}/purge")
+    async def purge_user_endpoint(user_id: int, request: Request) -> Dict[str, Any]:
+        user = await AuthService.require_admin(request)
+
+        if user.user_id == user_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="You cannot purge your own active admin user session.",
+            )
+
+        target_row = await db.get_user_by_id(user_id)
+        if not target_row:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+        username = target_row.get("username", f"user-{user_id}")
+        AuthService.purge_user_sessions(user_id, username=username)
+        user_sync.purge_user_cache(user_id)
+        deleted_counts = await db.purge_user(user_id)
+
+        logger.info(f"Admin '{user.username}' purged user '{username}' (id={user_id}): {deleted_counts}")
+        return {
+            "success": True,
+            "message": f"User '{username}' and all associated read progress, settings, and cached sessions have been purged.",
+            "deleted": deleted_counts,
+        }
+
+    @router.post("/admin/api/users/{user_id}/sync")
+    async def sync_user_endpoint(user_id: int, request: Request) -> Dict[str, Any]:
+        user = await AuthService.require_admin(request)
+
+        target_row = await db.get_user_by_id(user_id)
+        if not target_row:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+        if not target_row.get("token"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"User '{target_row.get('username')}' has no saved authentication token to connect to Grimmory.",
+            )
+
+        assigned_libs = []
+        try:
+            assigned_libs = json.loads(target_row.get("assigned_libraries") or "[]")
+        except Exception:
+            pass
+
+        target_session = UserSession(
+            user_id=target_row["id"],
+            username=target_row["username"],
+            token=target_row["token"],
+            is_admin=bool(target_row["is_admin"]),
+            assigned_library_ids=assigned_libs,
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
+        )
+
+        success = await user_sync.capture_and_sync_user(target_session, force=True)
+        return {
+            "success": success,
+            "message": f"Read progress sync completed for user '{target_row['username']}'." if success else f"Read progress sync failed for user '{target_row['username']}'."
+        }
 
     return router

@@ -3,7 +3,7 @@
 [![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688.svg)](https://fastapi.tiangolo.com/)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED.svg)](https://www.docker.com/)
-[![Version](https://img.shields.io/badge/Version-v0.1-orange.svg)](VERSION)
+[![Version](https://img.shields.io/badge/Version-v0.3-orange.svg)](VERSION)
 [![Komga API](https://img.shields.io/badge/Komga%20API-v1.12.0-orange.svg)](https://komga.org/)
 [![Theme](https://img.shields.io/badge/Theme-Grimmory%20Design-f97316.svg)](https://grimmory.org/)
 
@@ -41,6 +41,7 @@ A high-performance Python and Docker proxy/bridge that translates the **Grimmory
   - Redesigned with the official Grimmory design system, SVG branding, dark obsidian palette, and warm orange accents.
   - Password-protected management dashboard (`/admin`) restricted exclusively to **Grimmory Administrators**.
   - Real-time statistics: Total libraries, series, books, format distribution, cache metrics, and completion percentage.
+  - **Connected Users & Reader Management**: View all readers connected through the bridge with library access, reading progress counters, and online indicators; trigger on-demand syncs for individual users, or purge a user to clear all their local cached progress and sessions.
   - Interactive controls to trigger missing page calculations, recalculate all books, or initiate background catalog and read progress syncs with live terminal logs.
 - **High-Performance Caching**:
   - Persistent SQLite database in WAL mode (`aiosqlite`).
@@ -100,7 +101,8 @@ A high-performance Python and Docker proxy/bridge that translates the **Grimmory
 | `SYNC_ON_STARTUP` | `true` | Whether to trigger background metadata sync on startup. |
 | `SYNC_CONCURRENCY` | `6` | Concurrency limit for background series/book page inspection. |
 | `NOVEL_CHARS_PER_PAGE` | `1024` | Number of characters per page for novels (Calibre ADE standard: 1024). |
-| `ADMIN_SESSION_SECRET` | `grimmory-proxy-secret-key-change-me` | Secret key for signing WebUI admin session cookies. |
+| `CORS_ALLOW_ORIGINS` | `*` | Comma-separated browser origins allowed by CORS. With `*` credentialed (cookie) cross-origin requests are disabled; list explicit origins to enable them. |
+| `COOKIE_SECURE` | `false` | Set the `Secure` flag on the admin session cookie (enable when served over HTTPS). |
 | `DATABASE_PATH` | `/app/data/bridge.db` | Path to persistent SQLite cache database. |
 | `THUMBNAILS_DIR` | `/app/data/thumbnails` | Path to disk cache for cover thumbnails. |
 | `PORT` | `8080` | Port the proxy listens on inside the container. |
@@ -184,7 +186,10 @@ A high-performance Python and Docker proxy/bridge that translates the **Grimmory
 
 ### Admin WebUI
 - `GET /admin/login`, `POST /admin/login` - Secure sign-in page for Grimmory Administrators.
-- `GET /admin` / `GET /dashboard` - Interactive statistics, health indicators, and control panel.
+- `GET /admin` / `GET /dashboard` - Interactive statistics, health indicators, connected users panel, and control panel.
+- `GET /admin/api/users` - List all connected reader users with library access, reading progress statistics, and online indicators.
+- `POST /admin/api/users/{id}/purge` - Permanently purge a user and delete all their cached read progress, settings, and sessions.
+- `POST /admin/api/users/{id}/sync` - Force an immediate on-demand Grimmory read progress sync for a specific user.
 - `POST /admin/api/calculate-pages` - Trigger page calculation (missing only or full recalculation).
 - `POST /admin/api/stop-calculation` - Gracefully abort active calculation job.
 - `POST /admin/api/sync` - Trigger on-demand metadata sync.
