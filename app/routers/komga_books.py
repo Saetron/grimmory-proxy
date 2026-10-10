@@ -1,7 +1,7 @@
 import io
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import StreamingResponse
 import httpx
@@ -30,17 +30,10 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
         search: Optional[str] = None,
         page: int = 0,
         size: int = 20,
-        sort: str = "number,asc",
+        sort: Optional[Union[str, List[str]]] = None,
         unpaged: bool = False,
         user: Optional[UserSession] = None,
     ) -> PageableDto[BookDto]:
-        sort_by, sort_dir = "number", "asc"
-        if sort:
-            parts = sort.split(",")
-            sort_by = parts[0].replace("metadata.", "").strip()
-            if len(parts) > 1:
-                sort_dir = parts[1].strip()
-
         # Resolve series IDs to canonical database IDs if possible
         canonical_series_ids = None
         if series_ids:
@@ -80,8 +73,7 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
             search=search,
             offset=0 if unpaged else page * size,
             limit=size,
-            sort_by=sort_by,
-            sort_dir=sort_dir,
+            sort=sort,
             unpaged=unpaged,
             user_id=user.user_id if user else None,
         )
@@ -98,6 +90,8 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
         user: UserSession = Depends(AuthService.require_user),
     ) -> PageableDto[BookDto]:
         filters = extract_filter_params(request)
+        sort_list = request.query_params.getlist("sort")
+        sort_arg = sort_list if sort_list else sort
         return await _query_books(
             library_ids=filters["library_ids"],
             series_ids=filters["series_ids"],
@@ -105,7 +99,7 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
             search=filters["search"],
             page=page,
             size=size,
-            sort=sort,
+            sort=sort_arg,
             unpaged=filters["unpaged"],
             user=user,
         )
@@ -130,6 +124,8 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
             f"POST /api/v1/books/list: query_params={dict(request.query_params)}, "
             f"body={parsed_body}, extracted_filters={filters}"
         )
+        sort_list = request.query_params.getlist("sort")
+        sort_arg = sort_list if sort_list else sort
         return await _query_books(
             library_ids=filters["library_ids"],
             series_ids=filters["series_ids"],
@@ -137,7 +133,7 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
             search=filters["search"],
             page=page,
             size=size,
-            sort=sort,
+            sort=sort_arg,
             unpaged=filters["unpaged"],
             user=user,
         )

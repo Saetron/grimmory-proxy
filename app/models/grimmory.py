@@ -38,17 +38,20 @@ class GrimmoryBookMetadataUpdate(BaseModel):
 class GrimmoryCbxProgress(BaseModel):
     page: int
     percentage: float
+    lastRead: Optional[str] = None
 
 
 class GrimmoryPdfProgress(BaseModel):
     page: int
     percentage: float
+    lastRead: Optional[str] = None
 
 
 class GrimmoryEpubProgress(BaseModel):
     percentage: float
     cfi: Optional[str] = None
     href: Optional[str] = None
+    lastRead: Optional[str] = None
 
 
 class GrimmoryReadProgressRequest(BaseModel):
@@ -58,3 +61,4 @@ class GrimmoryReadProgressRequest(BaseModel):
     epubProgress: Optional[GrimmoryEpubProgress] = None
     dateFinished: Optional[str] = None
     readStatus: Optional[str] = None
+    lastRead: Optional[str] = None

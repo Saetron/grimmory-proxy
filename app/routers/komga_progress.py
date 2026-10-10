@@ -117,16 +117,20 @@ def get_progress_router(db: Database) -> APIRouter:
             percentage = 100.0
         else:
             page_num = dto.page if dto.page is not None else 1
-            percentage = min(100.0, max(0.0, (page_num / max(1, page_count)) * 100.0))
+            if page_count > 1:
+                percentage = min(100.0, max(0.0, (page_num / page_count) * 100.0))
+            else:
+                percentage = 0.0
+
             if dto.completed is None:
                 # Per Komga spec: completed can be omitted, set according to page passed and total pages
-                completed = (page_count > 0 and page_num >= page_count) or percentage >= 99.0
+                completed = (page_count > 1 and page_num >= page_count) or (page_count > 1 and percentage >= 99.0)
             else:
                 completed = bool(dto.completed)
 
         if completed:
             percentage = 100.0
-            page_num = page_count
+            page_num = page_count if page_count > 1 else page_num
 
         now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         date_finished = now_str if completed else None
@@ -142,11 +146,12 @@ def get_progress_router(db: Database) -> APIRouter:
 
         req = GrimmoryReadProgressRequest(
             bookId=book_id,
-            cbxProgress=GrimmoryCbxProgress(page=page_num, percentage=percentage),
-            pdfProgress=GrimmoryPdfProgress(page=page_num, percentage=percentage),
-            epubProgress=GrimmoryEpubProgress(percentage=percentage),
+            cbxProgress=GrimmoryCbxProgress(page=page_num, percentage=percentage, lastRead=now_str),
+            pdfProgress=GrimmoryPdfProgress(page=page_num, percentage=percentage, lastRead=now_str),
+            epubProgress=GrimmoryEpubProgress(percentage=percentage, lastRead=now_str),
             dateFinished=date_finished,
             readStatus="READ" if completed else "READING",
+            lastRead=now_str,
         )
 
         try:
@@ -397,24 +402,26 @@ def get_progress_router(db: Database) -> APIRouter:
         if pos_val is not None:
             try:
                 page_num = max(1, int(pos_val))
-                if percentage == 0.0:
-                    percentage = min(100.0, max(0.0, (page_num / max(1, page_count)) * 100.0))
+                if percentage == 0.0 and page_count > 1:
+                    percentage = min(100.0, max(0.0, (page_num / page_count) * 100.0))
             except (ValueError, TypeError):
-                page_num = max(1, min(page_count, round((percentage / 100.0) * page_count)))
+                page_num = max(1, min(page_count, round((percentage / 100.0) * page_count))) if page_count > 1 else 1
         elif prog_val is not None:
-            page_num = max(1, min(page_count, round((percentage / 100.0) * page_count)))
+            page_num = max(1, min(page_count, round((percentage / 100.0) * page_count))) if page_count > 1 else 1
         else:
             page_num = 1
 
-        completed = (
-            percentage >= 99.0
-            or (page_count > 0 and page_num >= page_count)
-            or bool(payload.get("completed"))
-            or bool(locations.get("completed"))
-        )
+        is_explicit_completed = bool(payload.get("completed")) or bool(locations.get("completed"))
+        if is_explicit_completed:
+            completed = True
+        elif page_count > 1:
+            completed = percentage >= 99.0 or page_num >= page_count
+        else:
+            completed = percentage >= 99.0 and prog_val is not None
+
         if completed:
             percentage = 100.0
-            page_num = page_count
+            page_num = page_count if page_count > 1 else page_num
 
         modified = payload.get("modified") or now_str
         payload["modified"] = modified
@@ -438,11 +445,12 @@ def get_progress_router(db: Database) -> APIRouter:
         # 3. Synchronize to Grimmory backend
         req = GrimmoryReadProgressRequest(
             bookId=book_id,
-            cbxProgress=GrimmoryCbxProgress(page=page_num, percentage=percentage),
-            pdfProgress=GrimmoryPdfProgress(page=page_num, percentage=percentage),
-            epubProgress=GrimmoryEpubProgress(percentage=percentage, href=href, cfi=cfi),
+            cbxProgress=GrimmoryCbxProgress(page=page_num, percentage=percentage, lastRead=modified),
+            pdfProgress=GrimmoryPdfProgress(page=page_num, percentage=percentage, lastRead=modified),
+            epubProgress=GrimmoryEpubProgress(percentage=percentage, href=href, cfi=cfi, lastRead=modified),
             dateFinished=modified if completed else None,
             readStatus="READ" if completed else "READING",
+            lastRead=modified,
         )
         try:
             success = await grimmory_client.update_read_progress(req, token=user.token)

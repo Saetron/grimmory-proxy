@@ -8,7 +8,7 @@ import httpx
 from app.clients.grimmory import grimmory_client
 from app.config import settings
 from app.database import Database
-from app.models.internal import UserSession
+from app.models.internal import ReadSyncStatus, UserSession
 from app.services.mapper import format_iso_timestamp
 
 logger = logging.getLogger("grimmory_proxy.user_sync")
@@ -40,6 +40,15 @@ class UserSyncService:
         self._last_sync_times: Dict[int, datetime] = {}
         self._global_lock = asyncio.Lock()
         self._background_tasks: Set[asyncio.Task] = set()
+        self.status = ReadSyncStatus()
+
+    def _log(self, message: str) -> None:
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        entry = f"[{ts}] {message}"
+        self.status.logs.append(entry)
+        if len(self.status.logs) > 100:
+            self.status.logs = self.status.logs[-100:]
+        logger.info(message)
 
     def set_db(self, db: Database) -> None:
         self._db = db
@@ -78,13 +87,22 @@ class UserSyncService:
         """
         Periodically syncs read states for all registered users who have a token stored in SQLite.
         """
+        self.status.is_running = True
+        self.status.error_message = None
+        self._log("Starting read status synchronization for active users...")
         try:
             users = await self.database.get_users_with_tokens()
+            self.status.active_users_count = len(users)
             if not users:
-                logger.debug("No active users with tokens found for periodic read state sync")
+                self._log("No active users with tokens found for periodic read state sync.")
                 return
 
+            self._log(f"Found {len(users)} active user session(s) to synchronize.")
+            total_synced_this_cycle = 0
+
             for u_row in users:
+                uname = u_row.get("username", "unknown")
+                self.status.current_user = uname
                 try:
                     assigned_libs = []
                     try:
@@ -93,7 +111,7 @@ class UserSyncService:
                         pass
                     user = UserSession(
                         user_id=u_row["id"],
-                        username=u_row["username"],
+                        username=uname,
                         token=u_row["token"],
                         is_admin=bool(u_row["is_admin"]),
                         assigned_library_ids=assigned_libs,
@@ -101,9 +119,18 @@ class UserSyncService:
                     )
                     await self.capture_and_sync_user(user, force=True)
                 except Exception as e:
-                    logger.debug(f"Periodic sync failed for user {u_row.get('username')}: {e}")
+                    self._log(f"Error syncing user '{uname}': {e}")
+                    logger.debug(f"Periodic sync failed for user {uname}: {e}")
+
+            self.status.last_sync_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            self._log(f"Completed read status sync cycle.")
         except Exception as e:
+            self.status.error_message = str(e)
+            self._log(f"Error during periodic user read status sync: {e}")
             logger.error(f"Error during periodic user read status sync: {e}")
+        finally:
+            self.status.is_running = False
+            self.status.current_user = ""
 
     async def start_background_loop(self) -> None:
         """
@@ -244,10 +271,12 @@ class UserSyncService:
 
         if not all_books_map:
             logger.debug(f"No books returned from Grimmory for user {user.username}")
-            return
+            return 0
+
+        # Query all existing local read progress for this user to avoid overwriting newer local progress
+        existing_local = await self.database.get_all_user_read_progress(user.user_id)
 
         progress_records: List[Dict[str, Any]] = []
-        unread_book_ids: List[int] = []
 
         for book_id, b in all_books_map.items():
             meta = b.get("metadata") or {}
@@ -320,6 +349,21 @@ class UserSyncService:
                         page = rp_page or 1
                         read_date = rp.get("readDate")
 
+            # Check against local progress to protect local reading state
+            local_rec = existing_local.get(book_id)
+            if local_rec:
+                # If local record is already completed, do not downgrade it
+                if local_rec.get("completed") and not is_completed:
+                    continue
+                local_ts = local_rec.get("read_date") or ""
+                remote_ts = format_iso_timestamp(read_date or b.get("last_modified") or b.get("addedOn"))
+                # If local record timestamp is newer, preserve local progress
+                if local_ts and remote_ts and local_ts > remote_ts:
+                    continue
+                # If remote has no progress (or unread), but local has active progress, keep local
+                if not is_completed and not is_in_prog:
+                    continue
+
             if is_completed:
                 final_page = (
                     page_count
@@ -343,15 +387,13 @@ class UserSyncService:
                     "completed": False,
                     "read_date": format_iso_timestamp(read_date or b.get("last_modified") or b.get("addedOn")),
                 })
-            elif read_status == "UNREAD":
-                unread_book_ids.append(book_id)
 
         if progress_records:
             await self.database.upsert_read_progress_batch(progress_records)
-            logger.info(f"Synchronized {len(progress_records)} read states from Grimmory for user '{user.username}'")
-
-        if unread_book_ids:
-            await self.database.delete_read_progress_batch(user.user_id, unread_book_ids)
+            self.status.total_synced_records += len(progress_records)
+            self._log(f"Synchronized {len(progress_records)} read states from Grimmory for user '{user.username}'")
+            return len(progress_records)
+        return 0
 
 
 user_sync_service = UserSyncService()

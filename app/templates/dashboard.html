@@ -8,9 +8,12 @@
     <h1 style="color: var(--text-bright); font-size: 1.6rem; font-weight: 700;">Dashboard & Statistics</h1>
     <p style="color: var(--text-muted); font-size: 0.875rem;">Connected to Grimmory: <code style="color: var(--primary);">{{ grimmory_url }}</code></p>
   </div>
-  <div>
+  <div style="display: flex; gap: 0.5rem;">
     <button id="btn-sync" onclick="triggerSync()" class="btn btn-secondary">
       🔄 Sync Metadata Now
+    </button>
+    <button id="btn-read-sync" onclick="triggerReadSync()" class="btn btn-primary">
+      📖 Sync Read Status Now
     </button>
   </div>
 </div>
@@ -34,6 +37,33 @@
   </div>
   <div id="sync-log-container" style="background: #0d1117; border: 1px solid var(--card-border); border-radius: 6px; padding: 0.85rem; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 0.82rem; color: #c9d1d9; max-height: 220px; overflow-y: auto; white-space: pre-wrap; line-height: 1.45;">{% if sync_job and sync_job.logs %}{% for l in sync_job.logs %}{{ l }}
 {% endfor %}{% else %}<span style="color: var(--text-muted);">No recent sync logs. Click "Sync Metadata Now" to start.</span>{% endif %}</div>
+</div>
+
+<!-- User Read Status Synchronization Activity & Live Log -->
+<div id="read-sync-log-card" class="panel-card" style="margin-bottom: 1.5rem; {% if not read_sync_job or (not read_sync_job.is_running and not read_sync_job.logs) %}display: none;{% endif %}">
+  <div class="panel-header" style="margin-bottom: 0.75rem;">
+    <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+      <div style="display: flex; align-items: center; gap: 0.75rem;">
+        <div class="panel-title" style="font-size: 1rem;">📖 User Read Status Synchronization</div>
+        <span id="read-sync-status-badge" class="status-badge {% if read_sync_job and read_sync_job.is_running %}status-running{% elif read_sync_job and read_sync_job.error_message %}status-failed{% elif read_sync_job and read_sync_job.logs %}status-completed{% else %}status-idle{% endif %}">
+          {% if read_sync_job and read_sync_job.is_running %}SYNCING{% elif read_sync_job and read_sync_job.error_message %}FAILED{% elif read_sync_job and read_sync_job.logs %}COMPLETED{% else %}IDLE{% endif %}
+        </span>
+      </div>
+      <div>
+        <button onclick="clearReadSyncLogs()" class="btn btn-secondary" style="padding: 0.25rem 0.6rem; font-size: 0.75rem;">
+          Clear Log
+        </button>
+      </div>
+    </div>
+  </div>
+  <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 0.75rem; margin-bottom: 0.75rem; font-size: 0.85rem;">
+    <div>Active Users: <strong id="read-sync-active-users" style="color: var(--text-bright);">{% if read_sync_job %}{{ read_sync_job.active_users_count }}{% else %}0{% endif %}</strong></div>
+    <div>Total Synced Records: <strong id="read-sync-total-records" style="color: #3fb950;">{% if read_sync_job %}{{ read_sync_job.total_synced_records }}{% else %}0{% endif %}</strong></div>
+    <div>Last Sync: <strong id="read-sync-last-time" style="color: var(--text-bright);">{% if read_sync_job and read_sync_job.last_sync_time %}{{ read_sync_job.last_sync_time }}{% else %}Never{% endif %}</strong></div>
+    <div>Sync Interval: <strong style="color: var(--text-bright);">Every {{ user_sync_interval_minutes }} min</strong></div>
+  </div>
+  <div id="read-sync-log-container" style="background: #0d1117; border: 1px solid var(--card-border); border-radius: 6px; padding: 0.85rem; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 0.82rem; color: #c9d1d9; max-height: 220px; overflow-y: auto; white-space: pre-wrap; line-height: 1.45;">{% if read_sync_job and read_sync_job.logs %}{% for l in read_sync_job.logs %}{{ l }}
+{% endfor %}{% else %}<span style="color: var(--text-muted);">No recent read sync logs. Click "Sync Read Status Now" to start.</span>{% endif %}</div>
 </div>
 
 <!-- Primary Stats Grid -->
@@ -154,12 +184,20 @@
         <strong style="color: var(--text-bright);">{{ stats.sync_status | capitalize }}</strong>
       </div>
       <div style="display: flex; justify-content: space-between;">
-        <span style="color: var(--text-muted);">Last Sync Time:</span>
+        <span style="color: var(--text-muted);">Last Metadata Sync:</span>
         <strong style="color: var(--text-bright);">{{ stats.last_sync_time or 'Never' }}</strong>
       </div>
       <div style="display: flex; justify-content: space-between;">
-        <span style="color: var(--text-muted);">Sync Interval:</span>
+        <span style="color: var(--text-muted);">Metadata Sync Interval:</span>
         <strong style="color: var(--text-bright);">Every {{ sync_interval_minutes }} minutes</strong>
+      </div>
+      <div style="display: flex; justify-content: space-between;">
+        <span style="color: var(--text-muted);">User Read Sync Interval:</span>
+        <strong style="color: var(--text-bright);">Every {{ user_sync_interval_minutes }} minutes</strong>
+      </div>
+      <div style="display: flex; justify-content: space-between;">
+        <span style="color: var(--text-muted);">Public Grimmory URL:</span>
+        <a href="{{ grimmory_public_url }}" target="_blank" style="color: var(--primary); text-decoration: none; word-break: break-all;">{{ grimmory_public_url }} ↗</a>
       </div>
       <div style="display: flex; justify-content: space-between;">
         <span style="color: var(--text-muted);">SQLite Cache Size:</span>

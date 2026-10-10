@@ -80,6 +80,49 @@ async function clearSyncLogs() {
   }
 }
 
+async function triggerReadSync() {
+  const btn = document.getElementById("btn-read-sync") || (window.event && window.event.target);
+  if (btn) {
+    btn.disabled = true;
+    btn.innerText = "Syncing...";
+  }
+
+  const logCard = document.getElementById("read-sync-log-card");
+  if (logCard) logCard.style.display = "block";
+  const logCont = document.getElementById("read-sync-log-container");
+  if (logCont) {
+    const timeStr = new Date().toTimeString().split(' ')[0];
+    logCont.innerText = `[${timeStr}] Triggering user read status synchronization...\n`;
+  }
+  const badge = document.getElementById("read-sync-status-badge");
+  if (badge) {
+    badge.innerText = "SYNCING";
+    badge.className = "status-badge status-running";
+  }
+
+  try {
+    const res = await fetch("/admin/api/read-sync", { method: "POST" });
+    const data = await res.json();
+    if (!res.ok) alert("Error: " + (data.detail || "Failed to trigger read sync"));
+  } catch (err) {
+    alert("Request failed: " + err);
+  } finally {
+    pollStatus();
+  }
+}
+
+async function clearReadSyncLogs() {
+  try {
+    await fetch("/admin/api/read-sync/clear-logs", { method: "POST" });
+    const logCont = document.getElementById("read-sync-log-container");
+    if (logCont) logCont.innerHTML = '<span style="color: var(--text-muted);">Log cleared.</span>';
+    const logCard = document.getElementById("read-sync-log-card");
+    if (logCard) logCard.style.display = "none";
+  } catch (err) {
+    console.debug("Failed to clear read sync logs:", err);
+  }
+}
+
 async function pollStatus() {
   try {
     const res = await fetch("/admin/api/status");
@@ -157,6 +200,63 @@ async function pollStatus() {
         if (syncLogCont.innerText.trim() !== newText.trim()) {
           syncLogCont.innerText = newText;
           syncLogCont.scrollTop = syncLogCont.scrollHeight;
+        }
+      }
+    }
+
+    // Update User Read Status Sync Info and Logs
+    const readSyncStatus = data.read_sync_job;
+    const readSyncCard = document.getElementById("read-sync-log-card");
+    const readSyncBadge = document.getElementById("read-sync-status-badge");
+    const readSyncLogCont = document.getElementById("read-sync-log-container");
+    const readSyncBtn = document.getElementById("btn-read-sync");
+
+    if (readSyncStatus) {
+      if (document.getElementById("read-sync-active-users")) {
+        document.getElementById("read-sync-active-users").innerText = readSyncStatus.active_users_count || 0;
+      }
+      if (document.getElementById("read-sync-total-records")) {
+        document.getElementById("read-sync-total-records").innerText = Number(readSyncStatus.total_synced_records || 0).toLocaleString();
+      }
+      if (document.getElementById("read-sync-last-time")) {
+        document.getElementById("read-sync-last-time").innerText = readSyncStatus.last_sync_time || "Never";
+      }
+
+      if (readSyncStatus.is_running) {
+        if (readSyncCard) readSyncCard.style.display = "block";
+        if (readSyncBadge) {
+          readSyncBadge.innerText = "SYNCING";
+          readSyncBadge.className = "status-badge status-running";
+        }
+        if (readSyncBtn) {
+          readSyncBtn.disabled = true;
+          readSyncBtn.innerText = "Syncing...";
+        }
+      } else {
+        if (readSyncBtn && readSyncBtn.disabled) {
+          readSyncBtn.disabled = false;
+          readSyncBtn.innerText = "📖 Sync Read Status Now";
+        }
+        if (readSyncBadge) {
+          if (readSyncStatus.error_message) {
+            readSyncBadge.innerText = "FAILED";
+            readSyncBadge.className = "status-badge status-failed";
+          } else if (readSyncStatus.logs && readSyncStatus.logs.length > 0) {
+            readSyncBadge.innerText = "COMPLETED";
+            readSyncBadge.className = "status-badge status-completed";
+          } else {
+            readSyncBadge.innerText = "IDLE";
+            readSyncBadge.className = "status-badge status-idle";
+          }
+        }
+      }
+
+      if (readSyncLogCont && readSyncStatus.logs && readSyncStatus.logs.length > 0) {
+        if (readSyncCard) readSyncCard.style.display = "block";
+        const newReadText = readSyncStatus.logs.join("\n");
+        if (readSyncLogCont.innerText.trim() !== newReadText.trim()) {
+          readSyncLogCont.innerText = newReadText;
+          readSyncLogCont.scrollTop = readSyncLogCont.scrollHeight;
         }
       }
     }

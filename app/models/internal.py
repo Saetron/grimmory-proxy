@@ -35,3 +35,13 @@ class SyncStatus(BaseModel):
     processed_items: int = 0
     error_message: Optional[str] = None
     logs: List[str] = Field(default_factory=list)
+
+
+class ReadSyncStatus(BaseModel):
+    is_running: bool = False
+    last_sync_time: Optional[str] = None
+    active_users_count: int = 0
+    total_synced_records: int = 0
+    current_user: str = ""
+    error_message: Optional[str] = None
+    logs: List[str] = Field(default_factory=list)

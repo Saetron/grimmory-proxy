@@ -17,6 +17,10 @@ class Settings(BaseSettings):
         default="http://localhost:8080",
         description="URL of your Grimmory instance (without trailing slash)",
     )
+    grimmory_public_url: str = Field(
+        default="",
+        description="Public browser-accessible URL of your Grimmory instance (falls back to grimmory_url if empty)",
+    )
 
     # Dedicated background sync credentials (strictly isolated from client reading sessions)
     sync_username: str = Field(
@@ -84,10 +88,16 @@ class Settings(BaseSettings):
         description="Number of text characters considered one page for novels (Calibre ADE standard: 1024)",
     )
 
-    @field_validator("grimmory_url")
+    @property
+    def public_grimmory_url(self) -> str:
+        if self.grimmory_public_url:
+            return self.grimmory_public_url.rstrip("/")
+        return self.grimmory_url.rstrip("/")
+
+    @field_validator("grimmory_url", "grimmory_public_url")
     @classmethod
     def strip_trailing_slash(cls, v: str) -> str:
-        return v.rstrip("/")
+        return v.rstrip("/") if v else ""
 
     def ensure_directories(self) -> None:
         """Ensure database parent directory and thumbnails directory exist."""

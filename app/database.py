@@ -3,7 +3,7 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 import secrets
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 import uuid
 import aiosqlite
 
@@ -648,6 +648,13 @@ class Database:
             row = await cursor.fetchone()
             return dict(row) if row else None
 
+    async def get_all_user_read_progress(self, user_id: int) -> Dict[int, Dict[str, Any]]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("SELECT * FROM read_progress WHERE user_id = ?", (user_id,))
+            rows = await cursor.fetchall()
+            return {r["book_id"]: dict(r) for r in rows}
+
     # ---------------- User Operations ----------------
 
     async def upsert_user(
@@ -925,6 +932,7 @@ class Database:
         sort_by: str = "number",
         sort_dir: str = "asc",
         unpaged: bool = False,
+        sort: Optional[Union[str, List[str]]] = None,
     ) -> Tuple[List[Dict[str, Any]], int]:
         conditions = ["b.deleted = 0"]
         params: List[Any] = []
@@ -980,21 +988,27 @@ class Database:
 
         eff_release_date = "COALESCE(b.released, json_extract(b.raw_json, '$.metadata.released'), json_extract(b.raw_json, '$.released'), json_extract(b.raw_json, '$.metadata.releaseDate'), json_extract(b.raw_json, '$.releaseDate'), json_extract(b.raw_json, '$.metadata.publishedDate'))"
 
-        clean_sort = sort_by.lower().replace("metadata.", "").replace("sort", "")
-        if clean_sort in ("readprogress.readdate", "readdate", "readprogress") and not read_status:
-            # When sorting by read date without explicit read_status, only include books with read progress
-            conditions.append(f"{eff_read_date} IS NOT NULL")
-
-        if clean_sort in ("release", "releasedate"):
-            # Ignore books without release data in Grimmory in the new releases list
-            conditions.append(f"({eff_release_date} IS NOT NULL AND {eff_release_date} != '')")
-
-        where_clause = f"WHERE {' AND '.join(conditions)}"
+        # Build multi-column sort expressions
+        sort_specs: List[str] = []
+        if sort:
+            if isinstance(sort, list):
+                sort_specs.extend([str(s) for s in sort if s])
+            elif isinstance(sort, str):
+                sort_specs.append(sort)
+        elif sort_by:
+            sort_specs.append(f"{sort_by},{sort_dir}")
 
         allowed_sorts = {
             "number": "b.number",
+            "numbersort": "b.number",
             "name": "b.name",
             "title": "b.name",
+            "titlesort": "b.name",
+            "series": "COALESCE(s.sort_title, s.name, b.series_id)",
+            "seriestitle": "COALESCE(s.sort_title, s.name, b.series_id)",
+            "seriessort": "COALESCE(s.sort_title, s.name, b.series_id)",
+            "series.name": "COALESCE(s.sort_title, s.name, b.series_id)",
+            "series.title": "COALESCE(s.sort_title, s.name, b.series_id)",
             "created": "b.created",
             "createddate": "b.created",
             "lastmodified": "b.last_modified",
@@ -1004,9 +1018,53 @@ class Database:
             "releasedate": eff_release_date,
             "readdate": eff_read_date,
             "readprogress.readdate": eff_read_date,
+            "readprogress": eff_read_date,
         }
-        order_col = allowed_sorts.get(clean_sort, "b.number")
-        order_direction = "DESC" if sort_dir.lower() == "desc" else "ASC"
+
+        order_clauses: List[str] = []
+        requires_read_date = False
+        requires_release_date = False
+
+        for spec in sort_specs:
+            parts = [p.strip() for p in spec.split(",") if p.strip()]
+            if not parts:
+                continue
+
+            direction = "ASC"
+            if parts[-1].lower() in ("asc", "desc"):
+                direction = "DESC" if parts[-1].lower() == "desc" else "ASC"
+                fields = parts[:-1]
+            else:
+                fields = parts
+
+            for field in fields:
+                clean_field = field.lower().replace("metadata.", "").strip()
+                col_expr = allowed_sorts.get(clean_field)
+                if not col_expr:
+                    col_expr = allowed_sorts.get(clean_field.replace("sort", ""))
+                if not col_expr:
+                    col_expr = "b.number"
+
+                if col_expr == eff_read_date:
+                    requires_read_date = True
+                if col_expr == eff_release_date:
+                    requires_release_date = True
+
+                order_clauses.append(f"{col_expr} {direction}")
+
+        if not order_clauses:
+            order_clauses.append("b.number ASC")
+
+        if requires_read_date and not read_status:
+            # When sorting by read date without explicit read_status, only include books with read progress
+            conditions.append(f"{eff_read_date} IS NOT NULL")
+
+        if requires_release_date:
+            # Ignore books without release data in Grimmory in the new releases list
+            conditions.append(f"({eff_release_date} IS NOT NULL AND {eff_release_date} != '')")
+
+        order_by_sql = ", ".join(order_clauses)
+        where_clause = f"WHERE {' AND '.join(conditions)}"
 
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
@@ -1030,7 +1088,7 @@ class Database:
                     LEFT JOIN series s ON b.series_id = s.id
                     {join_rp_clause}
                     {where_clause}
-                    ORDER BY {order_col} {order_direction}
+                    ORDER BY {order_by_sql}
                 """
                 cursor = await db.execute(query, rp_join_params + params)
             else:
@@ -1039,7 +1097,7 @@ class Database:
                     LEFT JOIN series s ON b.series_id = s.id
                     {join_rp_clause}
                     {where_clause}
-                    ORDER BY {order_col} {order_direction}
+                    ORDER BY {order_by_sql}
                     LIMIT ? OFFSET ?
                 """
                 cursor = await db.execute(query, rp_join_params + params + [limit, offset])
