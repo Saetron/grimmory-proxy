@@ -134,7 +134,10 @@ async function clearReadSyncLogs() {
   }
 }
 
+let _isPolling = false;
 async function pollStatus() {
+  if (_isPolling) return;
+  _isPolling = true;
   try {
     const res = await fetch("/admin/api/status");
     if (!res.ok) return;
@@ -304,6 +307,8 @@ async function pollStatus() {
     }
   } catch (err) {
     console.debug("Status poll failed:", err);
+  } finally {
+    _isPolling = false;
   }
 }
 

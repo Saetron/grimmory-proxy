@@ -179,11 +179,11 @@ class AuthService:
             except Exception as e:
                 logger.warning(f"Error saving user login record for {username}: {e}")
 
-            # Capture initial read states from Grimmory upon login
+            # Capture initial read states from Grimmory upon login in background
             try:
-                await user_sync_service.capture_and_sync_user(session)
+                user_sync_service.trigger_background_sync(session)
             except Exception as e:
-                logger.warning(f"Error checking Grimmory read states for user {username}: {e}")
+                logger.warning(f"Error triggering Grimmory read states sync for user {username}: {e}")
 
             return session
         except Exception as e:
@@ -312,7 +312,7 @@ class AuthService:
             )
 
         # 4. Check Session & Remember-Me Cookies (Komga / Browser WebUI / KMreader)
-        for cookie_name in ["KOMGA-SESSION", "SESSION", "remember-me", "access_token", "admin_session"]:
+        for cookie_name in ["admin_session", "KOMGA-SESSION", "SESSION", "remember-me", "access_token"]:
             cookie_token = request.cookies.get(cookie_name)
             if cookie_token:
                 session = await cls.get_session_from_token(cookie_token)

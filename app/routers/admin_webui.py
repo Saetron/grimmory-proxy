@@ -104,6 +104,7 @@ def get_admin_router(
                 secure=settings.cookie_secure,
                 samesite="lax",
                 max_age=86400,
+                path="/",
             )
             return redirect
         except HTTPException as e:
@@ -135,7 +136,8 @@ def get_admin_router(
     @router.get("/admin/logout")
     async def logout_admin(response: Response) -> Response:
         redirect = RedirectResponse(url="/admin/login", status_code=status.HTTP_302_FOUND)
-        redirect.delete_cookie("admin_session")
+        for cookie_name in ["admin_session", "KOMGA-SESSION", "SESSION", "remember-me"]:
+            redirect.delete_cookie(cookie_name, path="/")
         return redirect
 
     @router.get("/admin", response_class=HTMLResponse)
@@ -145,9 +147,34 @@ def get_admin_router(
         if not user or not user.is_admin:
             return RedirectResponse(url="/admin/login", status_code=status.HTTP_302_FOUND)
 
-        stats = await db.get_stats()
-        thumb_count, thumb_bytes = thumbnail_cache.get_cache_size()
-        users_list = await db.get_users_detailed()
+        try:
+            stats = await db.get_stats()
+        except Exception as e:
+            logger.warning(f"Error fetching stats for dashboard: {e}")
+            stats = {
+                "libraries_count": 0,
+                "series_count": 0,
+                "books_count": 0,
+                "books_with_pages": 0,
+                "books_missing_pages": 0,
+                "users_count": 0,
+                "formats_breakdown": {},
+                "last_sync_time": None,
+                "sync_status": "idle",
+                "database_size_bytes": 0,
+            }
+
+        try:
+            thumb_count, thumb_bytes = thumbnail_cache.get_cache_size()
+        except Exception as e:
+            logger.warning(f"Error fetching thumbnail stats for dashboard: {e}")
+            thumb_count, thumb_bytes = 0, 0
+
+        try:
+            users_list = await db.get_users_detailed()
+        except Exception as e:
+            logger.warning(f"Error fetching users list for dashboard: {e}")
+            users_list = []
 
         return templates.TemplateResponse(
             request=request,

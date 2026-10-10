@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import logging
+import os
 import re
 import time
 from pathlib import Path
@@ -48,6 +49,9 @@ class MemoryCache:
 class DiskThumbnailCache:
     def __init__(self, base_dir: str):
         self.base_dir = Path(base_dir)
+        self._cached_count = 0
+        self._cached_bytes = 0
+        self._last_calc_time = 0.0
         try:
             self.base_dir.mkdir(parents=True, exist_ok=True)
         except (PermissionError, OSError) as e:
@@ -75,18 +79,38 @@ class DiskThumbnailCache:
         try:
             self.base_dir.mkdir(parents=True, exist_ok=True)
             file_path = self._get_path(item_type, str(item_id))
+            is_new = not file_path.exists()
             file_path.write_bytes(data)
+            if self._last_calc_time > 0 and is_new:
+                self._cached_count += 1
+                self._cached_bytes += len(data)
         except Exception as e:
             logger.warning(f"Error writing thumbnail to cache: {e}")
 
     def get_cache_size(self) -> Tuple[int, int]:
-        """Returns (count of files, total bytes)."""
+        """Returns (count of files, total bytes) cached with a 30-second TTL."""
+        now = time.time()
+        if self._last_calc_time > 0 and (now - self._last_calc_time) < 30.0:
+            return self._cached_count, self._cached_bytes
+
         count = 0
         total_bytes = 0
-        if self.base_dir.exists():
-            for f in self.base_dir.glob("*.jpg"):
-                count += 1
-                total_bytes += f.stat().st_size
+        try:
+            if self.base_dir.exists():
+                with os.scandir(self.base_dir) as entries:
+                    for entry in entries:
+                        if entry.name.endswith(".jpg") and entry.is_file(follow_symlinks=False):
+                            count += 1
+                            try:
+                                total_bytes += entry.stat().st_size
+                            except OSError:
+                                pass
+        except Exception as e:
+            logger.debug(f"Error calculating thumbnail cache size: {e}")
+
+        self._cached_count = count
+        self._cached_bytes = total_bytes
+        self._last_calc_time = now
         return count, total_bytes
 
 
