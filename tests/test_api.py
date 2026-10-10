@@ -1,3 +1,4 @@
+from datetime import datetime, timezone, timedelta
 import pytest
 from httpx import ASGITransport, AsyncClient
 from app.main import app
@@ -1379,6 +1380,188 @@ async def test_series_and_book_read_progress_endpoints(monkeypatch):
 
         resp_b1_reset = await client.get("/api/v1/books/881", headers=headers)
         assert resp_b1_reset.json()["readProgress"] is None
+
+
+@pytest.mark.asyncio
+async def test_grimmory_url_redirects(monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "grimmory_public_url", "http://public-grimmory:9090")
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test", follow_redirects=False) as client:
+        # 1. /series/{id} redirects to public Grimmory URL
+        resp_s = await client.get("/series/20-86-eighty-six-alter-ae04b64f?tab=books")
+        assert resp_s.status_code == 307
+        assert resp_s.headers["location"] == "http://public-grimmory:9090/series/20-86-eighty-six-alter-ae04b64f?tab=books"
+
+        # 2. /book/{id} redirects
+        resp_b = await client.get("/book/12345")
+        assert resp_b.status_code == 307
+        assert resp_b.headers["location"] == "http://public-grimmory:9090/book/12345"
+
+        # 3. /library/{id} redirects
+        resp_l = await client.get("/library/14")
+        assert resp_l.status_code == 307
+        assert resp_l.headers["location"] == "http://public-grimmory:9090/library/14"
+
+
+@pytest.mark.asyncio
+async def test_multi_column_and_spring_sorting():
+    from app.main import db
+    from app.models.internal import UserSession
+    from app.services.auth import AuthService
+
+    await db.connect()
+    user_id = 999
+    token = "token_sort_test"
+    user = UserSession(
+        user_id=user_id,
+        username="sort_tester",
+        token=token,
+        is_admin=True,
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    AuthService.cache_session(user)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # Upsert series and books with specific titles and numbers
+    await db.upsert_series_batch([
+        {"id": "s-alpha", "library_id": 1, "name": "Alpha Series", "slug": "alpha", "books_count": 2},
+        {"id": "s-beta", "library_id": 1, "name": "Beta Series", "slug": "beta", "books_count": 2},
+    ])
+    await db.upsert_books_batch([
+        {"id": 9001, "series_id": "s-beta", "library_id": 1, "name": "Beta Vol 2", "number": 2.0},
+        {"id": 9002, "series_id": "s-beta", "library_id": 1, "name": "Beta Vol 1", "number": 1.0},
+        {"id": 9003, "series_id": "s-alpha", "library_id": 1, "name": "Alpha Vol 2", "number": 2.0},
+        {"id": 9004, "series_id": "s-alpha", "library_id": 1, "name": "Alpha Vol 1", "number": 1.0},
+    ])
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # Test sort=series,metadata.numberSort,asc
+        resp = await client.post(
+            "/api/v1/books/list?page=0&size=10&sort=series,metadata.numberSort,asc",
+            headers=headers,
+        )
+        assert resp.status_code == 200
+        books = [b for b in resp.json()["content"] if b["id"] in ["9001", "9002", "9003", "9004"]]
+        expected_order = ["9004", "9003", "9002", "9001"] # Alpha 1, Alpha 2, Beta 1, Beta 2
+        actual_order = [b["id"] for b in books]
+        assert actual_order == expected_order
+
+        # Test GET /api/v1/books with sort=series,asc&sort=metadata.numberSort,desc
+        resp_desc = await client.get(
+            "/api/v1/books?sort=series,asc&sort=metadata.numberSort,desc",
+            headers=headers,
+        )
+        assert resp_desc.status_code == 200
+        books_desc = [b for b in resp_desc.json()["content"] if b["id"] in ["9001", "9002", "9003", "9004"]]
+        expected_desc = ["9003", "9004", "9001", "9002"] # Alpha 2, Alpha 1, Beta 2, Beta 1
+        assert [b["id"] for b in books_desc] == expected_desc
+
+
+@pytest.mark.asyncio
+async def test_read_progress_page_preservation_and_sync_protection():
+    from app.main import db
+    from app.models.internal import UserSession
+    from app.services.auth import AuthService
+    from app.services.user_sync import user_sync_service
+
+    await db.connect()
+    user_id = 777
+    token = "token_read_test"
+    user = UserSession(
+        user_id=user_id,
+        username="read_tester",
+        token=token,
+        is_admin=True,
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    AuthService.cache_session(user)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # Book with 0 page_count in DB (page count not calculated yet)
+    await db.upsert_books_batch([
+        {"id": 7771, "series_id": "s-alpha", "library_id": 1, "name": "Uncalculated Book", "number": 1.0, "page_count": 0},
+    ])
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # 1. Update R2 progression to position 5
+        resp_prog = await client.put(
+            "/api/v1/books/7771/progression",
+            json={"locator": {"href": "part1.html", "locations": {"position": 5}}},
+            headers=headers,
+        )
+        assert resp_prog.status_code == 204
+
+        # Verify page is 5 and NOT marked completed
+        resp_b = await client.get("/api/v1/books/7771", headers=headers)
+        assert resp_b.status_code == 200
+        rp = resp_b.json()["readProgress"]
+        assert rp is not None
+        assert rp["page"] == 5
+        assert rp["completed"] is False
+
+        # 2. Test user_sync_service does not erase local progress when Grimmory returns UNREAD
+        local_before = await db.get_book_read_progress(user_id, 7771)
+        assert local_before is not None
+        assert local_before["page"] == 5
+        assert local_before["completed"] == 0
+
+        # Simulate user sync where remote Grimmory response has readStatus="UNREAD"
+        # Monkeypatch get_library_books & get_all_books to return UNREAD
+        from app.clients.grimmory import grimmory_client
+        async def mock_all_books(token=None):
+            return [{"id": 7771, "readStatus": "UNREAD", "page_count": 0}]
+        monkeypatch_all = pytest.MonkeyPatch()
+        monkeypatch_all.setattr(grimmory_client, "get_all_books", mock_all_books)
+        monkeypatch_all.setattr(grimmory_client, "get_library_books", lambda lib_id, token=None: mock_all_books())
+        monkeypatch_all.setattr(grimmory_client, "get_magic_shelves", lambda token=None: [])
+
+        await user_sync_service.capture_and_sync_user(user, force=True)
+
+        # Local progress should STILL exist and be page 5!
+        local_after = await db.get_book_read_progress(user_id, 7771)
+        assert local_after is not None
+        assert local_after["page"] == 5
+        assert local_after["completed"] == 0
+        monkeypatch_all.undo()
+
+
+@pytest.mark.asyncio
+async def test_admin_read_sync_endpoints():
+    from app.models.internal import UserSession
+    from app.services.auth import AuthService
+
+    admin = UserSession(
+        user_id=1,
+        username="admin_user",
+        token="token_admin_sync",
+        is_admin=True,
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    AuthService.cache_session(admin)
+    headers = {"Authorization": "Bearer token_admin_sync"}
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # 1. Status returns read_sync_job
+        resp_status = await client.get("/admin/api/status", headers=headers)
+        assert resp_status.status_code == 200
+        data = resp_status.json()
+        assert "read_sync_job" in data
+        assert "read_sync_running" in data
+
+        # 2. Trigger read sync
+        resp_sync = await client.post("/admin/api/read-sync", headers=headers)
+        assert resp_sync.status_code == 200
+        assert resp_sync.json()["status"] in ["started", "already_running"]
+
+        # 3. Clear read sync logs
+        resp_clear = await client.post("/admin/api/read-sync/clear-logs", headers=headers)
+        assert resp_clear.status_code == 200
+        assert resp_clear.json()["status"] == "cleared"
 
 
 

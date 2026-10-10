@@ -85,7 +85,39 @@ app.include_router(get_books_router(db, page_calculator))
 app.include_router(get_progress_router(db))
 app.include_router(collections_router)
 app.include_router(get_authors_router(db))
-app.include_router(get_admin_router(db, page_calculator, sync_service))
+app.include_router(get_admin_router(db, page_calculator, sync_service, user_sync_service))
+
+
+@app.get("/series/{series_id:path}")
+async def redirect_series(series_id: str, request: Request):
+    """Redirect series browser clicks directly to Grimmory web UI."""
+    query = f"?{request.url.query}" if request.url.query else ""
+    return RedirectResponse(
+        url=f"{settings.public_grimmory_url}/series/{series_id}{query}",
+        status_code=status.HTTP_307_TEMPORARY_REDIRECT,
+    )
+
+
+@app.get("/book/{book_id:path}")
+@app.get("/books/{book_id:path}")
+async def redirect_book(book_id: str, request: Request):
+    """Redirect book browser clicks directly to Grimmory web UI."""
+    query = f"?{request.url.query}" if request.url.query else ""
+    return RedirectResponse(
+        url=f"{settings.public_grimmory_url}/book/{book_id}{query}",
+        status_code=status.HTTP_307_TEMPORARY_REDIRECT,
+    )
+
+
+@app.get("/library/{library_id:path}")
+@app.get("/libraries/{library_id:path}")
+async def redirect_library(library_id: str, request: Request):
+    """Redirect library browser clicks directly to Grimmory web UI."""
+    query = f"?{request.url.query}" if request.url.query else ""
+    return RedirectResponse(
+        url=f"{settings.public_grimmory_url}/library/{library_id}{query}",
+        status_code=status.HTTP_307_TEMPORARY_REDIRECT,
+    )
 
 
 @app.get("/")

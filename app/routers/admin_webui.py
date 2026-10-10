@@ -14,6 +14,7 @@ from app.services.auth import AuthService
 from app.services.cache import thumbnail_cache
 from app.services.page_calculator import PageCalculator
 from app.services.sync import SyncService
+from app.services.user_sync import UserSyncService
 
 logger = logging.getLogger("grimmory_proxy.admin_webui")
 
@@ -25,7 +26,16 @@ class CalcPagesRequest(BaseModel):
     missing_only: bool = True
 
 
-def get_admin_router(db: Database, page_calculator: PageCalculator, sync_service: SyncService) -> APIRouter:
+def get_admin_router(
+    db: Database,
+    page_calculator: PageCalculator,
+    sync_service: SyncService,
+    user_sync: Optional[UserSyncService] = None,
+) -> APIRouter:
+    if user_sync is None:
+        from app.services.user_sync import user_sync_service
+        user_sync = user_sync_service
+
     router = APIRouter(tags=["Admin WebUI"])
 
     @router.get("/admin/login", response_class=HTMLResponse)
@@ -102,10 +112,13 @@ def get_admin_router(db: Database, page_calculator: PageCalculator, sync_service
                 "stats": stats,
                 "calc_job": page_calculator.status,
                 "sync_job": sync_service.status,
+                "read_sync_job": user_sync.status,
                 "thumbnail_count": thumb_count,
                 "thumbnail_bytes": thumb_bytes,
                 "grimmory_url": settings.grimmory_url,
+                "grimmory_public_url": settings.public_grimmory_url,
                 "sync_interval_minutes": settings.sync_interval_minutes,
+                "user_sync_interval_minutes": settings.user_sync_interval_minutes,
             },
         )
 
@@ -123,8 +136,10 @@ def get_admin_router(db: Database, page_calculator: PageCalculator, sync_service
             "stats": stats,
             "calc_job": page_calculator.status.model_dump(),
             "sync_job": sync_service.status.model_dump(),
+            "read_sync_job": user_sync.status.model_dump(),
             "thumbnails": {"count": thumb_count, "bytes": thumb_bytes},
             "sync_running": sync_service.status.is_running,
+            "read_sync_running": user_sync.status.is_running,
         }
 
     @router.post("/admin/api/calculate-pages")
@@ -170,6 +185,27 @@ def get_admin_router(db: Database, page_calculator: PageCalculator, sync_service
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
 
         sync_service.status.logs = []
+        return {"status": "cleared"}
+
+    @router.post("/admin/api/read-sync")
+    async def trigger_manual_read_sync(request: Request) -> Dict[str, Any]:
+        user = await AuthService.get_current_user_optional(request)
+        if not user or not user.is_admin:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+
+        if user_sync.status.is_running:
+            return {"status": "already_running", "message": "Read sync is already in progress"}
+
+        asyncio.create_task(user_sync.sync_all_active_users())
+        return {"status": "started"}
+
+    @router.post("/admin/api/read-sync/clear-logs")
+    async def clear_read_sync_logs(request: Request) -> Dict[str, Any]:
+        user = await AuthService.get_current_user_optional(request)
+        if not user or not user.is_admin:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+
+        user_sync.status.logs = []
         return {"status": "cleared"}
 
     return router
