@@ -37,6 +37,7 @@ async def test_admin_login_page_renders():
         assert resp.status_code == 200
         assert "Admin Sign In" in resp.text
         assert f"v{settings.app_version}" in resp.text
+        assert "/static/app.js" not in resp.text
 
 
 @pytest.mark.asyncio
@@ -1884,6 +1885,7 @@ async def test_connected_users_and_purge():
         resp_dash = await client.get("/admin", headers=admin_headers)
         assert resp_dash.status_code == 200
         assert "Connected Users & Readers" in resp_dash.text
+        assert "/static/app.js" in resp_dash.text
 
 
 
