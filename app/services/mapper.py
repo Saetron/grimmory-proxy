@@ -230,9 +230,11 @@ class KomgaMapper:
             elif raw.get("cbxProgress") and isinstance(raw["cbxProgress"], dict):
                 cbx = raw["cbxProgress"]
                 cbx_perc = _safe_float(cbx.get("percentage"))
+                cbx_page = _safe_int(cbx.get("page"), 1)
+                is_comp = cbx_perc >= 95.0 or (page_count > 0 and cbx_page >= page_count)
                 read_progress = ReadProgressDto(
-                    page=_safe_int(cbx.get("page"), 1),
-                    completed=cbx_perc >= 99.0,
+                    page=cbx_page,
+                    completed=is_comp,
                     readDate=format_iso_timestamp(cbx.get("lastRead") or book_modified),
                     created=book_created,
                     lastModified=book_modified,
@@ -240,9 +242,11 @@ class KomgaMapper:
             elif raw.get("pdfProgress") and isinstance(raw["pdfProgress"], dict):
                 pdf = raw["pdfProgress"]
                 pdf_perc = _safe_float(pdf.get("percentage"))
+                pdf_page = _safe_int(pdf.get("page"), 1)
+                is_comp = pdf_perc >= 95.0 or (page_count > 0 and pdf_page >= page_count)
                 read_progress = ReadProgressDto(
-                    page=_safe_int(pdf.get("page"), 1),
-                    completed=pdf_perc >= 99.0,
+                    page=pdf_page,
+                    completed=is_comp,
                     readDate=format_iso_timestamp(pdf.get("lastRead") or book_modified),
                     created=book_created,
                     lastModified=book_modified,
@@ -251,9 +255,10 @@ class KomgaMapper:
                 epub = raw["epubProgress"]
                 perc = _safe_float(epub.get("percentage"))
                 calc_page = max(1, round((perc / 100.0) * page_count)) if page_count > 0 else 1
+                is_comp = perc >= 95.0 or (page_count > 0 and calc_page >= page_count)
                 read_progress = ReadProgressDto(
                     page=calc_page,
-                    completed=perc >= 99.0,
+                    completed=is_comp,
                     readDate=format_iso_timestamp(epub.get("lastRead") or book_modified),
                     created=book_created,
                     lastModified=book_modified,
