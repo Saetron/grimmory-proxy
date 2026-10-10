@@ -1938,6 +1938,126 @@ async def test_connected_users_and_purge():
         assert "/static/app.js" in resp_dash.text
 
 
+@pytest.mark.asyncio
+async def test_grimmory_read_status_and_page_progress_sync():
+    import asyncio
+    from app.main import db
+    from app.models.internal import UserSession
+    from app.services.auth import AuthService
+    from app.clients.grimmory import grimmory_client
+    import io
+    from PIL import Image
+
+    await db.connect()
+    await db.upsert_libraries([{"id": 90, "name": "Status Lib", "paths": []}])
+    await db.upsert_series_batch([{"id": "90-pdf", "library_id": 90, "name": "PDF Series", "slug": "pdf"}])
+    await db.upsert_books_batch([
+        {"id": 15889, "series_id": "90-pdf", "library_id": 90, "name": "Test Comic 15889", "number": 1.0, "page_count": 20},
+    ])
+
+    user = UserSession(
+        user_id=10,
+        username="reader_sync",
+        token="token_reader_sync",
+        is_admin=True,
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    AuthService.cache_session(user)
+    headers = {"Authorization": "Bearer token_reader_sync"}
+
+    captured_progress_reqs = []
+    captured_status_calls = []
+    captured_reset_calls = []
+
+    async def mock_update_read_progress(req, token=None):
+        captured_progress_reqs.append((req, token))
+        return True
+
+    async def mock_update_read_status(book_ids, status, token=None):
+        captured_status_calls.append((book_ids, status, token))
+        return True
+
+    async def mock_reset_read_progress(book_ids, token=None):
+        captured_reset_calls.append((book_ids, token))
+        return True
+
+    grimmory_client.update_read_progress = mock_update_read_progress
+    grimmory_client.update_read_status = mock_update_read_status
+    grimmory_client.reset_read_progress = mock_reset_read_progress
+
+    # Mock page image
+    img = Image.new("RGB", (50, 50), color="red")
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG")
+    fake_img = buf.getvalue()
+
+    async def mock_stream_page(b_id, p_num, token=None):
+        return fake_img
+
+    grimmory_client.stream_page_image = mock_stream_page
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # 1. Test finding series by "series-pdf" slug identifier
+        series_found = await db.find_series_by_id_or_slug("series-pdf")
+        assert series_found is not None
+        assert series_found["id"] == "90-pdf"
+
+        # 2. Reading page 8 of book 15889 via GET /api/v1/books/{id}/pages/{page_num}
+        resp_page = await client.get("/api/v1/books/15889/pages/8", headers=headers)
+        assert resp_page.status_code == 200
+
+        # Yield to let background task run
+        await asyncio.sleep(0.1)
+
+        # Check that page 8 progress was recorded locally
+        prog = await db.get_book_read_progress(10, 15889)
+        assert prog is not None
+        assert prog["page"] == 8
+        assert prog["completed"] == 0
+
+        # Check that Grimmory was notified with progressValid=True and status READING
+        assert any(r[0].bookId == 15889 and r[0].cbxProgress.page == 8 and r[0].progressValid is True for r in captured_progress_reqs)
+        assert any(s[0] == [15889] and s[1] == "READING" for s in captured_status_calls)
+
+        # 3. Explicit read completion via PATCH /api/v1/books/{id}/read-progress
+        resp_patch = await client.patch("/api/v1/books/15889/read-progress", json={"completed": True}, headers=headers)
+        assert resp_patch.status_code == 204
+        assert any(s[0] == [15889] and s[1] == "READ" for s in captured_status_calls)
+
+        # 4. Explicit reset via DELETE /api/v1/books/{id}/read-progress
+        resp_del = await client.delete("/api/v1/books/15889/read-progress", headers=headers)
+        assert resp_del.status_code == 204
+        assert any(r[0] == [15889] for r in captured_reset_calls)
+
+
+@pytest.mark.asyncio
+async def test_grimmory_client_token_401_retry():
+    import httpx
+    from app.clients.grimmory import GrimmoryClient
+    from app.models.grimmory import GrimmoryReadProgressRequest
+    from unittest.mock import AsyncMock
+
+    client = GrimmoryClient(base_url="http://mock-grimmory")
+    client.get_sync_token = AsyncMock(return_value="valid_sync_token")
+
+    # Mock response: 401 on first try with expired token, 200 on retry with sync token
+    resp_401 = httpx.Response(401, request=httpx.Request("POST", "http://mock-grimmory"))
+    resp_200 = httpx.Response(200, request=httpx.Request("POST", "http://mock-grimmory"))
+
+    mock_http = AsyncMock()
+    mock_http.post = AsyncMock(side_effect=[resp_401, resp_200])
+    client._http_client = mock_http
+
+    req = GrimmoryReadProgressRequest(bookId=101, progressValid=True)
+    success = await client.update_read_progress(req, token="expired_token")
+
+    assert success is True
+    assert mock_http.post.call_count == 2
+    # Verify second call used the valid sync token
+    assert mock_http.post.call_args_list[1][1]["headers"]["Authorization"] == "Bearer valid_sync_token"
+
+
 
 
 

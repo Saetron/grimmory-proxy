@@ -1,3 +1,5 @@
+import asyncio
+from datetime import datetime, timezone
 import io
 import json
 import logging
@@ -9,6 +11,12 @@ from PIL import Image
 
 from app.clients.grimmory import grimmory_client
 from app.database import Database
+from app.models.grimmory import (
+    GrimmoryCbxProgress,
+    GrimmoryEpubProgress,
+    GrimmoryPdfProgress,
+    GrimmoryReadProgressRequest,
+)
 from app.models.internal import UserSession
 from app.models.komga import BookDto, PageDto, PageableDto, build_pageable
 from app.services.auth import AuthService
@@ -327,6 +335,47 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
         await db.upsert_book_pages(book_id, [p.model_dump() for p in page_dtos])
         return page_dtos
 
+    async def _record_page_read_progress(user_session: UserSession, b_id: int, p_num: int) -> None:
+        try:
+            existing = await db.get_book_read_progress(user_session.user_id, b_id)
+            if existing and existing.get("completed"):
+                return
+            current_page = existing.get("page", 0) if existing else 0
+            if current_page >= p_num:
+                return
+
+            record = await db.get_book_by_id(b_id)
+            page_count = record.get("page_count", 0) if record else 0
+            if page_count <= 0:
+                page_count = 1
+
+            completed = page_count > 0 and p_num >= page_count
+            now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+            await db.upsert_read_progress(
+                user_id=user_session.user_id,
+                book_id=b_id,
+                page=p_num,
+                completed=completed,
+                read_date=now_str,
+            )
+
+            perc = 100.0 if completed else (min(100.0, max(0.0, (p_num / page_count) * 100.0)) if page_count > 1 else 0.0)
+            req = GrimmoryReadProgressRequest(
+                bookId=b_id,
+                cbxProgress=GrimmoryCbxProgress(page=p_num, percentage=perc, lastRead=now_str),
+                pdfProgress=GrimmoryPdfProgress(page=p_num, percentage=perc, lastRead=now_str),
+                epubProgress=GrimmoryEpubProgress(percentage=perc, lastRead=now_str),
+                dateFinished=now_str if completed else None,
+                readStatus="READ" if completed else "READING",
+                lastRead=now_str,
+                progressValid=True,
+            )
+            await grimmory_client.update_read_progress(req, token=user_session.token)
+            await grimmory_client.update_read_status([b_id], "READ" if completed else "READING", token=user_session.token)
+        except Exception as e:
+            logger.debug(f"Error recording page progress for book {b_id}: {e}")
+
     @router.get("/api/v1/books/{book_id}/pages/{page_number}")
     async def get_book_page_image(
         book_id: int,
@@ -334,6 +383,9 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
         convert: Optional[str] = Query(None),
         user: UserSession = Depends(AuthService.require_user),
     ) -> Response:
+        if page_number > 0 and user:
+            asyncio.create_task(_record_page_read_progress(user, book_id, page_number))
+
         img_bytes = await grimmory_client.stream_page_image(book_id, page_number, token=user.token)
         if not img_bytes:
             # Fallback to book thumbnail if page image not directly streamable

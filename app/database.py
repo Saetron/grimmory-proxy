@@ -461,6 +461,10 @@ class Database:
                 slug_part = identifier.split("-", 1)[1]
                 cursor = await db.execute("SELECT id FROM series WHERE slug = ? OR slug LIKE ? OR id LIKE ? ORDER BY id ASC LIMIT 1", (slug_part, f"{slug_part}-%", f"%-{slug_part}"))
                 row = await cursor.fetchone()
+            if not row and identifier.startswith("series-"):
+                slug_part = identifier[len("series-"):]
+                cursor = await db.execute("SELECT id FROM series WHERE slug = ? OR slug LIKE ? OR id LIKE ? OR name = ? COLLATE NOCASE ORDER BY id ASC LIMIT 1", (slug_part, f"{slug_part}-%", f"%-{slug_part}%", slug_part))
+                row = await cursor.fetchone()
             if row:
                 actual_id = row["id"]
                 return await self.get_series_by_id(actual_id, user_id=user_id)
@@ -1439,11 +1443,11 @@ class Database:
                     is_prog = not is_comp and ((b.get("user_page") or 0) > 0 or b.get("user_read_date") is not None)
                     r_date = b.get("user_read_date")
                 else:
-                    is_comp = raw.get("readStatus") == "READ" or raw.get("cbxProgress", {}).get("percentage", 0) >= 99.0 or raw.get("epubProgress", {}).get("percentage", 0) >= 99.0 or raw.get("pdfProgress", {}).get("percentage", 0) >= 99.0
+                    is_comp = raw.get("readStatus") == "READ" or raw.get("cbxProgress", {}).get("percentage", 0) >= 95.0 or raw.get("epubProgress", {}).get("percentage", 0) >= 95.0 or raw.get("pdfProgress", {}).get("percentage", 0) >= 95.0
                     cbx_perc = raw.get("cbxProgress", {}).get("percentage", 0)
                     epub_perc = raw.get("epubProgress", {}).get("percentage", 0)
                     pdf_perc = raw.get("pdfProgress", {}).get("percentage", 0)
-                    is_prog = not is_comp and (raw.get("readStatus") in ("READING", "IN_PROGRESS") or 0 < cbx_perc < 99.0 or 0 < epub_perc < 99.0 or 0 < pdf_perc < 99.0)
+                    is_prog = not is_comp and (raw.get("readStatus") in ("READING", "IN_PROGRESS") or 0 < cbx_perc < 95.0 or 0 < epub_perc < 95.0 or 0 < pdf_perc < 95.0)
                     r_date = raw.get("dateFinished") or raw.get("cbxProgress", {}).get("lastRead") or raw.get("epubProgress", {}).get("lastRead") or raw.get("pdfProgress", {}).get("lastRead")
 
                 if r_date and (not latest_activity_date or r_date > latest_activity_date):

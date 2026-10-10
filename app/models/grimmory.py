@@ -62,3 +62,4 @@ class GrimmoryReadProgressRequest(BaseModel):
     dateFinished: Optional[str] = None
     readStatus: Optional[str] = None
     lastRead: Optional[str] = None
+    progressValid: bool = True

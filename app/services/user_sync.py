@@ -109,10 +109,16 @@ class UserSyncService:
                         assigned_libs = json.loads(u_row.get("assigned_libraries") or "[]")
                     except Exception:
                         pass
+                    user_token = u_row["token"]
+                    if settings.sync_username and uname == settings.sync_username:
+                        try:
+                            user_token = await grimmory_client.get_sync_token()
+                        except Exception:
+                            pass
                     user = UserSession(
                         user_id=u_row["id"],
                         username=uname,
-                        token=u_row["token"],
+                        token=user_token,
                         is_admin=bool(u_row["is_admin"]),
                         assigned_library_ids=assigned_libs,
                         expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
@@ -219,6 +225,12 @@ class UserSyncService:
 
     async def _sync_grimmory_read_states(self, user: UserSession) -> None:
         logger.info(f"Checking Grimmory read states for user '{user.username}' (id={user.user_id})")
+
+        if settings.sync_username and user.username == settings.sync_username:
+            try:
+                user.token = await grimmory_client.get_sync_token()
+            except Exception:
+                pass
 
         all_books_map: Dict[int, Dict[str, Any]] = {}
 

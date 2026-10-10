@@ -141,7 +141,7 @@ class GrimmoryClient:
         auth_token = token or await self.get_sync_token()
         path = f"/api/v1/media/book/{book_id}/cbx/pages/{page_number}"
         resp = await self._http_client.get(path, headers=self._headers(auth_token))
-        if resp.status_code == 403 and token:
+        if resp.status_code in (401, 403) and token:
             sync_tok = await self.get_sync_token()
             resp = await self._http_client.get(path, headers=self._headers(sync_tok))
         if resp.status_code == 200:
@@ -152,7 +152,7 @@ class GrimmoryClient:
         auth_token = token or await self.get_sync_token()
         req = self._http_client.build_request("GET", f"/api/v1/books/{book_id}/download", headers=self._headers(auth_token))
         resp = await self._http_client.send(req, stream=True)
-        if resp.status_code == 403 and token:
+        if resp.status_code in (401, 403) and token:
             await resp.aclose()
             auth_token = await self.get_sync_token()
             req = self._http_client.build_request("GET", f"/api/v1/books/{book_id}/download", headers=self._headers(auth_token))
@@ -163,7 +163,7 @@ class GrimmoryClient:
     async def download_book_bytes(self, book_id: int, token: Optional[str] = None) -> bytes:
         auth_token = token or await self.get_sync_token()
         resp = await self._http_client.get(f"/api/v1/books/{book_id}/download", headers=self._headers(auth_token))
-        if resp.status_code == 403 and token:
+        if resp.status_code in (401, 403) and token:
             auth_token = await self.get_sync_token()
             resp = await self._http_client.get(f"/api/v1/books/{book_id}/download", headers=self._headers(auth_token))
         resp.raise_for_status()
@@ -177,19 +177,51 @@ class GrimmoryClient:
         url = f"/api/v1/books/{book_id}/metadata?replaceMode=REPLACE_WHEN_PROVIDED"
         payload = {"metadata": metadata}
         resp = await self._http_client.put(url, json=payload, headers=self._headers(auth_token))
+        if resp.status_code in (401, 403) and token:
+            auth_token = await self.get_sync_token()
+            resp = await self._http_client.put(url, json=payload, headers=self._headers(auth_token))
         resp.raise_for_status()
         return resp.json()
 
-    async def update_read_progress(self, progress_req: GrimmoryReadProgressRequest, token: str) -> bool:
+    async def update_read_progress(self, progress_req: GrimmoryReadProgressRequest, token: Optional[str] = None) -> bool:
         """Update read progress for the specific authenticated user."""
         url = "/api/v1/books/progress"
-        resp = await self._http_client.post(url, json=progress_req.model_dump(exclude_none=True), headers=self._headers(token))
+        auth_token = token or await self.get_sync_token()
+        payload = progress_req.model_dump(exclude_none=True)
+        resp = await self._http_client.post(url, json=payload, headers=self._headers(auth_token))
+        if resp.status_code in (401, 403) and token:
+            auth_token = await self.get_sync_token()
+            resp = await self._http_client.post(url, json=payload, headers=self._headers(auth_token))
         return resp.status_code in [200, 204]
 
-    async def reset_read_progress(self, book_ids: List[int], token: str) -> bool:
-        """Reset read progress for the specific authenticated user."""
+    async def update_read_status(self, book_ids: List[int], status: str, token: Optional[str] = None) -> bool:
+        """Update read status ('READ', 'READING', 'UNREAD') for one or more books on Grimmory."""
+        if not book_ids:
+            return True
+        url = "/api/v1/books/status"
+        auth_token = token or await self.get_sync_token()
+        payload = {"bookIds": book_ids, "status": status}
+        resp = await self._http_client.post(url, json=payload, headers=self._headers(auth_token))
+        if resp.status_code in (401, 403) and token:
+            auth_token = await self.get_sync_token()
+            resp = await self._http_client.post(url, json=payload, headers=self._headers(auth_token))
+        return resp.status_code in [200, 204]
+
+    async def reset_read_progress(self, book_ids: List[int], token: Optional[str] = None) -> bool:
+        """Reset read progress and status for the specific authenticated user."""
+        if not book_ids:
+            return True
         url = "/api/v1/books/reset-progress?type=ALL"
-        resp = await self._http_client.post(url, json=book_ids, headers=self._headers(token))
+        auth_token = token or await self.get_sync_token()
+        resp = await self._http_client.post(url, json=book_ids, headers=self._headers(auth_token))
+        if resp.status_code in (401, 403) and token:
+            auth_token = await self.get_sync_token()
+            resp = await self._http_client.post(url, json=book_ids, headers=self._headers(auth_token))
+        # Ensure read status on Grimmory is also set to UNREAD
+        try:
+            await self.update_read_status(book_ids, "UNREAD", token=auth_token)
+        except Exception as e:
+            logger.debug(f"Failed to reset read status to UNREAD for books {book_ids}: {e}")
         return resp.status_code in [200, 204]
 
 

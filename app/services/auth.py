@@ -291,10 +291,16 @@ class AuthService:
                     except Exception:
                         pass
                     await cls.touch_user_activity(user_row["id"])
+                    user_token = user_row["token"] or ""
+                    if settings.sync_username and user_row["username"] == settings.sync_username:
+                        try:
+                            user_token = await grimmory_client.get_sync_token()
+                        except Exception:
+                            pass
                     return UserSession(
                         user_id=user_row["id"],
                         username=user_row["username"],
-                        token=user_row["token"] or "",
+                        token=user_token,
                         is_admin=bool(user_row["is_admin"]),
                         assigned_library_ids=assigned_libs,
                         expires_at=datetime.now(timezone.utc) + timedelta(days=30),
