@@ -22,8 +22,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY VERSION* ./
 COPY app/ ./app/
 
-# Create persistent data and thumbnails directories
-RUN mkdir -p /app/data /app/data/thumbnails
+# Create persistent data and thumbnails directories, owned by an unprivileged user
+RUN useradd --system --uid 10001 --no-create-home appuser \
+    && mkdir -p /app/data /app/data/thumbnails \
+    && chown -R appuser:appuser /app/data
+USER appuser
 
 # Environment defaults
 ENV GRIMMORY_URL=http://localhost:8080 \
