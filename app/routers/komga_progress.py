@@ -28,6 +28,7 @@ logger = logging.getLogger("grimmory_proxy.komga_progress")
 
 async def _sync_series_books_read_to_grimmory(token: str, books: List[Dict[str, Any]], date_finished: str) -> None:
     tasks = []
+    book_ids = [b["id"] for b in books]
     for b in books:
         p_count = b.get("page_count", 0) or 1
         req = GrimmoryReadProgressRequest(
@@ -37,8 +38,10 @@ async def _sync_series_books_read_to_grimmory(token: str, books: List[Dict[str, 
             epubProgress=GrimmoryEpubProgress(percentage=100.0),
             dateFinished=date_finished,
             readStatus="READ",
+            progressValid=True,
         )
         tasks.append(grimmory_client.update_read_progress(req, token=token))
+    tasks.append(grimmory_client.update_read_status(book_ids, "READ", token=token))
     if tasks:
         try:
             await asyncio.gather(*tasks, return_exceptions=True)
@@ -164,10 +167,12 @@ def get_progress_router(db: Database) -> APIRouter:
             dateFinished=date_finished,
             readStatus="READ" if completed else "READING",
             lastRead=now_str,
+            progressValid=True,
         )
 
         try:
             success = await grimmory_client.update_read_progress(req, token=user.token)
+            await grimmory_client.update_read_status([book_id], "READ" if completed else "READING", token=user.token)
             if not success:
                 logger.warning(f"Failed to update progress on Grimmory for book {book_id} and user {user.username}")
         except Exception as e:
@@ -478,9 +483,11 @@ def get_progress_router(db: Database) -> APIRouter:
             dateFinished=modified if completed else None,
             readStatus="READ" if completed else "READING",
             lastRead=modified,
+            progressValid=True,
         )
         try:
             success = await grimmory_client.update_read_progress(req, token=user.token)
+            await grimmory_client.update_read_status([book_id], "READ" if completed else "READING", token=user.token)
             if not success:
                 logger.warning(f"Failed to update progress on Grimmory for book {book_id} and user {user.username}")
         except Exception as e:

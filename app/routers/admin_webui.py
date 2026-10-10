@@ -102,7 +102,7 @@ def get_admin_router(
                 value=user.token,
                 httponly=True,
                 secure=settings.cookie_secure,
-                samesite="strict",
+                samesite="lax",
                 max_age=86400,
             )
             return redirect

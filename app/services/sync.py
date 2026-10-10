@@ -202,13 +202,12 @@ class SyncService:
 
             # Update authors table
             if author_names:
-                async with self.db.get_connection() as conn:
-                    for author in author_names:
-                        await conn.execute(
-                            "INSERT INTO authors (name, count) VALUES (?, 1) ON CONFLICT(name) DO UPDATE SET count = count + 1",
-                            (author,),
-                        )
-                    await conn.commit()
+                async with self.db.get_db() as db:
+                    await db.executemany(
+                        "INSERT INTO authors (name, count) VALUES (?, 1) ON CONFLICT(name) DO UPDATE SET count = count + 1",
+                        [(author,) for author in author_names],
+                    )
+                    await db.commit()
 
             # Record sync timestamp
             now_str = datetime.now(timezone.utc).isoformat()
