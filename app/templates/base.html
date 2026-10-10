@@ -1,26 +1,66 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="dark" data-app-theme="grimmory">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{% block title %}Grimmory Proxy Admin{% endblock %}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <nav class="navbar">
-    <a href="/admin" class="navbar-brand">
-      <span>📚 Grimmory Proxy</span>
-      <span class="badge">Komga Bridge</span>
-    </a>
-    <div class="nav-user">
-      {% if user %}
-        <span style="font-size: 0.85rem; color: var(--text-muted);">Admin: <strong style="color: var(--text-bright);">{{ user.username }}</strong></span>
-        <a href="/admin/logout" class="btn btn-secondary" style="padding: 0.35rem 0.75rem; font-size: 0.8rem;">Logout</a>
-      {% endif %}
-    </div>
-  </nav>
+  <header class="app-header">
+    <div class="header-container">
+      <a href="/admin" class="header-brand">
+        <!-- Official Grimmory Logo with Bookmark Ribbon -->
+        <span class="brand-icon-wrap" aria-hidden="true">
+          <svg class="brand-logo" viewBox="0 0 100 126" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M25.8062 106.614V113.077V119.537V126L32.2559 119.537L38.7093 126V119.537V113.077V106.614H25.8062Z" fill="#FF2126"/>
+            <path d="M38.7093 29.0758H96.7715C98.5535 29.0758 99.9964 27.6307 99.9964 25.846V3.22984C99.9964 1.44512 98.5535 0 96.7715 0H12.9031C10.5512 0 8.35077 0.63224 6.44975 1.73414C4.49102 2.86856 2.86054 4.50155 1.72787 6.4633C0.631268 8.36363 0 10.5674 0 12.923V106.614C0 113.753 5.7752 119.537 12.9031 119.537H21.1529V113.077H12.9031C9.33915 113.077 6.44975 110.183 6.44975 106.614C6.44975 103.044 9.33915 100.15 12.9031 100.15H93.5466C97.1106 100.15 100 97.2566 100 93.6871V41.9988C100 38.4293 97.1106 35.5355 93.5466 35.5355H38.7093C36.9273 35.5355 35.4845 36.9806 35.4845 38.7653V61.3815C35.4845 63.1662 36.9273 64.6113 38.7093 64.6113H67.7404C69.5224 64.6113 70.9653 66.0564 70.9653 67.8412C70.9653 69.6259 69.5224 71.071 67.7404 71.071H38.7093C33.3634 71.071 29.0311 66.732 29.0311 61.3779V38.7617C29.0311 33.4076 33.3634 29.0686 38.7093 29.0686V29.0758Z" fill="url(#grimmory-logo-grad)"/>
+            <path d="M96.7715 113.077H43.5539V119.537H96.7715C98.5535 119.537 99.9964 118.092 99.9964 116.307C99.9964 114.522 98.5535 113.077 96.7715 113.077Z" fill="url(#grimmory-logo-grad)"/>
+            <defs>
+              <linearGradient id="grimmory-logo-grad" x1="50" y1="0" x2="50" y2="120" gradientUnits="userSpaceOnUse">
+                <stop offset="0%" stop-color="#fdba74"/>
+                <stop offset="100%" stop-color="#f97316"/>
+              </linearGradient>
+            </defs>
+          </svg>
+        </span>
+        <div class="brand-text">
+          <span class="brand-name">GRIMMORY</span>
+          <span class="brand-badge">KOMGA BRIDGE v{{ app_version }}</span>
+        </div>
+      </a>
 
-  <main class="container">
+      <div class="header-nav-right">
+        {% if user %}
+          {% if grimmory_public_url or grimmory_url %}
+            <a href="{{ grimmory_public_url or grimmory_url }}" target="_blank" rel="noopener" class="header-link-grimmory" title="Open upstream Grimmory instance">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+                <polyline points="15 3 21 3 21 9"></polyline>
+                <line x1="10" y1="14" x2="21" y2="3"></line>
+              </svg>
+              <span>Grimmory UI</span>
+            </a>
+          {% endif %}
+          <div class="user-pill">
+            <span class="user-avatar">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"></path>
+                <circle cx="12" cy="7" r="4"></circle>
+              </svg>
+            </span>
+            <span class="user-name">{{ user.username }}</span>
+          </div>
+          <a href="/admin/logout" class="btn btn-ghost" title="Sign out of Admin session">Sign Out</a>
+        {% endif %}
+      </div>
+    </div>
+  </header>
+
+  <main class="page-container">
     {% block content %}{% endblock %}
   </main>
 

@@ -3,93 +3,154 @@
 {% block title %}Dashboard & Stats - Grimmory Proxy{% endblock %}
 
 {% block content %}
-<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+<!-- Top Header Actions -->
+<div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 2rem; flex-wrap: wrap; gap: 1rem;">
   <div>
-    <h1 style="color: var(--text-bright); font-size: 1.6rem; font-weight: 700;">Dashboard & Statistics</h1>
-    <p style="color: var(--text-muted); font-size: 0.875rem;">Connected to Grimmory: <code style="color: var(--primary);">{{ grimmory_url }}</code></p>
+    <h1 style="color: var(--color-text-strong); font-size: 1.75rem; font-weight: 800; letter-spacing: -0.02em; margin-bottom: 0.35rem;">
+      Bridge Overview
+    </h1>
+    <div style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; color: var(--color-text-muted);">
+      <span style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background-color: var(--color-success); box-shadow: 0 0 6px var(--color-success);"></span>
+      <span>Connected to Grimmory Upstream:</span>
+      <code style="color: var(--color-primary); font-weight: 600;">{{ grimmory_url }}</code>
+    </div>
   </div>
-  <div style="display: flex; gap: 0.5rem;">
+  <div style="display: flex; gap: 0.75rem; flex-wrap: wrap;">
     <button id="btn-sync" onclick="triggerSync()" class="btn btn-secondary">
-      🔄 Sync Metadata Now
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+      </svg>
+      <span>Sync Metadata Now</span>
     </button>
     <button id="btn-read-sync" onclick="triggerReadSync()" class="btn btn-primary">
-      📖 Sync Read Status Now
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path>
+        <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path>
+      </svg>
+      <span>Sync Read Status Now</span>
     </button>
   </div>
 </div>
 
 <!-- Metadata Synchronization Activity & Live Log -->
 <div id="sync-log-card" class="panel-card" style="margin-bottom: 1.5rem; {% if not sync_job or (not sync_job.is_running and not sync_job.logs) %}display: none;{% endif %}">
-  <div class="panel-header" style="margin-bottom: 0.75rem;">
+  <div class="panel-header" style="margin-bottom: 0.85rem;">
     <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
-      <div style="display: flex; align-items: center; gap: 0.75rem;">
-        <div class="panel-title" style="font-size: 1rem;">🔄 Metadata Synchronization Activity</div>
+      <div style="display: flex; align-items: center; gap: 0.85rem;">
+        <div class="panel-title">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--color-primary)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="23 4 23 10 17 10"></polyline>
+            <polyline points="1 20 1 14 7 14"></polyline>
+            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+          </svg>
+          <span>Metadata Synchronization Activity</span>
+        </div>
         <span id="sync-status-badge" class="status-badge {% if sync_job and sync_job.is_running %}status-running{% elif sync_job and sync_job.error_message %}status-failed{% elif sync_job and sync_job.logs %}status-completed{% else %}status-idle{% endif %}">
           {% if sync_job and sync_job.is_running %}SYNCING{% elif sync_job and sync_job.error_message %}FAILED{% elif sync_job and sync_job.logs %}COMPLETED{% else %}IDLE{% endif %}
         </span>
       </div>
       <div>
-        <button onclick="clearSyncLogs()" class="btn btn-secondary" style="padding: 0.25rem 0.6rem; font-size: 0.75rem;">
+        <button onclick="clearSyncLogs()" class="btn btn-ghost" style="padding: 0.3rem 0.65rem; font-size: 0.75rem;">
           Clear Log
         </button>
       </div>
     </div>
   </div>
-  <div id="sync-log-container" style="background: #0d1117; border: 1px solid var(--card-border); border-radius: 6px; padding: 0.85rem; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 0.82rem; color: #c9d1d9; max-height: 220px; overflow-y: auto; white-space: pre-wrap; line-height: 1.45;">{% if sync_job and sync_job.logs %}{% for l in sync_job.logs %}{{ l }}
-{% endfor %}{% else %}<span style="color: var(--text-muted);">No recent sync logs. Click "Sync Metadata Now" to start.</span>{% endif %}</div>
+  <div id="sync-log-container" class="log-terminal">{% if sync_job and sync_job.logs %}{% for l in sync_job.logs %}{{ l }}
+{% endfor %}{% else %}<span style="color: var(--color-text-muted);">No recent sync logs. Click "Sync Metadata Now" to start.</span>{% endif %}</div>
 </div>
 
 <!-- User Read Status Synchronization Activity & Live Log -->
 <div id="read-sync-log-card" class="panel-card" style="margin-bottom: 1.5rem; {% if not read_sync_job or (not read_sync_job.is_running and not read_sync_job.logs) %}display: none;{% endif %}">
-  <div class="panel-header" style="margin-bottom: 0.75rem;">
+  <div class="panel-header" style="margin-bottom: 0.85rem;">
     <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
-      <div style="display: flex; align-items: center; gap: 0.75rem;">
-        <div class="panel-title" style="font-size: 1rem;">📖 User Read Status Synchronization</div>
+      <div style="display: flex; align-items: center; gap: 0.85rem;">
+        <div class="panel-title">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--color-primary)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
+            <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
+          </svg>
+          <span>User Read Progress Synchronization</span>
+        </div>
         <span id="read-sync-status-badge" class="status-badge {% if read_sync_job and read_sync_job.is_running %}status-running{% elif read_sync_job and read_sync_job.error_message %}status-failed{% elif read_sync_job and read_sync_job.logs %}status-completed{% else %}status-idle{% endif %}">
           {% if read_sync_job and read_sync_job.is_running %}SYNCING{% elif read_sync_job and read_sync_job.error_message %}FAILED{% elif read_sync_job and read_sync_job.logs %}COMPLETED{% else %}IDLE{% endif %}
         </span>
       </div>
       <div>
-        <button onclick="clearReadSyncLogs()" class="btn btn-secondary" style="padding: 0.25rem 0.6rem; font-size: 0.75rem;">
+        <button onclick="clearReadSyncLogs()" class="btn btn-ghost" style="padding: 0.3rem 0.65rem; font-size: 0.75rem;">
           Clear Log
         </button>
       </div>
     </div>
   </div>
-  <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 0.75rem; margin-bottom: 0.75rem; font-size: 0.85rem;">
-    <div>Active Users: <strong id="read-sync-active-users" style="color: var(--text-bright);">{% if read_sync_job %}{{ read_sync_job.active_users_count }}{% else %}0{% endif %}</strong></div>
-    <div>Total Synced Records: <strong id="read-sync-total-records" style="color: #3fb950;">{% if read_sync_job %}{{ read_sync_job.total_synced_records }}{% else %}0{% endif %}</strong></div>
-    <div>Last Sync: <strong id="read-sync-last-time" style="color: var(--text-bright);">{% if read_sync_job and read_sync_job.last_sync_time %}{{ read_sync_job.last_sync_time }}{% else %}Never{% endif %}</strong></div>
-    <div>Sync Interval: <strong style="color: var(--text-bright);">Every {{ user_sync_interval_minutes }} min</strong></div>
+  <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.75rem; margin-bottom: 0.85rem; padding: 0.75rem 1rem; background: var(--color-card-inner); border: 1px solid var(--color-border); border-radius: var(--radius-md); font-size: 0.825rem;">
+    <div>Active Users: <strong id="read-sync-active-users" style="color: var(--color-text-strong);">{% if read_sync_job %}{{ read_sync_job.active_users_count }}{% else %}0{% endif %}</strong></div>
+    <div>Total Synced Records: <strong id="read-sync-total-records" style="color: var(--color-success);">{% if read_sync_job %}{{ "{:,}".format(read_sync_job.total_synced_records) }}{% else %}0{% endif %}</strong></div>
+    <div>Last Sync: <strong id="read-sync-last-time" style="color: var(--color-text-strong);">{% if read_sync_job and read_sync_job.last_sync_time %}{{ read_sync_job.last_sync_time }}{% else %}Never{% endif %}</strong></div>
+    <div>Sync Interval: <strong style="color: var(--color-primary);">Every {{ user_sync_interval_minutes }} min</strong></div>
   </div>
-  <div id="read-sync-log-container" style="background: #0d1117; border: 1px solid var(--card-border); border-radius: 6px; padding: 0.85rem; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 0.82rem; color: #c9d1d9; max-height: 220px; overflow-y: auto; white-space: pre-wrap; line-height: 1.45;">{% if read_sync_job and read_sync_job.logs %}{% for l in read_sync_job.logs %}{{ l }}
-{% endfor %}{% else %}<span style="color: var(--text-muted);">No recent read sync logs. Click "Sync Read Status Now" to start.</span>{% endif %}</div>
+  <div id="read-sync-log-container" class="log-terminal">{% if read_sync_job and read_sync_job.logs %}{% for l in read_sync_job.logs %}{{ l }}
+{% endfor %}{% else %}<span style="color: var(--color-text-muted);">No recent read sync logs. Click "Sync Read Status Now" to start.</span>{% endif %}</div>
 </div>
 
 <!-- Primary Stats Grid -->
 <div class="stats-grid">
   <div class="stat-card">
-    <div class="stat-title">Total Books</div>
+    <div class="stat-header">
+      <div class="stat-title">Total Books</div>
+      <div class="stat-icon" style="color: var(--color-primary); background: var(--color-primary-light);">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
+          <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
+        </svg>
+      </div>
+    </div>
     <div class="stat-value" id="stat-books-count">{{ "{:,}".format(stats.books_count) }}</div>
-    <div class="stat-desc">Cached from Grimmory instance</div>
+    <div class="stat-desc">Cached from Grimmory catalog</div>
   </div>
 
   <div class="stat-card">
-    <div class="stat-title">Books with Pages</div>
-    <div class="stat-value" style="color: #3fb950;" id="stat-with-pages">{{ "{:,}".format(stats.books_with_pages) }}</div>
+    <div class="stat-header">
+      <div class="stat-title">Books with Pages</div>
+      <div class="stat-icon" style="color: var(--color-success); background: var(--color-success-bg);">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+          <polyline points="22 4 12 14.01 9 11.01"></polyline>
+        </svg>
+      </div>
+    </div>
+    <div class="stat-value" style="color: var(--color-success);" id="stat-with-pages">{{ "{:,}".format(stats.books_with_pages) }}</div>
     <div class="stat-desc">Enriched with page numbers</div>
   </div>
 
   <div class="stat-card">
-    <div class="stat-title">Missing Page Count</div>
-    <div class="stat-value" style="color: #f85149;" id="stat-missing-pages">{{ "{:,}".format(stats.books_missing_pages) }}</div>
-    <div class="stat-desc">Awaiting page calculation</div>
+    <div class="stat-header">
+      <div class="stat-title">Missing Page Count</div>
+      <div class="stat-icon" style="color: var(--color-danger); background: var(--color-danger-bg);">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10"></circle>
+          <line x1="12" y1="8" x2="12" y2="12"></line>
+          <line x1="12" y1="16" x2="12.01" y2="16"></line>
+        </svg>
+      </div>
+    </div>
+    <div class="stat-value" style="color: var(--color-danger);" id="stat-missing-pages">{{ "{:,}".format(stats.books_missing_pages) }}</div>
+    <div class="stat-desc">Awaiting background calculation</div>
   </div>
 
   <div class="stat-card">
-    <div class="stat-title">Libraries & Series</div>
+    <div class="stat-header">
+      <div class="stat-title">Libraries & Series</div>
+      <div class="stat-icon" style="color: #a855f7; background: rgba(168, 85, 247, 0.12);">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
+          <polyline points="2 17 12 22 22 17"></polyline>
+          <polyline points="2 12 12 17 22 12"></polyline>
+        </svg>
+      </div>
+    </div>
     <div class="stat-value" id="stat-series-count">{{ "{:,}".format(stats.series_count) }}</div>
-    <div class="stat-desc"><span id="stat-libs-count">{{ stats.libraries_count }}</span> Libraries mapped</div>
+    <div class="stat-desc"><span id="stat-libs-count">{{ stats.libraries_count }}</span> Grimmory libraries mapped</div>
   </div>
 </div>
 
@@ -97,18 +158,24 @@
 <div class="panel-card">
   <div class="panel-header">
     <div>
-      <div class="panel-title">📖 Book Page Calculation Engine</div>
-      <p style="color: var(--text-muted); font-size: 0.85rem; margin-top: 0.25rem;">
-        Calculates page counts for Komga-compatible readers (Komic, Mihon, etc.) and writes them directly to Grimmory.
-        Novels use the <strong>Calibre ADE algorithm</strong> (1,024 chars/page), and CBZ comics use <strong>1 image = 1 page</strong>.
+      <div class="panel-title">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--color-primary)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3"></circle>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+        </svg>
+        <span>Page Calculation Engine</span>
+      </div>
+      <p style="color: var(--color-text-muted); font-size: 0.85rem; margin-top: 0.35rem; line-height: 1.45;">
+        Computes page counts for Komga readers (Komic, Mihon, Tachiyomi, Kuro) and synchronizes them to Grimmory.
+        Novels follow the <strong>Calibre ADE algorithm</strong> (1,024 chars/page) and comic archives count <strong>1 image = 1 page</strong>.
       </p>
     </div>
   </div>
 
   <div>
-    <div style="display: flex; justify-content: space-between; font-size: 0.85rem; margin-bottom: 0.25rem;">
-      <span style="color: var(--text-muted);">Overall Page Count Enrichment Progress:</span>
-      <span id="pages-progress-text" style="color: var(--text-bright); font-weight: 600;">
+    <div style="display: flex; justify-content: space-between; font-size: 0.85rem; margin-bottom: 0.35rem;">
+      <span style="color: var(--color-text-secondary); font-weight: 500;">Overall Page Enrichment Progress:</span>
+      <span id="pages-progress-text" style="color: var(--color-text-strong); font-weight: 700;">
         {% if stats.books_count > 0 %}
           {{ "{:.1f}%".format((stats.books_with_pages / stats.books_count) * 100) }} ({{ "{:,}".format(stats.books_with_pages) }} / {{ "{:,}".format(stats.books_count) }} books)
         {% else %}
@@ -123,51 +190,68 @@
 
   <!-- Live Job Status Card -->
   <div id="active-job-box" class="live-job-status" style="{% if not calc_job or not calc_job.is_running %}display: none;{% endif %}">
-    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
-      <span style="font-weight: 600; color: var(--text-bright);">Active Page Calculation Task</span>
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
+      <span style="font-weight: 700; color: var(--color-text-strong); font-size: 0.9rem;">Active Calculation Task</span>
       <span id="job-status-badge" class="status-badge {% if calc_job and calc_job.is_running %}status-running{% else %}status-completed{% endif %}">
         {% if calc_job and calc_job.is_running %}RUNNING{% else %}IDLE{% endif %}
       </span>
     </div>
-    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.75rem; font-size: 0.85rem;">
-      <div>Progress: <strong id="job-processed" style="color: var(--text-bright);">{% if calc_job %}{{ calc_job.processed_books }} / {{ calc_job.total_books }}{% else %}0 / 0{% endif %}</strong></div>
-      <div>Successfully Updated: <strong id="job-updated" style="color: #3fb950;">{% if calc_job %}{{ calc_job.updated_books }}{% else %}0{% endif %}</strong></div>
-      <div>Errors: <strong id="job-errors" style="color: #f85149;">{% if calc_job %}{{ calc_job.error_count }}{% else %}0{% endif %}</strong></div>
-      <div>Current File: <code id="job-current-book" style="color: var(--primary);">{% if calc_job %}{{ calc_job.current_book or '-' }}{% else %}-{% endif %}</code></div>
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.85rem; font-size: 0.85rem;">
+      <div>Progress: <strong id="job-processed" style="color: var(--color-text-strong);">{% if calc_job %}{{ calc_job.processed_books }} / {{ calc_job.total_books }}{% else %}0 / 0{% endif %}</strong></div>
+      <div>Successfully Updated: <strong id="job-updated" style="color: var(--color-success);">{% if calc_job %}{{ calc_job.updated_books }}{% else %}0{% endif %}</strong></div>
+      <div>Errors: <strong id="job-errors" style="color: var(--color-danger);">{% if calc_job %}{{ calc_job.error_count }}{% else %}0{% endif %}</strong></div>
+      <div>Current File: <code id="job-current-book" style="color: var(--color-primary); word-break: break-all;">{% if calc_job %}{{ calc_job.current_book or '-' }}{% else %}-{% endif %}</code></div>
     </div>
   </div>
 
   <div class="action-buttons">
     <button onclick="triggerPageCalc(true)" class="btn btn-primary">
-      ⚡ Calculate Missing Pages Only
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+      </svg>
+      <span>Calculate Missing Pages Only</span>
     </button>
     <button onclick="triggerPageCalc(false)" class="btn btn-secondary">
-      🔁 Recalculate All Pages
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+      </svg>
+      <span>Recalculate All Pages</span>
     </button>
     <button onclick="stopPageCalc()" class="btn btn-danger">
-      ⏹ Stop Job
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+      </svg>
+      <span>Stop Job</span>
     </button>
   </div>
 </div>
 
 <!-- Formats & Storage Details -->
-<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.25rem;">
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.5rem;">
   <div class="panel-card" style="margin-bottom: 0;">
     <div class="panel-header">
-      <div class="panel-title" style="font-size: 1rem;">📁 Format Distribution</div>
+      <div class="panel-title">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--color-primary)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+        </svg>
+        <span>Format Distribution</span>
+      </div>
     </div>
-    <table style="width: 100%; border-collapse: collapse; font-size: 0.875rem;">
+    <table>
       <thead>
-        <tr style="border-bottom: 1px solid var(--card-border); color: var(--text-muted); text-align: left;">
-          <th style="padding: 0.4rem 0;">Format</th>
-          <th style="padding: 0.4rem 0; text-align: right;">Books</th>
+        <tr>
+          <th>Format</th>
+          <th style="text-align: right;">Books</th>
         </tr>
       </thead>
       <tbody>
         {% for fmt, count in stats.formats_breakdown.items() %}
-          <tr style="border-bottom: 1px solid rgba(48, 54, 61, 0.5);">
-            <td style="padding: 0.45rem 0; font-weight: 600; color: var(--text-bright);">{{ fmt }}</td>
-            <td style="padding: 0.45rem 0; text-align: right;">{{ "{:,}".format(count) }}</td>
+          <tr>
+            <td style="font-weight: 600; color: var(--color-text-strong);">
+              <span style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background-color: var(--color-primary); margin-right: 0.5rem;"></span>
+              {{ fmt }}
+            </td>
+            <td style="text-align: right; color: var(--color-text); font-weight: 600;">{{ "{:,}".format(count) }}</td>
           </tr>
         {% endfor %}
       </tbody>
@@ -176,36 +260,50 @@
 
   <div class="panel-card" style="margin-bottom: 0;">
     <div class="panel-header">
-      <div class="panel-title" style="font-size: 1rem;">💾 System & Background Sync</div>
+      <div class="panel-title">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--color-primary)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect>
+          <rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
+          <line x1="6" y1="6" x2="6.01" y2="6"></line>
+          <line x1="6" y1="18" x2="6.01" y2="18"></line>
+        </svg>
+        <span>System & Background Sync</span>
+      </div>
     </div>
-    <div style="display: flex; flex-direction: column; gap: 0.75rem; font-size: 0.875rem;">
-      <div style="display: flex; justify-content: space-between;">
-        <span style="color: var(--text-muted);">Sync Status:</span>
-        <strong style="color: var(--text-bright);">{{ stats.sync_status | capitalize }}</strong>
+    <div style="display: flex; flex-direction: column; gap: 0.85rem; font-size: 0.875rem;">
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <span style="color: var(--color-text-muted);">Proxy Version:</span>
+        <strong style="color: var(--color-primary);">v{{ app_version }}</strong>
       </div>
-      <div style="display: flex; justify-content: space-between;">
-        <span style="color: var(--text-muted);">Last Metadata Sync:</span>
-        <strong style="color: var(--text-bright);">{{ stats.last_sync_time or 'Never' }}</strong>
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <span style="color: var(--color-text-muted);">Sync State:</span>
+        <strong style="color: var(--color-text-strong);">{{ stats.sync_status | capitalize }}</strong>
       </div>
-      <div style="display: flex; justify-content: space-between;">
-        <span style="color: var(--text-muted);">Metadata Sync Interval:</span>
-        <strong style="color: var(--text-bright);">Every {{ sync_interval_minutes }} minutes</strong>
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <span style="color: var(--color-text-muted);">Last Metadata Sync:</span>
+        <strong style="color: var(--color-text-strong);">{{ stats.last_sync_time or 'Never' }}</strong>
       </div>
-      <div style="display: flex; justify-content: space-between;">
-        <span style="color: var(--text-muted);">User Read Sync Interval:</span>
-        <strong style="color: var(--text-bright);">Every {{ user_sync_interval_minutes }} minutes</strong>
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <span style="color: var(--color-text-muted);">Metadata Cycle:</span>
+        <strong style="color: var(--color-primary);">Every {{ sync_interval_minutes }} minutes</strong>
       </div>
-      <div style="display: flex; justify-content: space-between;">
-        <span style="color: var(--text-muted);">Public Grimmory URL:</span>
-        <a href="{{ grimmory_public_url }}" target="_blank" style="color: var(--primary); text-decoration: none; word-break: break-all;">{{ grimmory_public_url }} ↗</a>
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <span style="color: var(--color-text-muted);">User Read Sync:</span>
+        <strong style="color: var(--color-primary);">Every {{ user_sync_interval_minutes }} minutes</strong>
       </div>
-      <div style="display: flex; justify-content: space-between;">
-        <span style="color: var(--text-muted);">SQLite Cache Size:</span>
-        <strong style="color: var(--text-bright);">{{ "{:.2f} MB".format(stats.database_size_bytes / (1024 * 1024)) }}</strong>
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <span style="color: var(--color-text-muted);">Public Grimmory URL:</span>
+        <a href="{{ grimmory_public_url }}" target="_blank" rel="noopener" style="color: var(--color-primary); text-decoration: none; word-break: break-all; font-weight: 500;">
+          {{ grimmory_public_url }} ↗
+        </a>
       </div>
-      <div style="display: flex; justify-content: space-between;">
-        <span style="color: var(--text-muted);">Thumbnail Cache:</span>
-        <strong style="color: var(--text-bright);">{{ thumbnail_count }} files ({{ "{:.2f} MB".format(thumbnail_bytes / (1024 * 1024)) }})</strong>
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <span style="color: var(--color-text-muted);">SQLite Cache:</span>
+        <strong style="color: var(--color-text-strong);">{{ "{:.2f} MB".format(stats.database_size_bytes / (1024 * 1024)) }}</strong>
+      </div>
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <span style="color: var(--color-text-muted);">Cover Thumbnails:</span>
+        <strong style="color: var(--color-text-strong);">{{ thumbnail_count }} files ({{ "{:.2f} MB".format(thumbnail_bytes / (1024 * 1024)) }})</strong>
       </div>
     </div>
   </div>

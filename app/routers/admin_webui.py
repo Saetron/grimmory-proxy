@@ -119,6 +119,7 @@ def get_admin_router(
                 "grimmory_public_url": settings.public_grimmory_url,
                 "sync_interval_minutes": settings.sync_interval_minutes,
                 "user_sync_interval_minutes": settings.user_sync_interval_minutes,
+                "app_version": settings.app_version,
             },
         )
 
@@ -140,6 +141,7 @@ def get_admin_router(
             "thumbnails": {"count": thumb_count, "bytes": thumb_bytes},
             "sync_running": sync_service.status.is_running,
             "read_sync_running": user_sync.status.is_running,
+            "app_version": settings.app_version,
         }
 
     @router.post("/admin/api/calculate-pages")

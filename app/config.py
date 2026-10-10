@@ -4,12 +4,29 @@ from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+def _load_version() -> str:
+    try:
+        ver_path = Path(__file__).resolve().parent.parent / "VERSION"
+        if ver_path.exists():
+            content = ver_path.read_text(encoding="utf-8").strip()
+            if content:
+                return content
+    except Exception:
+        pass
+    return "0.1"
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
+    )
+
+    app_version: str = Field(
+        default_factory=_load_version,
+        description="Grimmory Proxy release version",
     )
 
     # Grimmory upstream connection

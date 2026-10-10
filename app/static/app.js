@@ -72,7 +72,7 @@ async function clearSyncLogs() {
   try {
     await fetch("/admin/api/sync/clear-logs", { method: "POST" });
     const logCont = document.getElementById("sync-log-container");
-    if (logCont) logCont.innerHTML = '<span style="color: var(--text-muted);">Log cleared.</span>';
+    if (logCont) logCont.innerHTML = '<span style="color: var(--color-text-muted);">Log cleared.</span>';
     const logCard = document.getElementById("sync-log-card");
     if (logCard) logCard.style.display = "none";
   } catch (err) {
@@ -115,7 +115,7 @@ async function clearReadSyncLogs() {
   try {
     await fetch("/admin/api/read-sync/clear-logs", { method: "POST" });
     const logCont = document.getElementById("read-sync-log-container");
-    if (logCont) logCont.innerHTML = '<span style="color: var(--text-muted);">Log cleared.</span>';
+    if (logCont) logCont.innerHTML = '<span style="color: var(--color-text-muted);">Log cleared.</span>';
     const logCard = document.getElementById("read-sync-log-card");
     if (logCard) logCard.style.display = "none";
   } catch (err) {
