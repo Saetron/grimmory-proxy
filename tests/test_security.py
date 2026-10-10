@@ -110,3 +110,20 @@ def test_no_inline_js_interpolation_of_usernames():
     for rel in ["app/templates/dashboard.html", "app/static/app.js"]:
         text = (ROOT / rel).read_text(encoding="utf-8")
         assert not re.search(r"onclick=\"[^\"]*username", text), rel
+
+
+@pytest.mark.asyncio
+async def test_admin_endpoints_never_send_basic_auth_challenge():
+    """Browsers must not get a native Basic-auth popup on top of the WebUI login page."""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        anon = await client.get("/admin/api/status")
+        assert anon.status_code == 401
+        assert "www-authenticate" not in anon.headers
+        bad_basic = await client.get(
+            "/admin/api/status", headers={"Authorization": "Basic bm9ib2R5Ondyb25n"}
+        )
+        assert "www-authenticate" not in bad_basic.headers
+        bad_key = await client.get("/admin/api/status", headers={"X-API-Key": "nope"})
+        assert bad_key.status_code == 401
+        assert "www-authenticate" not in bad_key.headers

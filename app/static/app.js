@@ -1,5 +1,16 @@
 // Admin WebUI Interactive Controller
 
+// If the admin session expires, send the browser to the WebUI login page
+// (admin endpoints never send a Basic-auth challenge).
+const _nativeFetch = window.fetch.bind(window);
+window.fetch = async (...args) => {
+  const res = await _nativeFetch(...args);
+  if (res.status === 401) {
+    window.location.href = "/admin/login";
+  }
+  return res;
+};
+
 async function triggerPageCalc(missingOnly) {
   const btn = event.target;
   const originalText = btn.innerText;
