@@ -1389,11 +1389,11 @@ async def test_grimmory_url_redirects(monkeypatch):
 
     await db.connect()
     # Insert series and book to test DB resolution
-    await db.upsert_libraries([{"id": 20, "name": "Light Novel"}])
+    await db.upsert_libraries([{"id": 86, "name": "Eighty Six Library"}])
     await db.upsert_series_batch([
         {
-            "id": "20-86-eighty-six-alter-ae04b64f",
-            "library_id": 20,
+            "id": "86-86-eighty-six-alter-ae04b64f",
+            "library_id": 86,
             "name": "86-EIGHTY-SIX Alter",
             "slug": "86-eighty-six-alter-ae04b64f",
             "books_count": 1,
@@ -1402,15 +1402,15 @@ async def test_grimmory_url_redirects(monkeypatch):
     await db.upsert_books_batch([
         {
             "id": 12345,
-            "series_id": "20-86-eighty-six-alter-ae04b64f",
-            "library_id": 20,
+            "series_id": "86-86-eighty-six-alter-ae04b64f",
+            "library_id": 86,
             "name": "86 Vol 1",
             "book_type": "EPUB",
         },
         {
             "id": 12346,
-            "series_id": "20-86-eighty-six-alter-ae04b64f",
-            "library_id": 20,
+            "series_id": "86-86-eighty-six-alter-ae04b64f",
+            "library_id": 86,
             "name": "86 Manga 1",
             "book_type": "CBZ",
         },
@@ -1420,7 +1420,7 @@ async def test_grimmory_url_redirects(monkeypatch):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test", follow_redirects=False) as client:
         # 1. /series/{id} maps composite ID to Grimmory's /series/:seriesName scheme
-        resp_s = await client.get("/series/20-86-eighty-six-alter-ae04b64f?tab=books")
+        resp_s = await client.get("/series/86-86-eighty-six-alter-ae04b64f?tab=books")
         assert resp_s.status_code == 307
         assert resp_s.headers["location"] == "http://public-grimmory:9090/series/86-EIGHTY-SIX%20Alter?tab=books"
 
