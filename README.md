@@ -41,6 +41,7 @@ A high-performance Python and Docker proxy/bridge that translates the **Grimmory
   - Redesigned with the official Grimmory design system, SVG branding, dark obsidian palette, and warm orange accents.
   - Password-protected management dashboard (`/admin`) restricted exclusively to **Grimmory Administrators**.
   - Real-time statistics: Total libraries, series, books, format distribution, cache metrics, and completion percentage.
+  - **Connected Users & Reader Management**: View all readers connected through the bridge with library access, reading progress counters, and online indicators; trigger on-demand syncs for individual users, or purge a user to clear all their local cached progress and sessions.
   - Interactive controls to trigger missing page calculations, recalculate all books, or initiate background catalog and read progress syncs with live terminal logs.
 - **High-Performance Caching**:
   - Persistent SQLite database in WAL mode (`aiosqlite`).
@@ -184,7 +185,10 @@ A high-performance Python and Docker proxy/bridge that translates the **Grimmory
 
 ### Admin WebUI
 - `GET /admin/login`, `POST /admin/login` - Secure sign-in page for Grimmory Administrators.
-- `GET /admin` / `GET /dashboard` - Interactive statistics, health indicators, and control panel.
+- `GET /admin` / `GET /dashboard` - Interactive statistics, health indicators, connected users panel, and control panel.
+- `GET /admin/api/users` - List all connected reader users with library access, reading progress statistics, and online indicators.
+- `POST /admin/api/users/{id}/purge` - Permanently purge a user and delete all their cached read progress, settings, and sessions.
+- `POST /admin/api/users/{id}/sync` - Force an immediate on-demand Grimmory read progress sync for a specific user.
 - `POST /admin/api/calculate-pages` - Trigger page calculation (missing only or full recalculation).
 - `POST /admin/api/stop-calculation` - Gracefully abort active calculation job.
 - `POST /admin/api/sync` - Trigger on-demand metadata sync.

@@ -1792,6 +1792,99 @@ async def test_auto_mark_completed_when_reading_to_end():
         assert prog.json()["completed"] is True
 
 
+@pytest.mark.asyncio
+async def test_connected_users_and_purge():
+    from app.main import db
+    from app.models.internal import UserSession
+    from app.services.auth import AuthService
+
+    await db.connect()
+    # 1. Setup admin and target user in database
+    await db.upsert_libraries([{"id": 80, "name": "Adj Lib", "paths": []}])
+    await db.upsert_user(user_id=990, username="admin_boss", token="tok_admin_boss", is_admin=True)
+    await db.upsert_user(user_id=991, username="test_reader", token="tok_test_reader", is_admin=False, assigned_libraries=[80])
+
+    # Cache sessions
+    admin_session = UserSession(
+        user_id=990,
+        username="admin_boss",
+        token="tok_admin_boss",
+        is_admin=True,
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=2),
+    )
+    reader_session = UserSession(
+        user_id=991,
+        username="test_reader",
+        token="tok_test_reader",
+        is_admin=False,
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=2),
+    )
+    AuthService.cache_session(admin_session)
+    AuthService.cache_session(reader_session)
+
+    # Insert read progress for user 991
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.upsert_read_progress(user_id=991, book_id=850, page=12, completed=False, read_date=now_iso)
+
+    admin_headers = {"Authorization": "Bearer tok_admin_boss"}
+    reader_headers = {"Authorization": "Bearer tok_test_reader"}
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # A. Non-admin attempting GET /admin/api/users gets 401/403
+        resp_unauth = await client.get("/admin/api/users", headers=reader_headers)
+        assert resp_unauth.status_code == 401
+
+        # B. Admin GET /admin/api/users succeeds
+        resp_users = await client.get("/admin/api/users", headers=admin_headers)
+        assert resp_users.status_code == 200
+        data = resp_users.json()
+        assert "users" in data
+        user_ids = [u["id"] for u in data["users"]]
+        assert 990 in user_ids
+        assert 991 in user_ids
+
+        # Verify enriched fields for user 991
+        target_info = next(u for u in data["users"] if u["id"] == 991)
+        assert target_info["username"] == "test_reader"
+        assert target_info["progress_count"] >= 1
+        assert "Adj Lib" in target_info["libraries_display"]
+
+        # C. Self-purge prevention
+        resp_self = await client.post("/admin/api/users/990/purge", headers=admin_headers)
+        assert resp_self.status_code == 400
+        assert "own active admin user session" in resp_self.json()["detail"]
+
+        # D. Non-admin purge attempt fails
+        resp_non_admin = await client.post("/admin/api/users/991/purge", headers=reader_headers)
+        assert resp_non_admin.status_code == 403
+
+        # E. Purging nonexistent user fails with 404
+        resp_404 = await client.post("/admin/api/users/999999/purge", headers=admin_headers)
+        assert resp_404.status_code == 404
+
+        # F. Successful purge of user 991
+        resp_purge = await client.post("/admin/api/users/991/purge", headers=admin_headers)
+        assert resp_purge.status_code == 200
+        purge_data = resp_purge.json()
+        assert purge_data["success"] is True
+        assert purge_data["deleted"]["user_deleted"] == 1
+        assert purge_data["deleted"]["progress_deleted"] >= 1
+
+        # G. Verify database is purged
+        assert await db.get_user_by_id(991) is None
+        assert len(await db.get_all_user_read_progress(991)) == 0
+
+        # H. Verify in-memory session is evicted
+        assert AuthService.get_cached_session("tok_test_reader") is None
+
+        # I. Verify dashboard HTML renders connected users section
+        resp_dash = await client.get("/admin", headers=admin_headers)
+        assert resp_dash.status_code == 200
+        assert "Connected Users & Readers" in resp_dash.text
+
+
+
 
 
 

@@ -861,6 +861,112 @@ class Database:
             )
             await db.commit()
 
+    async def touch_user_last_connected(self, user_id: int) -> None:
+        async with self.get_db() as db:
+            await db.execute(
+                "UPDATE users SET last_connected_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (user_id,),
+            )
+            await db.commit()
+
+    async def purge_user(self, user_id: int) -> Dict[str, int]:
+        """
+        Permanently purge a user and all their cached progress, settings, and tokens from SQLite.
+        Returns a dictionary of deleted row counts.
+        """
+        async with self.get_db() as db:
+            cursor = await db.execute("DELETE FROM read_progress WHERE user_id = ?", (user_id,))
+            progress_deleted = cursor.rowcount
+
+            cursor = await db.execute("DELETE FROM r2_progression WHERE user_id = ?", (user_id,))
+            r2_deleted = cursor.rowcount
+
+            cursor = await db.execute("DELETE FROM client_settings WHERE user_id = ?", (user_id,))
+            settings_deleted = cursor.rowcount
+
+            cursor = await db.execute("DELETE FROM api_keys WHERE user_id = ?", (user_id,))
+            keys_deleted = cursor.rowcount
+
+            cursor = await db.execute("DELETE FROM users WHERE id = ?", (user_id,))
+            user_deleted = cursor.rowcount
+
+            await db.commit()
+
+            return {
+                "user_deleted": user_deleted,
+                "progress_deleted": progress_deleted,
+                "r2_deleted": r2_deleted,
+                "settings_deleted": settings_deleted,
+                "keys_deleted": keys_deleted,
+            }
+
+    async def get_users_detailed(self) -> List[Dict[str, Any]]:
+        """
+        Retrieves all users enriched with library access names, progress record counts,
+        completion counts, and online status.
+        """
+        async with self.get_db() as db:
+            db.row_factory = aiosqlite.Row
+
+            lib_cursor = await db.execute("SELECT id, name FROM libraries")
+            lib_rows = await lib_cursor.fetchall()
+            lib_map = {r["id"]: r["name"] for r in lib_rows}
+
+            cursor = await db.execute(
+                """
+                SELECT 
+                    u.id,
+                    u.username,
+                    u.is_admin,
+                    u.assigned_libraries,
+                    u.last_connected_at,
+                    u.last_sync_progress_at,
+                    u.updated_at,
+                    (CASE WHEN u.token IS NOT NULL AND u.token != '' THEN 1 ELSE 0 END) as has_token,
+                    (SELECT COUNT(*) FROM read_progress rp WHERE rp.user_id = u.id) as progress_count,
+                    (SELECT COUNT(*) FROM read_progress rp WHERE rp.user_id = u.id AND rp.completed = 1) as completed_count
+                FROM users u
+                ORDER BY u.last_connected_at DESC
+                """
+            )
+            rows = await cursor.fetchall()
+            result = []
+            now_utc = datetime.now(timezone.utc)
+
+            for r in rows:
+                d = dict(r)
+                assigned = []
+                try:
+                    assigned = json.loads(d.get("assigned_libraries") or "[]")
+                except Exception:
+                    assigned = []
+                d["assigned_libraries"] = assigned
+
+                # Resolve human-readable library permissions
+                if d["is_admin"] or not assigned:
+                    d["libraries_display"] = "All Libraries"
+                else:
+                    names = [lib_map[lid] for lid in assigned if lid in lib_map]
+                    d["libraries_display"] = ", ".join(names) if names else f"{len(assigned)} Libraries"
+
+                # Check if connected recently (within last 15 minutes)
+                is_online = False
+                last_conn = d.get("last_connected_at")
+                if last_conn:
+                    try:
+                        clean_ts = str(last_conn).replace("Z", "+00:00")
+                        dt = datetime.fromisoformat(clean_ts)
+                        if dt.tzinfo is None:
+                            dt = dt.replace(tzinfo=timezone.utc)
+                        diff_sec = (now_utc - dt).total_seconds()
+                        if 0 <= diff_sec <= 900:
+                            is_online = True
+                    except Exception:
+                        pass
+                d["is_online"] = is_online
+                result.append(d)
+            return result
+
     # ---------------- Client Settings Operations ----------------
 
     async def get_client_settings(
@@ -1447,6 +1553,7 @@ class Database:
             books_count = (await (await db.execute("SELECT COUNT(*) as count FROM books WHERE deleted = 0")).fetchone())["count"]
             books_with_pages = (await (await db.execute("SELECT COUNT(*) as count FROM books WHERE deleted = 0 AND page_count > 0")).fetchone())["count"]
             books_missing_pages = books_count - books_with_pages
+            users_count = (await (await db.execute("SELECT COUNT(*) as count FROM users")).fetchone())["count"]
 
             # Formats breakdown
             type_cursor = await db.execute("SELECT book_type, COUNT(*) as count FROM books WHERE deleted = 0 GROUP BY book_type")
@@ -1467,6 +1574,7 @@ class Database:
                 "books_count": books_count,
                 "books_with_pages": books_with_pages,
                 "books_missing_pages": books_missing_pages,
+                "users_count": users_count,
                 "formats_breakdown": formats_breakdown,
                 "last_sync_time": last_sync,
                 "sync_status": sync_status,

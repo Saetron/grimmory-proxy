@@ -19,6 +19,7 @@ security_basic = HTTPBasic(auto_error=False)
 _active_sessions: Dict[str, UserSession] = {}
 # Cache username:password -> token for quick Basic Auth re-use
 _credential_tokens: Dict[str, str] = {}
+_last_user_touch: Dict[int, float] = {}
 
 
 def parse_assigned_libraries(assigned_raw: Any) -> List[int]:
@@ -50,6 +51,45 @@ class AuthService:
     @staticmethod
     def cache_session(session: UserSession) -> None:
         _active_sessions[session.token] = session
+
+    @classmethod
+    def purge_user_sessions(cls, user_id: int, username: Optional[str] = None) -> int:
+        """
+        Evicts all in-memory sessions and credential caches associated with the specified user ID.
+        """
+        evicted = 0
+        tokens_to_remove = [
+            token for token, session in list(_active_sessions.items())
+            if session.user_id == user_id
+        ]
+        for token in tokens_to_remove:
+            _active_sessions.pop(token, None)
+            evicted += 1
+
+        if username:
+            creds_to_remove = [
+                key for key in list(_credential_tokens.keys())
+                if key.startswith(f"{username}:")
+            ]
+            for key in creds_to_remove:
+                _credential_tokens.pop(key, None)
+        return evicted
+
+    @classmethod
+    async def touch_user_activity(cls, user_id: int) -> None:
+        """
+        Updates the last connected timestamp for the user in the database (throttled to at most once per 60s).
+        """
+        import time
+        now = time.time()
+        last = _last_user_touch.get(user_id, 0.0)
+        if now - last > 60.0:
+            _last_user_touch[user_id] = now
+            try:
+                from app.main import db
+                await db.touch_user_last_connected(user_id)
+            except Exception:
+                pass
 
     @classmethod
     async def authenticate_credentials(cls, username: str, password: str) -> UserSession:
@@ -168,6 +208,7 @@ class AuthService:
             token = auth_header[7:].strip()
             session = await cls.get_session_from_token(token)
             if session:
+                await cls.touch_user_activity(session.user_id)
                 return session
 
         # 3. Check API Key Headers or Query Parameter
@@ -190,6 +231,7 @@ class AuthService:
                         assigned_libs = json.loads(user_row["assigned_libraries"] or "[]")
                     except Exception:
                         pass
+                    await cls.touch_user_activity(user_row["id"])
                     return UserSession(
                         user_id=user_row["id"],
                         username=user_row["username"],
@@ -210,6 +252,7 @@ class AuthService:
             if cookie_token:
                 session = await cls.get_session_from_token(cookie_token)
                 if session:
+                    await cls.touch_user_activity(session.user_id)
                     return session
 
         return None

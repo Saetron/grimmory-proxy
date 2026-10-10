@@ -1,7 +1,9 @@
 import asyncio
+import json
 import logging
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
@@ -111,12 +113,14 @@ def get_admin_router(
 
         stats = await db.get_stats()
         thumb_count, thumb_bytes = thumbnail_cache.get_cache_size()
+        users_list = await db.get_users_detailed()
 
         return templates.TemplateResponse(
             request=request,
             name="dashboard.html",
             context={
                 "user": user,
+                "users": users_list,
                 "stats": stats,
                 "calc_job": page_calculator.status,
                 "sync_job": sync_service.status,
@@ -141,6 +145,7 @@ def get_admin_router(
 
         stats = await db.get_stats()
         thumb_count, thumb_bytes = thumbnail_cache.get_cache_size()
+        users_list = await db.get_users_detailed()
         return {
             "stats": stats,
             "calc_job": page_calculator.status.model_dump(),
@@ -150,6 +155,7 @@ def get_admin_router(
             "sync_running": sync_service.status.is_running,
             "read_sync_running": user_sync.status.is_running,
             "app_version": settings.app_version,
+            "users": users_list,
         }
 
     @router.post("/admin/api/calculate-pages")
@@ -217,5 +223,81 @@ def get_admin_router(
 
         user_sync.status.logs = []
         return {"status": "cleared"}
+
+    # ---------------- User Management Endpoints ----------------
+
+    @router.get("/admin/api/users")
+    async def get_users_list_endpoint(request: Request) -> Dict[str, Any]:
+        user = await AuthService.get_current_user_optional(request)
+        if not user or not user.is_admin:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Admin access required")
+
+        users_list = await db.get_users_detailed()
+        return {"users": users_list, "total": len(users_list)}
+
+    @router.post("/admin/api/users/{user_id}/purge")
+    async def purge_user_endpoint(user_id: int, request: Request) -> Dict[str, Any]:
+        user = await AuthService.get_current_user_optional(request)
+        if not user or not user.is_admin:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+
+        if user.user_id == user_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="You cannot purge your own active admin user session.",
+            )
+
+        target_row = await db.get_user_by_id(user_id)
+        if not target_row:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+        username = target_row.get("username", f"user-{user_id}")
+        AuthService.purge_user_sessions(user_id, username=username)
+        user_sync.purge_user_cache(user_id)
+        deleted_counts = await db.purge_user(user_id)
+
+        logger.info(f"Admin '{user.username}' purged user '{username}' (id={user_id}): {deleted_counts}")
+        return {
+            "success": True,
+            "message": f"User '{username}' and all associated read progress, settings, and cached sessions have been purged.",
+            "deleted": deleted_counts,
+        }
+
+    @router.post("/admin/api/users/{user_id}/sync")
+    async def sync_user_endpoint(user_id: int, request: Request) -> Dict[str, Any]:
+        user = await AuthService.get_current_user_optional(request)
+        if not user or not user.is_admin:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+
+        target_row = await db.get_user_by_id(user_id)
+        if not target_row:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+        if not target_row.get("token"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"User '{target_row.get('username')}' has no saved authentication token to connect to Grimmory.",
+            )
+
+        assigned_libs = []
+        try:
+            assigned_libs = json.loads(target_row.get("assigned_libraries") or "[]")
+        except Exception:
+            pass
+
+        target_session = UserSession(
+            user_id=target_row["id"],
+            username=target_row["username"],
+            token=target_row["token"],
+            is_admin=bool(target_row["is_admin"]),
+            assigned_library_ids=assigned_libs,
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
+        )
+
+        success = await user_sync.capture_and_sync_user(target_session, force=True)
+        return {
+            "success": success,
+            "message": f"Read progress sync completed for user '{target_row['username']}'." if success else f"Read progress sync failed for user '{target_row['username']}'."
+        }
 
     return router
