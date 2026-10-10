@@ -31,6 +31,24 @@ class CalcPagesRequest(BaseModel):
     missing_only: bool = True
 
 
+async def require_admin_session(request: Request) -> UserSession:
+    """
+    Admin WebUI/API guard. Unlike the Komga API guards, it never sends a
+    `WWW-Authenticate: Basic` challenge, so browsers don't show a native
+    Basic-auth dialog on top of the WebUI login page. The dashboard JS
+    redirects to /admin/login on 401 instead.
+    """
+    try:
+        user = await AuthService.get_current_user_optional(request)
+    except HTTPException as e:
+        # Re-raise without the Basic challenge header (keeps 401/429 semantics)
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
+    if not user.is_admin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+    return user
+
 def get_admin_router(
     db: Database,
     page_calculator: PageCalculator,
@@ -155,7 +173,7 @@ def get_admin_router(
 
     @router.get("/admin/api/status")
     async def get_dashboard_status(request: Request) -> Dict[str, Any]:
-        user = await AuthService.require_admin(request)
+        user = await require_admin_session(request)
 
         stats = await db.get_stats()
         thumb_count, thumb_bytes = thumbnail_cache.get_cache_size()
@@ -177,7 +195,7 @@ def get_admin_router(
         payload: CalcPagesRequest,
         request: Request,
     ) -> Dict[str, Any]:
-        user = await AuthService.require_admin(request)
+        user = await require_admin_session(request)
 
         if page_calculator.status.is_running:
             return {"status": "already_running", "message": "A calculation job is already running"}
@@ -187,14 +205,14 @@ def get_admin_router(
 
     @router.post("/admin/api/stop-calculation")
     async def stop_calculate_pages(request: Request) -> Dict[str, Any]:
-        user = await AuthService.require_admin(request)
+        user = await require_admin_session(request)
 
         page_calculator.request_stop()
         return {"status": "stopping"}
 
     @router.post("/admin/api/sync")
     async def trigger_manual_sync(request: Request) -> Dict[str, Any]:
-        user = await AuthService.require_admin(request)
+        user = await require_admin_session(request)
 
         if sync_service.status.is_running:
             return {"status": "already_running", "message": "Sync is already in progress"}
@@ -204,14 +222,14 @@ def get_admin_router(
 
     @router.post("/admin/api/sync/clear-logs")
     async def clear_sync_logs(request: Request) -> Dict[str, Any]:
-        user = await AuthService.require_admin(request)
+        user = await require_admin_session(request)
 
         sync_service.status.logs = []
         return {"status": "cleared"}
 
     @router.post("/admin/api/read-sync")
     async def trigger_manual_read_sync(request: Request) -> Dict[str, Any]:
-        user = await AuthService.require_admin(request)
+        user = await require_admin_session(request)
 
         if user_sync.status.is_running:
             return {"status": "already_running", "message": "Read sync is already in progress"}
@@ -221,7 +239,7 @@ def get_admin_router(
 
     @router.post("/admin/api/read-sync/clear-logs")
     async def clear_read_sync_logs(request: Request) -> Dict[str, Any]:
-        user = await AuthService.require_admin(request)
+        user = await require_admin_session(request)
 
         user_sync.status.logs = []
         return {"status": "cleared"}
@@ -230,14 +248,14 @@ def get_admin_router(
 
     @router.get("/admin/api/users")
     async def get_users_list_endpoint(request: Request) -> Dict[str, Any]:
-        user = await AuthService.require_admin(request)
+        user = await require_admin_session(request)
 
         users_list = await db.get_users_detailed()
         return {"users": users_list, "total": len(users_list)}
 
     @router.post("/admin/api/users/{user_id}/purge")
     async def purge_user_endpoint(user_id: int, request: Request) -> Dict[str, Any]:
-        user = await AuthService.require_admin(request)
+        user = await require_admin_session(request)
 
         if user.user_id == user_id:
             raise HTTPException(
@@ -263,7 +281,7 @@ def get_admin_router(
 
     @router.post("/admin/api/users/{user_id}/sync")
     async def sync_user_endpoint(user_id: int, request: Request) -> Dict[str, Any]:
-        user = await AuthService.require_admin(request)
+        user = await require_admin_session(request)
 
         target_row = await db.get_user_by_id(user_id)
         if not target_row:
