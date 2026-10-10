@@ -4,16 +4,32 @@ from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+import os
+
+
 def _load_version() -> str:
-    try:
-        ver_path = Path(__file__).resolve().parent.parent / "VERSION"
-        if ver_path.exists():
-            content = ver_path.read_text(encoding="utf-8").strip()
-            if content:
-                return content
-    except Exception:
-        pass
-    return "0.1"
+    # 1. Check environment variable override
+    env_ver = os.environ.get("APP_VERSION", "").strip()
+    if env_ver:
+        return env_ver
+
+    # 2. Check candidate paths for VERSION file
+    candidates = [
+        Path(__file__).resolve().parent.parent / "VERSION",  # /app/VERSION or repo/VERSION
+        Path(__file__).resolve().parent / "VERSION",         # /app/app/VERSION
+        Path.cwd() / "VERSION",                              # working directory
+        Path("/app/VERSION"),                                # container default root
+    ]
+    for p in candidates:
+        try:
+            if p.exists() and p.is_file():
+                content = p.read_text(encoding="utf-8").strip()
+                if content:
+                    return content
+        except Exception:
+            pass
+    return "0.3"
+
 
 
 class Settings(BaseSettings):

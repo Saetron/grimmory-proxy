@@ -56,6 +56,15 @@ jobs:
                   new_ver = '0.2'
 
           ver_file.write_text(new_ver + '\n', encoding='utf-8')
+
+          # Also update README.md badge
+          readme_file = Path('README.md')
+          if readme_file.exists():
+              import re
+              txt = readme_file.read_text(encoding='utf-8')
+              txt = re.sub(r'badge/Version-v[0-9.]+-orange\.svg', f'badge/Version-v{new_ver}-orange.svg', txt)
+              readme_file.write_text(txt, encoding='utf-8')
+
           print(new_ver)
           ")
           echo "version=$NEW_VER" >> $GITHUB_OUTPUT
@@ -72,7 +81,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add VERSION
+          git add VERSION README.md
           git commit -m "chore(release): bump version to ${{ steps.bump.outputs.version }} [skip ci]"
           git tag "v${{ steps.bump.outputs.version }}"
           git push origin HEAD --tags
@@ -106,5 +115,7 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            APP_VERSION=${{ steps.bump.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

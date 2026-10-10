@@ -20,6 +20,9 @@ logger = logging.getLogger("grimmory_proxy.admin_webui")
 
 templates_dir = Path(__file__).parent.parent / "templates"
 templates = Jinja2Templates(directory=str(templates_dir))
+templates.env.globals["app_version"] = settings.app_version
+templates.env.globals["grimmory_url"] = settings.grimmory_url
+templates.env.globals["grimmory_public_url"] = settings.public_grimmory_url
 
 
 class CalcPagesRequest(BaseModel):
@@ -47,7 +50,7 @@ def get_admin_router(
         return templates.TemplateResponse(
             request=request,
             name="login.html",
-            context={"user": None, "error": None},
+            context={"user": None, "error": None, "app_version": settings.app_version},
         )
 
     @router.post("/admin/login", response_class=HTMLResponse)
@@ -66,6 +69,7 @@ def get_admin_router(
                     context={
                         "user": None,
                         "error": "Access Denied: Only Grimmory Administrators are permitted to access this management dashboard.",
+                        "app_version": settings.app_version,
                     },
                     status_code=status.HTTP_403_FORBIDDEN,
                 )
@@ -84,7 +88,11 @@ def get_admin_router(
             return templates.TemplateResponse(
                 request=request,
                 name="login.html",
-                context={"user": None, "error": "Invalid Grimmory credentials or account not found."},
+                context={
+                    "user": None,
+                    "error": "Invalid Grimmory credentials or account not found.",
+                    "app_version": settings.app_version,
+                },
                 status_code=status.HTTP_401_UNAUTHORIZED,
             )
 

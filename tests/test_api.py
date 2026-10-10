@@ -30,11 +30,37 @@ async def test_unauthorized_endpoints():
 
 @pytest.mark.asyncio
 async def test_admin_login_page_renders():
+    from app.config import settings
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.get("/admin/login")
         assert resp.status_code == 200
         assert "Admin Sign In" in resp.text
+        assert f"v{settings.app_version}" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_root_api_returns_version():
+    from app.config import settings
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/", headers={"accept": "application/json"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["version"] == settings.app_version
+
+
+def test_load_version_logic(monkeypatch):
+    from app.config import _load_version
+    # Test env override
+    monkeypatch.setenv("APP_VERSION", "9.9.9")
+    assert _load_version() == "9.9.9"
+
+    monkeypatch.delenv("APP_VERSION", raising=False)
+    # Test file read from VERSION
+    ver = _load_version()
+    assert ver == "0.3"
+
 
 
 @pytest.mark.asyncio
