@@ -3,6 +3,7 @@
 [![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688.svg)](https://fastapi.tiangolo.com/)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED.svg)](https://www.docker.com/)
+[![Version](https://img.shields.io/badge/Version-v0.1-orange.svg)](VERSION)
 [![Komga API](https://img.shields.io/badge/Komga%20API-v1.12.0-orange.svg)](https://komga.org/)
 [![Theme](https://img.shields.io/badge/Theme-Grimmory%20Design-f97316.svg)](https://grimmory.org/)
 
@@ -254,3 +255,20 @@ Run the test suite locally using `pytest`:
 ```bash
 pytest
 ```
+
+---
+
+## Build & Release Workflow
+
+The GitHub Actions workflow (`.github/workflows/ci.yml`) is configured to run **exclusively when manually triggered** via GitHub's **Workflow Dispatch**:
+
+1. Navigate to **Actions** &rarr; **Build & Release** in your repository.
+2. Click **Run workflow**.
+3. *Optional*: Enter a custom version override, or leave blank to **automatically increment the version by 0.1** (e.g. `0.1` &rarr; `0.2` &rarr; `0.3`).
+4. The workflow will automatically:
+   - Run the full test suite.
+   - Increment and write the new version to `VERSION`.
+   - Commit and push git tag `v{version}` to the repository.
+   - Build multi-arch Docker images tagged with both the version (e.g. `:0.2`) and `:latest`.
+   - Push the images to GitHub Container Registry (`ghcr.io`).
+

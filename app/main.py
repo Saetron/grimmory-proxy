@@ -254,7 +254,8 @@ async def root_redirect(request: Request):
     return {
         "app": "Grimmory Proxy",
         "description": "Grimmory to Komga API Bridge",
-        "version": "1.12.0",
+        "version": settings.app_version,
+        "komga_version": "1.12.0",
         "status": "UP",
     }
 
