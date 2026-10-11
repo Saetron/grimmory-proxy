@@ -78,9 +78,9 @@ class AuthService:
 
     @staticmethod
     def _credential_key(username: str, password: str) -> str:
-        """Keyed hash so plaintext passwords are never held as dictionary keys."""
-        msg = f"{username}\x00{password}".encode("utf-8")
-        return hmac.new(_CREDENTIAL_CACHE_KEY, msg, hashlib.sha256).hexdigest()
+        """Keyed hash using PBKDF2 so plaintext passwords are never held as dictionary keys."""
+        salt = _CREDENTIAL_CACHE_KEY + f"|{username}\x00".encode("utf-8")
+        return hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations=1000).hex()
 
     @staticmethod
     def _throttle_key(username: str, client_ip: str) -> str:

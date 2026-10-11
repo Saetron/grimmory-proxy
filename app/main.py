@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 import logging
 from pathlib import Path
 import re
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
@@ -93,6 +93,32 @@ app.include_router(get_authors_router(db))
 app.include_router(get_admin_router(db, page_calculator, sync_service, user_sync_service))
 
 
+def _safe_grimmory_redirect(path_suffix: str, query: str = "") -> RedirectResponse:
+    """
+    Safely redirects browser requests to Grimmory, verifying the redirect target host and scheme.
+    """
+    base_url = settings.public_grimmory_url.rstrip("/")
+    clean_path = path_suffix.lstrip("/\\")
+    target_url = f"{base_url}/{clean_path}" if clean_path else base_url
+    if query:
+        clean_query = query.lstrip("?")
+        target_url = f"{target_url}?{clean_query}"
+
+    parsed_target = urlsplit(target_url)
+    parsed_base = urlsplit(base_url)
+
+    # Validate that the redirect target strictly matches the configured public_grimmory_url host and scheme
+    if (parsed_base.netloc and parsed_target.netloc != parsed_base.netloc) or (
+        parsed_base.scheme and parsed_target.scheme != parsed_base.scheme
+    ):
+        target_url = f"{base_url}/"
+
+    return RedirectResponse(
+        url=target_url,
+        status_code=status.HTTP_307_TEMPORARY_REDIRECT,
+    )
+
+
 @app.get("/series/{series_id:path}")
 @app.get("/series")
 async def redirect_series(request: Request, series_id: str = ""):
@@ -100,13 +126,10 @@ async def redirect_series(request: Request, series_id: str = ""):
     Redirect series browser clicks directly to Grimmory web UI.
     Translates internal proxy series IDs to Grimmory's URL scheme (/series/:seriesName).
     """
-    query = f"?{request.url.query}" if request.url.query else ""
+    query = request.url.query
     clean_id = series_id.strip("/")
     if not clean_id:
-        return RedirectResponse(
-            url=f"{settings.public_grimmory_url}/series{query}",
-            status_code=status.HTTP_307_TEMPORARY_REDIRECT,
-        )
+        return _safe_grimmory_redirect("series", query)
 
     first_segment = clean_id.split("/")[0]
 
@@ -126,10 +149,7 @@ async def redirect_series(request: Request, series_id: str = ""):
         target_name = fallback
 
     encoded_name = quote(target_name, safe="")
-    return RedirectResponse(
-        url=f"{settings.public_grimmory_url}/series/{encoded_name}{query}",
-        status_code=status.HTTP_307_TEMPORARY_REDIRECT,
-    )
+    return _safe_grimmory_redirect(f"series/{encoded_name}", query)
 
 
 @app.get("/book/{book_id:path}")
@@ -142,16 +162,13 @@ async def redirect_book(request: Request, book_id: str = ""):
     Grimmory routes book metadata center to /book/:bookId,
     and reading sessions to reader components (/cbx-reader/book/:id, /ebook-reader/book/:id, /pdf-reader/book/:id).
     """
-    query = f"?{request.url.query}" if request.url.query else ""
+    query = request.url.query
     clean_id = book_id.strip("/")
     if not clean_id:
-        return RedirectResponse(
-            url=f"{settings.public_grimmory_url}/all-books{query}",
-            status_code=status.HTTP_307_TEMPORARY_REDIRECT,
-        )
+        return _safe_grimmory_redirect("all-books", query)
 
     parts = clean_id.split("/")
-    clean_book_id = parts[0]
+    clean_book_id = quote(parts[0], safe="")
     is_reading = len(parts) > 1 and parts[1].lower() in ["read", "readium", "pages", "page"]
 
     if is_reading and clean_book_id.isdigit():
@@ -166,15 +183,9 @@ async def redirect_book(request: Request, book_id: str = ""):
             reader_route = f"audiobook-player/book/{clean_book_id}"
         else:
             reader_route = f"ebook-reader/book/{clean_book_id}"
-        return RedirectResponse(
-            url=f"{settings.public_grimmory_url}/{reader_route}{query}",
-            status_code=status.HTTP_307_TEMPORARY_REDIRECT,
-        )
+        return _safe_grimmory_redirect(reader_route, query)
 
-    return RedirectResponse(
-        url=f"{settings.public_grimmory_url}/book/{clean_book_id}{query}",
-        status_code=status.HTTP_307_TEMPORARY_REDIRECT,
-    )
+    return _safe_grimmory_redirect(f"book/{clean_book_id}", query)
 
 
 @app.get("/library/{library_id:path}")
@@ -186,19 +197,13 @@ async def redirect_library(request: Request, library_id: str = ""):
     Redirect library browser clicks directly to Grimmory web UI.
     Grimmory routes library book browsing to /library/:libraryId/books.
     """
-    query = f"?{request.url.query}" if request.url.query else ""
+    query = request.url.query
     clean_id = library_id.strip("/")
     if not clean_id:
-        return RedirectResponse(
-            url=f"{settings.public_grimmory_url}/all-books{query}",
-            status_code=status.HTTP_307_TEMPORARY_REDIRECT,
-        )
+        return _safe_grimmory_redirect("all-books", query)
 
-    clean_lib_id = clean_id.split("/")[0]
-    return RedirectResponse(
-        url=f"{settings.public_grimmory_url}/library/{clean_lib_id}/books{query}",
-        status_code=status.HTTP_307_TEMPORARY_REDIRECT,
-    )
+    clean_lib_id = quote(clean_id.split("/")[0], safe="")
+    return _safe_grimmory_redirect(f"library/{clean_lib_id}/books", query)
 
 
 @app.get("/shelf/{shelf_id:path}")
@@ -210,18 +215,12 @@ async def redirect_shelf(request: Request, shelf_id: str = "", collection_id: st
     Redirect shelf/collection clicks to Grimmory web UI (/shelf/:shelfId/books).
     """
     sid = shelf_id or collection_id
-    query = f"?{request.url.query}" if request.url.query else ""
+    query = request.url.query
     clean_id = sid.strip("/")
     if not clean_id:
-        return RedirectResponse(
-            url=f"{settings.public_grimmory_url}/dashboard{query}",
-            status_code=status.HTTP_307_TEMPORARY_REDIRECT,
-        )
-    first_part = clean_id.split("/")[0]
-    return RedirectResponse(
-        url=f"{settings.public_grimmory_url}/shelf/{first_part}/books{query}",
-        status_code=status.HTTP_307_TEMPORARY_REDIRECT,
-    )
+        return _safe_grimmory_redirect("dashboard", query)
+    first_part = quote(clean_id.split("/")[0], safe="")
+    return _safe_grimmory_redirect(f"shelf/{first_part}/books", query)
 
 
 @app.get("/author/{author_id:path}")
@@ -231,18 +230,12 @@ async def redirect_author(request: Request, author_id: str = ""):
     """
     Redirect author clicks to Grimmory web UI (/author/:authorId or /authors).
     """
-    query = f"?{request.url.query}" if request.url.query else ""
+    query = request.url.query
     clean_id = author_id.strip("/")
     if not clean_id:
-        return RedirectResponse(
-            url=f"{settings.public_grimmory_url}/authors{query}",
-            status_code=status.HTTP_307_TEMPORARY_REDIRECT,
-        )
-    clean_author_id = clean_id.split("/")[0]
-    return RedirectResponse(
-        url=f"{settings.public_grimmory_url}/author/{clean_author_id}{query}",
-        status_code=status.HTTP_307_TEMPORARY_REDIRECT,
-    )
+        return _safe_grimmory_redirect("authors", query)
+    clean_author_id = quote(clean_id.split("/")[0], safe="")
+    return _safe_grimmory_redirect(f"author/{clean_author_id}", query)
 
 
 @app.get("/")

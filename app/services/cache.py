@@ -59,17 +59,24 @@ class DiskThumbnailCache:
 
     @staticmethod
     def _safe_component(value: str) -> str:
-        if _SAFE_CACHE_NAME.fullmatch(value):
-            return value
-        return "h" + hashlib.sha256(value.encode("utf-8")).hexdigest()
+        val = Path(str(value)).name
+        if _SAFE_CACHE_NAME.fullmatch(val):
+            return val
+        return "h" + hashlib.sha256(str(value).encode("utf-8")).hexdigest()
 
     def _get_path(self, item_type: str, item_id: str) -> Path:
-        return self.base_dir / f"{self._safe_component(item_type)}_{self._safe_component(item_id)}.jpg"
+        resolved_base = self.base_dir.resolve()
+        filename = f"{self._safe_component(item_type)}_{self._safe_component(item_id)}.jpg"
+        file_path = (resolved_base / filename).resolve()
+        if not file_path.is_relative_to(resolved_base):
+            raise ValueError(f"Path traversal detected: {filename}")
+        return file_path
 
     def get_thumbnail(self, item_type: str, item_id: str) -> Optional[bytes]:
         try:
+            resolved_base = self.base_dir.resolve()
             file_path = self._get_path(item_type, str(item_id))
-            if file_path.exists():
+            if file_path.is_file() and file_path.is_relative_to(resolved_base):
                 return file_path.read_bytes()
         except Exception as e:
             logger.warning(f"Error reading cached thumbnail: {e}")
@@ -77,13 +84,15 @@ class DiskThumbnailCache:
 
     def save_thumbnail(self, item_type: str, item_id: str, data: bytes) -> None:
         try:
-            self.base_dir.mkdir(parents=True, exist_ok=True)
+            resolved_base = self.base_dir.resolve()
+            resolved_base.mkdir(parents=True, exist_ok=True)
             file_path = self._get_path(item_type, str(item_id))
-            is_new = not file_path.exists()
-            file_path.write_bytes(data)
-            if self._last_calc_time > 0 and is_new:
-                self._cached_count += 1
-                self._cached_bytes += len(data)
+            if file_path.is_relative_to(resolved_base):
+                is_new = not file_path.exists()
+                file_path.write_bytes(data)
+                if self._last_calc_time > 0 and is_new:
+                    self._cached_count += 1
+                    self._cached_bytes += len(data)
         except Exception as e:
             logger.warning(f"Error writing thumbnail to cache: {e}")
 
