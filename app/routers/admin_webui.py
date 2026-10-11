@@ -4,6 +4,7 @@ import logging
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+import httpx
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
@@ -107,6 +108,30 @@ def get_admin_router(
                 path="/",
             )
             return redirect
+        except (httpx.TimeoutException, TimeoutError) as e:
+            logger.warning(f"Admin login timed out connecting to Grimmory upstream: {e}")
+            return templates.TemplateResponse(
+                request=request,
+                name="login.html",
+                context={
+                    "user": None,
+                    "error": "Connection to Grimmory upstream server timed out. Please check that Grimmory is running and accessible.",
+                    "app_version": settings.app_version,
+                },
+                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            )
+        except (httpx.ConnectError, httpx.NetworkError) as e:
+            logger.warning(f"Admin login failed to connect to Grimmory upstream: {e}")
+            return templates.TemplateResponse(
+                request=request,
+                name="login.html",
+                context={
+                    "user": None,
+                    "error": "Could not connect to Grimmory upstream server. Please check that GRIMMORY_URL is configured correctly.",
+                    "app_version": settings.app_version,
+                },
+                status_code=status.HTTP_502_BAD_GATEWAY,
+            )
         except HTTPException as e:
             logger.warning(f"Admin login failed: {e.detail}")
             is_throttled = e.status_code == status.HTTP_429_TOO_MANY_REQUESTS
@@ -148,7 +173,7 @@ def get_admin_router(
             return RedirectResponse(url="/admin/login", status_code=status.HTTP_302_FOUND)
 
         try:
-            stats = await db.get_stats()
+            stats = await asyncio.wait_for(db.get_stats(), timeout=5.0)
         except Exception as e:
             logger.warning(f"Error fetching stats for dashboard: {e}")
             stats = {
@@ -165,13 +190,15 @@ def get_admin_router(
             }
 
         try:
-            thumb_count, thumb_bytes = thumbnail_cache.get_cache_size()
+            thumb_count, thumb_bytes = await asyncio.wait_for(
+                asyncio.to_thread(thumbnail_cache.get_cache_size), timeout=5.0
+            )
         except Exception as e:
             logger.warning(f"Error fetching thumbnail stats for dashboard: {e}")
             thumb_count, thumb_bytes = 0, 0
 
         try:
-            users_list = await db.get_users_detailed()
+            users_list = await asyncio.wait_for(db.get_users_detailed(), timeout=5.0)
         except Exception as e:
             logger.warning(f"Error fetching users list for dashboard: {e}")
             users_list = []
@@ -202,9 +229,26 @@ def get_admin_router(
     async def get_dashboard_status(request: Request) -> Dict[str, Any]:
         user = await require_admin_session(request)
 
-        stats = await db.get_stats()
-        thumb_count, thumb_bytes = thumbnail_cache.get_cache_size()
-        users_list = await db.get_users_detailed()
+        try:
+            stats = await asyncio.wait_for(db.get_stats(), timeout=5.0)
+        except Exception as e:
+            logger.warning(f"Error fetching stats for dashboard API: {e}")
+            stats = {}
+
+        try:
+            thumb_count, thumb_bytes = await asyncio.wait_for(
+                asyncio.to_thread(thumbnail_cache.get_cache_size), timeout=5.0
+            )
+        except Exception as e:
+            logger.warning(f"Error fetching thumbnail stats for dashboard API: {e}")
+            thumb_count, thumb_bytes = 0, 0
+
+        try:
+            users_list = await asyncio.wait_for(db.get_users_detailed(), timeout=5.0)
+        except Exception as e:
+            logger.warning(f"Error fetching users list for dashboard API: {e}")
+            users_list = []
+
         return {
             "stats": stats,
             "calc_job": page_calculator.status.model_dump(),

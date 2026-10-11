@@ -32,19 +32,24 @@ class GrimmoryClient:
 
     # ---------------- Authentication ----------------
 
-    async def login(self, username: str, password: str) -> GrimmoryLoginResponse:
+    async def login(self, username: str, password: str, timeout: float = 15.0) -> GrimmoryLoginResponse:
         url = "/api/v1/auth/login"
-        resp = await self._http_client.post(url, json={"username": username, "password": password})
+        resp = await self._http_client.post(
+            url,
+            json={"username": username, "password": password},
+            timeout=httpx.Timeout(timeout, connect=min(10.0, timeout)),
+        )
         if resp.status_code != 200:
             logger.warning(f"Grimmory login failed for {username}: {resp.status_code} {resp.text}")
             resp.raise_for_status()
         data = resp.json()
         return GrimmoryLoginResponse(**data)
 
-    async def get_current_user(self, token: str) -> GrimmoryUser:
+    async def get_current_user(self, token: str, timeout: float = 15.0) -> GrimmoryUser:
         resp = await self._http_client.get(
             "/api/v1/users/me",
             headers={"Authorization": f"Bearer {token}"},
+            timeout=httpx.Timeout(timeout, connect=min(10.0, timeout)),
         )
         resp.raise_for_status()
         return GrimmoryUser(**resp.json())

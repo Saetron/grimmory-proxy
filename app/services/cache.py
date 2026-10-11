@@ -97,9 +97,9 @@ class DiskThumbnailCache:
             logger.warning(f"Error writing thumbnail to cache: {e}")
 
     def get_cache_size(self) -> Tuple[int, int]:
-        """Returns (count of files, total bytes) cached with a 30-second TTL."""
+        """Returns (count of files, total bytes) cached with a 300-second TTL."""
         now = time.time()
-        if self._last_calc_time > 0 and (now - self._last_calc_time) < 30.0:
+        if self._last_calc_time > 0 and (now - self._last_calc_time) < 300.0:
             return self._cached_count, self._cached_bytes
 
         count = 0
