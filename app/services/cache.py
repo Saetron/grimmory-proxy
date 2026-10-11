@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import logging
+import os
 import re
 import time
 from pathlib import Path
@@ -48,6 +49,9 @@ class MemoryCache:
 class DiskThumbnailCache:
     def __init__(self, base_dir: str):
         self.base_dir = Path(base_dir)
+        self._cached_count = 0
+        self._cached_bytes = 0
+        self._last_calc_time = 0.0
         try:
             self.base_dir.mkdir(parents=True, exist_ok=True)
         except (PermissionError, OSError) as e:
@@ -55,17 +59,23 @@ class DiskThumbnailCache:
 
     @staticmethod
     def _safe_component(value: str) -> str:
-        if _SAFE_CACHE_NAME.fullmatch(value):
-            return value
-        return "h" + hashlib.sha256(value.encode("utf-8")).hexdigest()
+        # Cryptographic hash prevents path traversal, eliminates special characters, and stops taint propagation
+        return hashlib.sha256(str(value).encode("utf-8")).hexdigest()
 
     def _get_path(self, item_type: str, item_id: str) -> Path:
-        return self.base_dir / f"{self._safe_component(item_type)}_{self._safe_component(item_id)}.jpg"
+        filename = f"{self._safe_component(item_type)}_{self._safe_component(item_id)}.jpg"
+        base_path = os.path.realpath(str(self.base_dir))
+        full_path = os.path.realpath(os.path.join(base_path, filename))
+        if not full_path.startswith(base_path):
+            raise ValueError(f"Path traversal detected: {filename}")
+        return Path(full_path)
 
     def get_thumbnail(self, item_type: str, item_id: str) -> Optional[bytes]:
         try:
             file_path = self._get_path(item_type, str(item_id))
-            if file_path.exists():
+            base_path = os.path.realpath(str(self.base_dir))
+            real_path = os.path.realpath(str(file_path))
+            if real_path.startswith(base_path) and os.path.isfile(real_path):
                 return file_path.read_bytes()
         except Exception as e:
             logger.warning(f"Error reading cached thumbnail: {e}")
@@ -73,20 +83,43 @@ class DiskThumbnailCache:
 
     def save_thumbnail(self, item_type: str, item_id: str, data: bytes) -> None:
         try:
-            self.base_dir.mkdir(parents=True, exist_ok=True)
             file_path = self._get_path(item_type, str(item_id))
-            file_path.write_bytes(data)
+            base_path = os.path.realpath(str(self.base_dir))
+            real_path = os.path.realpath(str(file_path))
+            if real_path.startswith(base_path):
+                self.base_dir.mkdir(parents=True, exist_ok=True)
+                is_new = not file_path.exists()
+                file_path.write_bytes(data)
+                if self._last_calc_time > 0 and is_new:
+                    self._cached_count += 1
+                    self._cached_bytes += len(data)
         except Exception as e:
             logger.warning(f"Error writing thumbnail to cache: {e}")
 
     def get_cache_size(self) -> Tuple[int, int]:
-        """Returns (count of files, total bytes)."""
+        """Returns (count of files, total bytes) cached with a 30-second TTL."""
+        now = time.time()
+        if self._last_calc_time > 0 and (now - self._last_calc_time) < 30.0:
+            return self._cached_count, self._cached_bytes
+
         count = 0
         total_bytes = 0
-        if self.base_dir.exists():
-            for f in self.base_dir.glob("*.jpg"):
-                count += 1
-                total_bytes += f.stat().st_size
+        try:
+            if self.base_dir.exists():
+                with os.scandir(self.base_dir) as entries:
+                    for entry in entries:
+                        if entry.name.endswith(".jpg") and entry.is_file(follow_symlinks=False):
+                            count += 1
+                            try:
+                                total_bytes += entry.stat().st_size
+                            except OSError:
+                                pass
+        except Exception as e:
+            logger.debug(f"Error calculating thumbnail cache size: {e}")
+
+        self._cached_count = count
+        self._cached_bytes = total_bytes
+        self._last_calc_time = now
         return count, total_bytes
 
 

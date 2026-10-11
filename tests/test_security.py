@@ -134,3 +134,27 @@ def test_app_js_prevents_login_refresh_loop():
     app_js = (ROOT / "app/static/app.js").read_text(encoding="utf-8")
     assert "!window.location.pathname.startsWith(\"/admin/login\")" in app_js
     assert "initPolling" in app_js
+
+
+def test_safe_redirect_prevents_open_redirect():
+    from app.main import _safe_grimmory_redirect
+    from app.config import settings
+
+    resp = _safe_grimmory_redirect("///evil.example.com/steal")
+    # Redirect URL must stay on the configured Grimmory host, never evil.example.com
+    assert "evil.example.com" not in resp.headers["location"] or resp.headers["location"].startswith(settings.public_grimmory_url)
+
+
+def test_cookie_sanitization_prevents_injection():
+    from fastapi import Response
+    from app.routers.komga_auth import _set_session_cookies
+
+    # Malicious token attempting header splitting or bad chars
+    malicious_session = _session(42, "bad\r\nSet-Cookie: evil=1")
+    resp = Response()
+    _set_session_cookies(resp, malicious_session)
+    # The set-cookie header value must fall back to safe numeric user_id "42"
+    cookie_headers = resp.headers.getlist("set-cookie") if hasattr(resp.headers, "getlist") else [resp.headers.get("set-cookie", "")]
+    for h in cookie_headers:
+        assert "\r" not in h and "\n" not in h and "evil" not in h
+        assert "42" in h

@@ -1562,9 +1562,14 @@ class Database:
 
             lib_count = (await (await db.execute("SELECT COUNT(*) as count FROM libraries")).fetchone())["count"]
             series_count = (await (await db.execute("SELECT COUNT(*) as count FROM series")).fetchone())["count"]
-            books_count = (await (await db.execute("SELECT COUNT(*) as count FROM books WHERE deleted = 0")).fetchone())["count"]
-            books_with_pages = (await (await db.execute("SELECT COUNT(*) as count FROM books WHERE deleted = 0 AND page_count > 0")).fetchone())["count"]
-            books_missing_pages = books_count - books_with_pages
+
+            books_row = await (await db.execute(
+                "SELECT COUNT(*) as total, SUM(CASE WHEN page_count > 0 THEN 1 ELSE 0 END) as with_pages FROM books WHERE deleted = 0"
+            )).fetchone()
+            books_count = books_row["total"] if books_row else 0
+            books_with_pages = books_row["with_pages"] or 0 if books_row else 0
+            books_missing_pages = max(0, books_count - books_with_pages)
+
             users_count = (await (await db.execute("SELECT COUNT(*) as count FROM users")).fetchone())["count"]
 
             # Formats breakdown
@@ -1572,13 +1577,19 @@ class Database:
             type_rows = await type_cursor.fetchall()
             formats_breakdown = {r["book_type"] or "UNKNOWN": r["count"] for r in type_rows}
 
-            last_sync = await self.get_state("last_sync_time")
-            sync_status = await self.get_state("sync_status") or "idle"
+            state_cursor = await db.execute("SELECT key, value FROM sync_state WHERE key IN ('last_sync_time', 'sync_status')")
+            state_rows = await state_cursor.fetchall()
+            state_map = {r["key"]: r["value"] for r in state_rows}
+            last_sync = state_map.get("last_sync_time")
+            sync_status = state_map.get("sync_status") or "idle"
 
             # Check DB file size
             db_size_bytes = 0
             if Path(self.db_path).exists():
-                db_size_bytes = Path(self.db_path).stat().st_size
+                try:
+                    db_size_bytes = Path(self.db_path).stat().st_size
+                except OSError:
+                    pass
 
             return {
                 "libraries_count": lib_count,

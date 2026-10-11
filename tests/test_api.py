@@ -82,12 +82,42 @@ async def test_admin_login_flow(monkeypatch):
         set_cookie = resp.headers.get("set-cookie", "")
         assert "admin_session=tok_admin_test_flow" in set_cookie
         assert "samesite=lax" in set_cookie.lower()
+        assert "path=/" in set_cookie.lower()
 
         # Follow redirect with the cookie
         client.cookies.set("admin_session", "tok_admin_test_flow")
         resp_admin = await client.get("/admin")
         assert resp_admin.status_code == 200
         assert "Bridge Overview" in resp_admin.text
+
+        # Test logout clears cookies and redirects to /admin/login
+        resp_logout = await client.get("/admin/logout")
+        assert resp_logout.status_code == 302
+        assert resp_logout.headers["location"] == "/admin/login"
+        logout_cookie = resp_logout.headers.get("set-cookie", "")
+        assert "admin_session" in logout_cookie
+
+
+@pytest.mark.asyncio
+async def test_thumbnail_cache_size_ttl(tmp_path):
+    from app.services.cache import DiskThumbnailCache
+    cache = DiskThumbnailCache(base_dir=str(tmp_path))
+
+    # Empty cache
+    count, size = cache.get_cache_size()
+    assert count == 0
+    assert size == 0
+
+    # Save a thumbnail
+    cache.save_thumbnail("book", "1", b"fake_jpeg_data")
+    count, size = cache.get_cache_size()
+    assert count == 1
+    assert size == len(b"fake_jpeg_data")
+
+    # Calling within TTL uses cached values without re-scanning
+    count2, size2 = cache.get_cache_size()
+    assert count2 == 1
+    assert size2 == len(b"fake_jpeg_data")
 
 
 @pytest.mark.asyncio
@@ -519,6 +549,7 @@ async def test_removed_book_graceful_handling(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_user_connect_captures_data_and_checks_grimmory_read_states(monkeypatch):
+    import asyncio
     import base64
     from app.main import db
     from app.clients.grimmory import grimmory_client
@@ -636,6 +667,9 @@ async def test_user_connect_captures_data_and_checks_grimmory_read_states(monkey
         resp_me = await client.get("/api/v1/users/me", headers=headers)
         assert resp_me.status_code == 200
         assert resp_me.json()["id"] == "400"
+
+        # Allow background sync task to complete
+        await asyncio.sleep(0.05)
 
         # 4. Verify user data was captured in SQLite users table
         user_record = await db.get_user_by_id(test_user_id)

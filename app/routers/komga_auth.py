@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 from typing import Dict, List
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import StreamingResponse
@@ -66,8 +67,16 @@ def _map_user_to_dto(user: UserSession) -> UserDto:
     )
 
 
+_SAFE_COOKIE_VAL_RE = re.compile(r"^[A-Za-z0-9_\-\.~]{1,1024}$")
+
+
 def _set_session_cookies(response: Response, user: UserSession) -> None:
-    cookie_val = user.token or str(user.user_id)
+    token_str = (user.token or "").strip()
+    if token_str and _SAFE_COOKIE_VAL_RE.fullmatch(token_str):
+        cookie_val = token_str
+    else:
+        cookie_val = str(int(user.user_id))
+
     for name in ["KOMGA-SESSION", "SESSION", "remember-me"]:
         response.set_cookie(
             key=name,
