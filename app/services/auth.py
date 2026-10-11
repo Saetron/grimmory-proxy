@@ -138,7 +138,8 @@ class AuthService:
             _last_user_touch[user_id] = now
             try:
                 from app.main import db
-                await db.touch_user_last_connected(user_id)
+                loop = asyncio.get_running_loop()
+                loop.create_task(db.touch_user_last_connected(user_id))
             except Exception:
                 pass
 
@@ -173,9 +174,10 @@ class AuthService:
             cls.cache_session(session)
             _credential_tokens[cache_key] = token
 
-            # Store user data in SQLite once upon login
+            # Store user data in SQLite once upon login in background
             try:
-                await user_sync_service.save_user_data(session)
+                loop = asyncio.get_running_loop()
+                loop.create_task(user_sync_service.save_user_data(session))
             except Exception as e:
                 logger.warning(f"Error saving user login record for {username}: {e}")
 
