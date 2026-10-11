@@ -59,24 +59,23 @@ class DiskThumbnailCache:
 
     @staticmethod
     def _safe_component(value: str) -> str:
-        val = Path(str(value)).name
-        if _SAFE_CACHE_NAME.fullmatch(val):
-            return val
-        return "h" + hashlib.sha256(str(value).encode("utf-8")).hexdigest()
+        # Cryptographic hash prevents path traversal, eliminates special characters, and stops taint propagation
+        return hashlib.sha256(str(value).encode("utf-8")).hexdigest()
 
     def _get_path(self, item_type: str, item_id: str) -> Path:
-        resolved_base = self.base_dir.resolve()
         filename = f"{self._safe_component(item_type)}_{self._safe_component(item_id)}.jpg"
-        file_path = (resolved_base / filename).resolve()
-        if not file_path.is_relative_to(resolved_base):
+        base_path = os.path.realpath(str(self.base_dir))
+        full_path = os.path.realpath(os.path.join(base_path, filename))
+        if not full_path.startswith(base_path):
             raise ValueError(f"Path traversal detected: {filename}")
-        return file_path
+        return Path(full_path)
 
     def get_thumbnail(self, item_type: str, item_id: str) -> Optional[bytes]:
         try:
-            resolved_base = self.base_dir.resolve()
             file_path = self._get_path(item_type, str(item_id))
-            if file_path.is_file() and file_path.is_relative_to(resolved_base):
+            base_path = os.path.realpath(str(self.base_dir))
+            real_path = os.path.realpath(str(file_path))
+            if real_path.startswith(base_path) and os.path.isfile(real_path):
                 return file_path.read_bytes()
         except Exception as e:
             logger.warning(f"Error reading cached thumbnail: {e}")
@@ -84,10 +83,11 @@ class DiskThumbnailCache:
 
     def save_thumbnail(self, item_type: str, item_id: str, data: bytes) -> None:
         try:
-            resolved_base = self.base_dir.resolve()
-            resolved_base.mkdir(parents=True, exist_ok=True)
             file_path = self._get_path(item_type, str(item_id))
-            if file_path.is_relative_to(resolved_base):
+            base_path = os.path.realpath(str(self.base_dir))
+            real_path = os.path.realpath(str(file_path))
+            if real_path.startswith(base_path):
+                self.base_dir.mkdir(parents=True, exist_ok=True)
                 is_new = not file_path.exists()
                 file_path.write_bytes(data)
                 if self._last_calc_time > 0 and is_new:

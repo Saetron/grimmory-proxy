@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 import logging
 from pathlib import Path
 import re
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, urlparse
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
@@ -98,23 +98,22 @@ def _safe_grimmory_redirect(path_suffix: str, query: str = "") -> RedirectRespon
     Safely redirects browser requests to Grimmory, verifying the redirect target host and scheme.
     """
     base_url = settings.public_grimmory_url.rstrip("/")
-    clean_path = path_suffix.lstrip("/\\")
+    clean_path = path_suffix.replace("\\", "").lstrip("/")
     target_url = f"{base_url}/{clean_path}" if clean_path else base_url
     if query:
-        clean_query = query.lstrip("?")
+        clean_query = quote(query.lstrip("?"), safe="=&-_.,~+/")
         target_url = f"{target_url}?{clean_query}"
 
-    parsed_target = urlsplit(target_url)
-    parsed_base = urlsplit(base_url)
-
-    # Validate that the redirect target strictly matches the configured public_grimmory_url host and scheme
-    if (parsed_base.netloc and parsed_target.netloc != parsed_base.netloc) or (
-        parsed_base.scheme and parsed_target.scheme != parsed_base.scheme
-    ):
-        target_url = f"{base_url}/"
+    parsed = urlparse(target_url)
+    allowed_host = urlparse(base_url).netloc
+    if parsed.netloc and parsed.netloc == allowed_host and parsed.scheme in ("http", "https"):
+        return RedirectResponse(
+            url=target_url,
+            status_code=status.HTTP_307_TEMPORARY_REDIRECT,
+        )
 
     return RedirectResponse(
-        url=target_url,
+        url=f"{base_url}/",
         status_code=status.HTTP_307_TEMPORARY_REDIRECT,
     )
 
