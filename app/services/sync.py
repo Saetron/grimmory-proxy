@@ -135,20 +135,38 @@ class SyncService:
                     or 1
                 )
 
-                # Series name heuristic matching Grimmory's KomgaMapper
-                series_name = meta.get("seriesName")
-                if not series_name:
-                    series_name = meta.get("title") or pfile.get("fileName") or "Unknown Series"
-
-                series_slug = generate_series_slug(series_name)
-                series_id = f"{lib_id}-{series_slug}"
-
                 b_authors = extract_authors_data(b)
                 b_publisher = extract_publisher(b)
                 b_genres = extract_genres(b)
                 b_tags = extract_tags(b)
                 b_summary = extract_summary(b)
                 b_lang = meta.get("language") or b.get("language") or "en"
+
+                # Series name heuristic: if book has an explicit seriesName, preserve it;
+                # otherwise disambiguate standalone books by appending ' - Author Name' so they aren't merged.
+                raw_series_name = meta.get("seriesName")
+                has_explicit_series = bool(raw_series_name and str(raw_series_name).strip())
+
+                if has_explicit_series:
+                    series_name = str(raw_series_name).strip()
+                else:
+                    base_title = meta.get("title") or pfile.get("fileName") or "Unknown Series"
+                    base_title = str(base_title).strip()
+                    author_name = None
+                    if b_authors:
+                        writer = next((a["name"] for a in b_authors if a.get("role") == "writer"), None)
+                        author_name = writer or b_authors[0]["name"]
+                    if author_name and str(author_name).strip():
+                        auth_clean = str(author_name).strip()
+                        if not base_title.endswith(f" - {auth_clean}"):
+                            series_name = f"{base_title} - {auth_clean}"
+                        else:
+                            series_name = base_title
+                    else:
+                        series_name = base_title
+
+                series_slug = generate_series_slug(series_name)
+                series_id = f"{lib_id}-{series_slug}"
 
                 # Grimmory released date field
                 raw_released = (
@@ -279,7 +297,7 @@ class SyncService:
             if was_database_empty and settings.sync_on_startup:
                 self._log("First startup with empty database detected: triggering background page calculation...")
                 logger.info("First startup with empty database detected: triggering background page calculation for all missing pages...")
-                asyncio.create_task(self.page_calculator.run_calculation_job(missing_only=True))
+                self.page_calculator.start_calculation_job(missing_only=True)
 
         except Exception as e:
             self._log(f"ERROR: Sync cycle failed: {e}")

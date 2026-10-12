@@ -288,18 +288,21 @@ class PageCalculator:
             )
             logger.info(f"Calculated {page_count} pages for book {book_id} ('{book_name}') [{book_type}]")
 
-            # 1. Update Grimmory metadata with timeout
-            await asyncio.wait_for(
-                grimmory_client.update_book_metadata(book_id, {"pageCount": page_count}),
-                timeout=30.0,
-            )
-
-            # 2. Update local SQLite DB
+            # 1. Update local SQLite DB first so page count is immediately enriched
             await self.db.update_book_page_count(book_id, page_count)
 
-            # 3. Cache page details
+            # 2. Cache page details in SQLite
             page_records = [p.model_dump() for p in page_dtos]
             await self.db.upsert_book_pages(book_id, page_records)
+
+            # 3. Update Grimmory metadata upstream (best-effort with timeout)
+            try:
+                await asyncio.wait_for(
+                    grimmory_client.update_book_metadata(book_id, {"pageCount": page_count}),
+                    timeout=30.0,
+                )
+            except Exception as e:
+                logger.warning(f"Could not push updated pageCount to Grimmory for book {book_id}: {e}")
 
             return "updated"
         except asyncio.TimeoutError:
@@ -380,40 +383,45 @@ class PageCalculator:
                 self.status.current_book = f"Error: {e}"
                 return self.status
 
-        sem = asyncio.Semaphore(settings.sync_concurrency)
+        queue: asyncio.Queue = asyncio.Queue()
+        for b in books:
+            queue.put_nowait(b)
 
-        async def worker(book: Dict[str, Any]):
-            if self._stop_requested:
-                return
+        async def worker():
+            while not self._stop_requested:
+                try:
+                    book = queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
 
-            async with sem:
-                if self._stop_requested:
-                    return
+                try:
+                    self.status.current_book = book.get("name", f"Book {book['id']}")
+                    result = await self.calculate_and_save_book(book)
 
-                self.status.current_book = book.get("name", f"Book {book['id']}")
-                result = await self.calculate_and_save_book(book)
+                    self.status.processed_books += 1
+                    if result == "updated":
+                        self.status.updated_books += 1
+                    elif result == "removed":
+                        self.status.removed_books += 1
+                    else:
+                        self.status.error_count += 1
 
-                self.status.processed_books += 1
-                if result == "updated":
-                    self.status.updated_books += 1
-                elif result == "removed":
-                    self.status.removed_books += 1
-                else:
-                    self.status.error_count += 1
-
-                # Update progress periodically
-                if self.status.processed_books % 5 == 0 or self.status.processed_books == total_books:
-                    await self.db.update_page_calc_progress(
-                        job_id=job_id,
-                        processed=self.status.processed_books,
-                        updated=self.status.updated_books,
-                        removed=self.status.removed_books,
-                        errors=self.status.error_count,
-                        current_book=self.status.current_book,
-                    )
+                    # Update progress periodically
+                    if self.status.processed_books % 5 == 0 or self.status.processed_books == total_books:
+                        await self.db.update_page_calc_progress(
+                            job_id=job_id,
+                            processed=self.status.processed_books,
+                            updated=self.status.updated_books,
+                            removed=self.status.removed_books,
+                            errors=self.status.error_count,
+                            current_book=self.status.current_book,
+                        )
+                finally:
+                    queue.task_done()
 
         try:
-            tasks = [asyncio.create_task(worker(b)) for b in books]
+            num_workers = min(settings.sync_concurrency, total_books) if total_books > 0 else 1
+            tasks = [asyncio.create_task(worker()) for _ in range(num_workers)]
             self._worker_tasks = tasks
             await asyncio.gather(*tasks, return_exceptions=True)
 
