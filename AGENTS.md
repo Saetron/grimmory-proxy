@@ -105,24 +105,27 @@ grimmory-proxy/
 - Upstream Grimmory stores rich metadata (authors, publishers, genres, tags) primarily on book records.
 - Komga clients (Komic, Panels, Mihon, Tachiyomi, Kuro Reader) query series-level metadata (`/api/v1/series`, `booksMetadata`, `/api/v1/genres`, `/api/v1/tags`, `/api/v1/publishers`, `/api/v2/publishers`).
 - The proxy aggregates book-level authors, publishers, genres, and tags into series `raw_json` during sync and database startup migrations, enabling filtering across books and series.
-- Clients like Komic filter by author using SearchCondition objects (`{"author": {"value": {"name": "...", "role": "..."}, "operator": "is"}}`) or query params (`?author=Name,role`). `filter_utils.py` and `database.py` normalize both structured author objects and comma-delimited strings with role awareness, matching series metadata and falling back to series books.
+- Clients like Komic filter by author using SearchCondition objects (`{"author": {"value": {"name": "...", "role": "..."}, "operator": "is"}}`) or query params (`?author=Name,role`). `filter_utils.py` and `database.py` normalize both structured author objects and comma-delimited strings with role awareness, matching series metadata and falling back to series books using uncorrelated subqueries (`series.id IN (SELECT b.series_id FROM books b WHERE ...)`) to prevent nested table-scan freezes on large libraries.
+- Unfiltered author list queries (`/api/v1/authors`) use a fast path querying the indexed `authors` table directly, bypassing expensive CTE scans over 30,000+ book JSON records.
 
 ### E. Page Calculation Engine & Catalog Enrichment
 - Page counts are computed using Calibre's ADE algorithm (1,024 uncompressed chars/page) for EPUBs and 1:1 image counts for CBZ/PDF archives.
-- Calculated page counts are written upstream to Grimmory via `PUT /api/v1/books/{id}/metadata?replaceMode=REPLACE_WHEN_PROVIDED` and cached in SQLite `book_pages` and `page_calc_jobs`.
-- Missing pages queries check both `(page_count IS NULL OR page_count <= 0)` and missing cached `book_pages` rows (`id NOT IN (SELECT DISTINCT book_id FROM book_pages)`) to ensure all books have page entries available for reader streaming.
+- Calculated page counts and page dimension breakdowns are saved to SQLite (`update_book_page_count`, `upsert_book_pages`) *before* attempting upstream synchronization. Upstream updates to Grimmory via `PUT /api/v1/books/{id}/metadata?replaceMode=REPLACE_WHEN_PROVIDED` are treated as best-effort so transient network or Grimmory validation errors do not discard computed pages.
+- Missing pages queries check both `(page_count IS NULL OR page_count <= 0)` and missing cached `book_pages` rows via `NOT EXISTS (SELECT 1 FROM book_pages bp WHERE bp.book_id = books.id)` to prevent SQL NULL issues and leverage primary key index probing.
+- Worker Pool Concurrency: Page calculation executes via an `asyncio.Queue` worker pool constrained by `settings.sync_concurrency`, avoiding unmanaged task explosion on large libraries.
 - Calculation Job Lifecycle & Cancellation: `PageCalculator.is_running` tracks the active `asyncio.Task` directly. `request_stop()` immediately cancels in-flight worker tasks, cancels the background task, resets `is_running = False`, and transitions the DB record to `stopped`. On startup, `cleanup_stale_page_calc_jobs()` marks orphaned jobs as `stopped` to prevent stale locks.
 - Network Timeouts: Individual book downloads have a 60-second timeout and metadata updates have a 30-second timeout, preventing stuck connections from freezing background workers.
 - Static assets (`app.js`, `style.css`) include cache-busting query strings (`?v={{ app_version }}`) and no-cache HTTP headers to prevent browsers from caching stale frontend code.
 - When catalogs are already fully enriched (`0` books missing pages), the WebUI reports `no_work` with an in-page notification banner and updates the Calculation Task Status card (`UP TO DATE`) without silent failures or modal blocking.
 
 ### F. Series Identification & Slug Matching
+- Standalone Books Disambiguation: For books without an upstream `metadata.seriesName`, the proxy derives the series name from `meta.title`. To prevent one-shots or standalone books by different authors from colliding into a single merged series in Komga, `" - {author_name}"` is automatically appended to synthesize unique series titles and IDs.
 - Series identifiers in Komga requests can be numeric IDs (e.g. `123`), composite IDs (e.g. `90-pdf`), or slug-based strings (`series-pdf`).
 - `Database.find_series_by_id_or_slug` handles prefixes like `series-` to maintain compatibility with reader clients.
 
-### G. SQLite Concurrency (WAL Mode)
-- The database uses SQLite in WAL mode with `busy_timeout = 60000` ms and a centralized connection lock to avoid `database is locked` errors during heavy catalog synchronization.
-- Always use the provided helper methods in `app/database.py` rather than opening unmanaged connections.
+### G. SQLite Concurrency (WAL Mode) & Centralized Write Locking
+- The database uses SQLite in WAL mode with `busy_timeout = 60000` ms and a centralized write lock (`self.write_db()` wrapping `self.write_lock`) to serialize all SQLite write transactions in-memory and prevent `sqlite3.OperationalError: database is locked` errors during concurrent catalog synchronization, read progress updates, and page calculation workers.
+- Always use the provided helper methods (`write_db()` for writes, `get_db()` for read-only queries) in `app/database.py` rather than opening unmanaged connections.
 
 ---
 
