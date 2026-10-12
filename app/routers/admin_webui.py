@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from app.config import settings
 from app.database import Database
-from app.models.internal import UserSession
+from app.models.internal import PageCalcStatus, UserSession
 from app.services.auth import AuthService
 from app.services.cache import thumbnail_cache
 from app.services.page_calculator import PageCalculator
@@ -203,6 +203,25 @@ def get_admin_router(
             logger.warning(f"Error fetching users list for dashboard: {e}")
             users_list = []
 
+        calc_job_status = page_calculator.status
+        if calc_job_status.job_id is None:
+            try:
+                latest_job = await db.get_latest_page_calc_job()
+                if latest_job:
+                    calc_job_status = PageCalcStatus(
+                        job_id=latest_job["id"],
+                        is_running=(latest_job["status"] == "running"),
+                        total_books=latest_job.get("total_books", 0),
+                        processed_books=latest_job.get("processed_books", 0),
+                        updated_books=latest_job.get("updated_books", 0),
+                        removed_books=latest_job.get("removed_books", 0),
+                        error_count=latest_job.get("error_count", 0),
+                        current_book=latest_job.get("current_book") or ("Completed" if latest_job["status"] == "completed" else "-"),
+                        error_message=latest_job.get("error_message"),
+                    )
+            except Exception as e:
+                logger.debug(f"Could not load latest calc job for dashboard: {e}")
+
         return templates.TemplateResponse(
             request=request,
             name="dashboard.html",
@@ -210,7 +229,7 @@ def get_admin_router(
                 "user": user,
                 "users": users_list,
                 "stats": stats,
-                "calc_job": page_calculator.status,
+                "calc_job": calc_job_status,
                 "sync_job": sync_service.status,
                 "read_sync_job": user_sync.status,
                 "thumbnail_count": thumb_count,
@@ -249,9 +268,29 @@ def get_admin_router(
             logger.warning(f"Error fetching users list for dashboard API: {e}")
             users_list = []
 
+        calc_dict = page_calculator.status.model_dump()
+        if page_calculator.status.job_id is None:
+            try:
+                latest_job = await db.get_latest_page_calc_job()
+                if latest_job:
+                    calc_dict = {
+                        "job_id": latest_job["id"],
+                        "is_running": (latest_job["status"] == "running"),
+                        "total_books": latest_job.get("total_books", 0),
+                        "processed_books": latest_job.get("processed_books", 0),
+                        "updated_books": latest_job.get("updated_books", 0),
+                        "removed_books": latest_job.get("removed_books", 0),
+                        "error_count": latest_job.get("error_count", 0),
+                        "current_book": latest_job.get("current_book") or ("Completed" if latest_job["status"] == "completed" else "-"),
+                        "error_message": latest_job.get("error_message"),
+                        "status": latest_job.get("status", "idle"),
+                    }
+            except Exception as e:
+                logger.debug(f"Could not load latest calc job for status API: {e}")
+
         return {
             "stats": stats,
-            "calc_job": page_calculator.status.model_dump(),
+            "calc_job": calc_dict,
             "sync_job": sync_service.status.model_dump(),
             "read_sync_job": user_sync.status.model_dump(),
             "thumbnails": {"count": thumb_count, "bytes": thumb_bytes},
@@ -270,6 +309,16 @@ def get_admin_router(
 
         if page_calculator.status.is_running:
             return {"status": "already_running", "message": "A calculation job is already running"}
+
+        if payload.missing_only:
+            missing_books = await db.get_books_missing_pages()
+            if not missing_books:
+                return {
+                    "status": "no_work",
+                    "message": "All books already have page counts calculated! If you wish to recalculate existing pages, use 'Recalculate All Pages'.",
+                    "missing_only": True,
+                    "books_to_process": 0,
+                }
 
         asyncio.create_task(page_calculator.run_calculation_job(missing_only=payload.missing_only))
         return {"status": "started", "missing_only": payload.missing_only}

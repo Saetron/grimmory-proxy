@@ -25,7 +25,13 @@ class PageCalculator:
         self.db = db
         self.status = PageCalcStatus()
         self._stop_requested = False
-        self._lock = asyncio.Lock()
+        self._lock: Optional[asyncio.Lock] = None
+
+    @property
+    def lock(self) -> asyncio.Lock:
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        return self._lock
 
     def request_stop(self) -> None:
         self._stop_requested = True
@@ -246,7 +252,7 @@ class PageCalculator:
         """
         Runs the background page calculation loop across books using SYNC_CONCURRENCY workers.
         """
-        async with self._lock:
+        async with self.lock:
             if self.status.is_running:
                 logger.warning("A page calculation job is already in progress")
                 return self.status
@@ -270,6 +276,22 @@ class PageCalculator:
             self.status.updated_books = 0
             self.status.removed_books = 0
             self.status.error_count = 0
+
+            if total_books == 0:
+                self.status.is_running = False
+                msg = "All books already have page counts calculated" if missing_only else "No books found in catalog"
+                self.status.current_book = msg
+                await self.db.update_page_calc_progress(
+                    job_id=job_id,
+                    processed=0,
+                    updated=0,
+                    removed=0,
+                    errors=0,
+                    current_book=msg,
+                    status="completed",
+                )
+                logger.info(f"Page calculation job {job_id} finished immediately: {msg}")
+                return self.status
 
             logger.info(f"Starting page calculation job {job_id} for {total_books} books (concurrency: {settings.sync_concurrency})")
 
@@ -311,13 +333,14 @@ class PageCalculator:
 
             final_status = "stopped" if self._stop_requested else "completed"
             self.status.is_running = False
+            self.status.current_book = "Calculation stopped" if self._stop_requested else "Calculation completed"
             await self.db.update_page_calc_progress(
                 job_id=job_id,
                 processed=self.status.processed_books,
                 updated=self.status.updated_books,
                 removed=self.status.removed_books,
                 errors=self.status.error_count,
-                current_book="",
+                current_book=self.status.current_book,
                 status=final_status,
             )
             logger.info(f"Page calculation job finished with status '{final_status}': {self.status.updated_books}/{total_books} updated, {self.status.removed_books} removed")
@@ -325,6 +348,7 @@ class PageCalculator:
             logger.error(f"Page calculation job failed: {e}")
             self.status.is_running = False
             self.status.error_message = str(e)
+            self.status.current_book = f"Error: {e}"
             await self.db.update_page_calc_progress(
                 job_id=job_id,
                 processed=self.status.processed_books,
@@ -333,6 +357,7 @@ class PageCalculator:
                 errors=self.status.error_count,
                 status="failed",
                 error_message=str(e),
+                current_book=f"Error: {e}",
             )
 
         return self.status

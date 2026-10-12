@@ -118,6 +118,7 @@ CREATE TABLE IF NOT EXISTS book_pages (
 
 CREATE TABLE IF NOT EXISTS authors (
     name TEXT PRIMARY KEY,
+    role TEXT DEFAULT 'writer',
     count INTEGER DEFAULT 1
 );
 
@@ -202,6 +203,10 @@ class Database:
             except Exception:
                 pass
             try:
+                await db.execute("ALTER TABLE authors ADD COLUMN role TEXT DEFAULT 'writer'")
+            except Exception:
+                pass
+            try:
                 await db.execute("ALTER TABLE page_calc_jobs ADD COLUMN removed_books INTEGER DEFAULT 0")
             except Exception:
                 pass
@@ -220,6 +225,106 @@ class Database:
                 """)
             except Exception:
                 pass
+
+            # Backfill series raw_json with aggregated authors, genres, tags, publisher if missing
+            try:
+                cursor = await db.execute("""
+                    SELECT s.id, s.raw_json, b.raw_json
+                    FROM series s
+                    JOIN books b ON b.series_id = s.id
+                    WHERE b.deleted = 0 AND b.raw_json IS NOT NULL
+                """)
+                rows = await cursor.fetchall()
+                if rows:
+                    series_books: Dict[str, Tuple[str, List[Dict[str, Any]]]] = {}
+                    for sid, s_raw_str, b_raw_str in rows:
+                        if sid not in series_books:
+                            series_books[sid] = (s_raw_str, [])
+                        try:
+                            b_data = json.loads(b_raw_str) if isinstance(b_raw_str, str) else b_raw_str
+                            if isinstance(b_data, dict):
+                                series_books[sid][1].append(b_data)
+                        except Exception:
+                            pass
+
+                    from app.services.mapper import (
+                        extract_authors_data,
+                        extract_genres,
+                        extract_publisher,
+                        extract_summary,
+                        extract_tags,
+                    )
+
+                    series_updates = []
+                    backfill_authors = set()
+                    for sid, (s_raw_str, b_list) in series_books.items():
+                        s_raw = {}
+                        if s_raw_str:
+                            try:
+                                s_raw = json.loads(s_raw_str) if isinstance(s_raw_str, str) else s_raw_str
+                            except Exception:
+                                pass
+                        if not isinstance(s_raw, dict):
+                            s_raw = {}
+
+                        needs_update = not s_raw.get("authors") or not s_raw.get("publisher") or not s_raw.get("genres") or not s_raw.get("tags")
+                        if needs_update:
+                            authors_set = set()
+                            authors_list = list(s_raw.get("authors", []))
+                            for a in authors_list:
+                                if isinstance(a, dict) and "name" in a:
+                                    authors_set.add((a["name"].lower(), a.get("role", "writer").lower()))
+                            genres_set = {g.lower() for g in s_raw.get("genres", [])}
+                            genres_list = list(s_raw.get("genres", []))
+                            tags_set = {t.lower() for t in s_raw.get("tags", [])}
+                            tags_list = list(s_raw.get("tags", []))
+                            pub = s_raw.get("publisher", "")
+                            summary = s_raw.get("summary", "")
+                            release_date = s_raw.get("releaseDate")
+
+                            for b_data in b_list:
+                                for a in extract_authors_data(b_data):
+                                    backfill_authors.add((a["name"], a["role"]))
+                                    if (a["name"].lower(), a["role"].lower()) not in authors_set:
+                                        authors_set.add((a["name"].lower(), a["role"].lower()))
+                                        authors_list.append(a)
+                                for g in extract_genres(b_data):
+                                    if g.lower() not in genres_set:
+                                        genres_set.add(g.lower())
+                                        genres_list.append(g)
+                                for t in extract_tags(b_data):
+                                    if t.lower() not in tags_set:
+                                        tags_set.add(t.lower())
+                                        tags_list.append(t)
+                                if not pub:
+                                    pub = extract_publisher(b_data)
+                                if not summary:
+                                    summary = extract_summary(b_data)
+                                b_rel = b_data.get("released") or (b_data.get("metadata", {}).get("released") if isinstance(b_data.get("metadata"), dict) else None)
+                                if b_rel and (not release_date or str(b_rel) < str(release_date)):
+                                    release_date = str(b_rel)
+
+                            s_raw["authors"] = authors_list
+                            s_raw["genres"] = genres_list
+                            s_raw["tags"] = tags_list
+                            if pub:
+                                s_raw["publisher"] = pub
+                            if summary:
+                                s_raw["summary"] = summary
+                            if release_date:
+                                s_raw["releaseDate"] = release_date
+
+                            series_updates.append((json.dumps(s_raw), sid))
+
+                    if series_updates:
+                        await db.executemany("UPDATE series SET raw_json = ? WHERE id = ?", series_updates)
+                    if backfill_authors:
+                        await db.executemany(
+                            "INSERT INTO authors (name, role, count) VALUES (?, ?, 1) ON CONFLICT(name) DO UPDATE SET count = count + 1, role = COALESCE(excluded.role, authors.role)",
+                            list(backfill_authors),
+                        )
+            except Exception as e:
+                logger.debug(f"Series metadata backfill check: {e}")
             await db.commit()
         logger.info(f"Database initialized at {self.db_path} (WAL mode enabled, busy_timeout=60s)")
 
@@ -302,7 +407,7 @@ class Database:
                                     s.get("books_count", 0),
                                     s.get("created"),
                                     s.get("last_modified"),
-                                    json.dumps(s.get("raw_json", {})),
+                                    s.get("raw_json") if isinstance(s.get("raw_json"), str) else json.dumps(s.get("raw_json", {})),
                                 )
                                 for s in chunk
                             ],
@@ -321,6 +426,10 @@ class Database:
         library_id: Optional[int] = None,
         library_ids: Optional[List[int]] = None,
         search: Optional[str] = None,
+        genres: Optional[List[str]] = None,
+        tags: Optional[List[str]] = None,
+        publishers: Optional[List[str]] = None,
+        authors: Optional[List[str]] = None,
         offset: int = 0,
         limit: int = 20,
         sort_by: str = "name",
@@ -342,6 +451,38 @@ class Database:
         if search:
             conditions.append("name LIKE ?")
             params.append(f"%{search}%")
+
+        if genres:
+            genre_clauses = []
+            for g in genres:
+                genre_clauses.append("EXISTS (SELECT 1 FROM json_each(raw_json, '$.genres') WHERE LOWER(value) = LOWER(?))")
+                params.append(g)
+            if genre_clauses:
+                conditions.append(f"({' OR '.join(genre_clauses)})")
+
+        if tags:
+            tag_clauses = []
+            for t in tags:
+                tag_clauses.append("EXISTS (SELECT 1 FROM json_each(raw_json, '$.tags') WHERE LOWER(value) = LOWER(?))")
+                params.append(t)
+            if tag_clauses:
+                conditions.append(f"({' OR '.join(tag_clauses)})")
+
+        if publishers:
+            pub_clauses = []
+            for p in publishers:
+                pub_clauses.append("LOWER(json_extract(raw_json, '$.publisher')) = LOWER(?)")
+                params.append(p)
+            if pub_clauses:
+                conditions.append(f"({' OR '.join(pub_clauses)})")
+
+        if authors:
+            auth_clauses = []
+            for a in authors:
+                auth_clauses.append("EXISTS (SELECT 1 FROM json_each(raw_json, '$.authors') WHERE LOWER(CASE WHEN type = 'object' THEN json_extract(value, '$.name') ELSE value END) = LOWER(?))")
+                params.append(a)
+            if auth_clauses:
+                conditions.append(f"({' OR '.join(auth_clauses)})")
 
         where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
@@ -1187,6 +1328,10 @@ class Database:
         series_ids: Optional[List[str]] = None,
         search: Optional[str] = None,
         read_status: Optional[List[str]] = None,
+        genres: Optional[List[str]] = None,
+        tags: Optional[List[str]] = None,
+        publishers: Optional[List[str]] = None,
+        authors: Optional[List[str]] = None,
         user_id: Optional[int] = None,
         offset: int = 0,
         limit: int = 20,
@@ -1219,6 +1364,38 @@ class Database:
         if search:
             conditions.append("b.name LIKE ?")
             params.append(f"%{search}%")
+
+        if tags:
+            tag_clauses = []
+            for t in tags:
+                tag_clauses.append("(EXISTS (SELECT 1 FROM json_each(b.raw_json, '$.metadata.tags') WHERE LOWER(CASE WHEN type = 'object' THEN json_extract(value, '$.name') ELSE value END) = LOWER(?)) OR EXISTS (SELECT 1 FROM json_each(b.raw_json, '$.tags') WHERE LOWER(CASE WHEN type = 'object' THEN json_extract(value, '$.name') ELSE value END) = LOWER(?)))")
+                params.extend([t, t])
+            if tag_clauses:
+                conditions.append(f"({' OR '.join(tag_clauses)})")
+
+        if authors:
+            auth_clauses = []
+            for a in authors:
+                auth_clauses.append("(EXISTS (SELECT 1 FROM json_each(b.raw_json, '$.metadata.authors') WHERE LOWER(CASE WHEN type = 'object' THEN json_extract(value, '$.name') ELSE value END) = LOWER(?)) OR EXISTS (SELECT 1 FROM json_each(b.raw_json, '$.authors') WHERE LOWER(CASE WHEN type = 'object' THEN json_extract(value, '$.name') ELSE value END) = LOWER(?)))")
+                params.extend([a, a])
+            if auth_clauses:
+                conditions.append(f"({' OR '.join(auth_clauses)})")
+
+        if genres:
+            genre_clauses = []
+            for g in genres:
+                genre_clauses.append("(EXISTS (SELECT 1 FROM json_each(b.raw_json, '$.metadata.genres') WHERE LOWER(CASE WHEN type = 'object' THEN json_extract(value, '$.name') ELSE value END) = LOWER(?)) OR EXISTS (SELECT 1 FROM json_each(b.raw_json, '$.genres') WHERE LOWER(CASE WHEN type = 'object' THEN json_extract(value, '$.name') ELSE value END) = LOWER(?)))")
+                params.extend([g, g])
+            if genre_clauses:
+                conditions.append(f"({' OR '.join(genre_clauses)})")
+
+        if publishers:
+            pub_clauses = []
+            for p in publishers:
+                pub_clauses.append("LOWER(COALESCE(json_extract(b.raw_json, '$.metadata.publisher.name'), json_extract(b.raw_json, '$.metadata.publisher'), json_extract(b.raw_json, '$.publisher.name'), json_extract(b.raw_json, '$.publisher'))) = LOWER(?)")
+                params.append(p)
+            if pub_clauses:
+                conditions.append(f"({' OR '.join(pub_clauses)})")
 
         # Read status expressions
         if user_id is not None:
@@ -1659,3 +1836,345 @@ class Database:
             cursor = await db.execute("SELECT * FROM page_calc_jobs ORDER BY id DESC LIMIT 1")
             row = await cursor.fetchone()
             return dict(row) if row else None
+
+    # ---------------- Metadata Queries (Genres, Publishers, Tags, Authors) ----------------
+
+    async def get_all_genres(
+        self,
+        library_ids: Optional[List[int]] = None,
+        search: Optional[str] = None,
+    ) -> List[str]:
+        clauses_s = []
+        clauses_b = ["b.deleted = 0"]
+        params_s: List[Any] = []
+        params_b: List[Any] = []
+
+        if library_ids is not None:
+            if len(library_ids) == 0:
+                return []
+            ph = ",".join("?" for _ in library_ids)
+            clauses_s.append(f"s.library_id IN ({ph})")
+            params_s.extend(library_ids)
+            clauses_b.append(f"b.library_id IN ({ph})")
+            params_b.extend(library_ids)
+
+        where_s = f"WHERE {' AND '.join(clauses_s)}" if clauses_s else ""
+        where_b = f"WHERE {' AND '.join(clauses_b)}"
+
+        search_clause = ""
+        search_params: List[Any] = []
+        if search:
+            search_clause = "AND genre LIKE ?"
+            search_params.append(f"%{search}%")
+
+        query = f"""
+            SELECT DISTINCT genre FROM (
+                SELECT CASE WHEN g.type = 'object' THEN json_extract(g.value, '$.name') ELSE g.value END as genre
+                FROM series s, json_each(s.raw_json, '$.genres') as g
+                {where_s}
+                UNION
+                SELECT CASE WHEN g.type = 'object' THEN json_extract(g.value, '$.name') ELSE g.value END as genre
+                FROM books b, json_each(b.raw_json, '$.metadata.genres') as g
+                {where_b}
+                UNION
+                SELECT CASE WHEN g.type = 'object' THEN json_extract(g.value, '$.name') ELSE g.value END as genre
+                FROM books b, json_each(b.raw_json, '$.genres') as g
+                {where_b}
+            )
+            WHERE genre IS NOT NULL AND TRIM(genre) != '' {search_clause}
+            ORDER BY genre COLLATE NOCASE ASC
+        """
+        async with self.get_db() as db:
+            cursor = await db.execute(query, params_s + params_b + params_b + search_params)
+            rows = await cursor.fetchall()
+            return [r[0] for r in rows if r[0]]
+
+    async def get_all_publishers(
+        self,
+        library_ids: Optional[List[int]] = None,
+        search: Optional[str] = None,
+    ) -> List[str]:
+        clauses_s = []
+        clauses_b = ["b.deleted = 0"]
+        params_s: List[Any] = []
+        params_b: List[Any] = []
+
+        if library_ids is not None:
+            if len(library_ids) == 0:
+                return []
+            ph = ",".join("?" for _ in library_ids)
+            clauses_s.append(f"s.library_id IN ({ph})")
+            params_s.extend(library_ids)
+            clauses_b.append(f"b.library_id IN ({ph})")
+            params_b.extend(library_ids)
+
+        where_s = f"WHERE {' AND '.join(clauses_s)}" if clauses_s else ""
+        where_b = f"WHERE {' AND '.join(clauses_b)}"
+
+        search_clause = ""
+        search_params: List[Any] = []
+        if search:
+            search_clause = "AND pub LIKE ?"
+            search_params.append(f"%{search}%")
+
+        query = f"""
+            SELECT DISTINCT pub FROM (
+                SELECT json_extract(s.raw_json, '$.publisher') as pub
+                FROM series s
+                {where_s}
+                UNION
+                SELECT COALESCE(
+                    json_extract(b.raw_json, '$.metadata.publisher.name'),
+                    json_extract(b.raw_json, '$.metadata.publisher'),
+                    json_extract(b.raw_json, '$.publisher.name'),
+                    json_extract(b.raw_json, '$.publisher')
+                ) as pub
+                FROM books b
+                {where_b}
+            )
+            WHERE pub IS NOT NULL AND TRIM(pub) != '' {search_clause}
+            ORDER BY pub COLLATE NOCASE ASC
+        """
+        async with self.get_db() as db:
+            cursor = await db.execute(query, params_s + params_b + search_params)
+            rows = await cursor.fetchall()
+            return [r[0] for r in rows if r[0]]
+
+    async def get_all_tags(
+        self,
+        library_ids: Optional[List[int]] = None,
+        search: Optional[str] = None,
+    ) -> List[str]:
+        clauses_s = []
+        clauses_b = ["b.deleted = 0"]
+        params_s: List[Any] = []
+        params_b: List[Any] = []
+
+        if library_ids is not None:
+            if len(library_ids) == 0:
+                return []
+            ph = ",".join("?" for _ in library_ids)
+            clauses_s.append(f"s.library_id IN ({ph})")
+            params_s.extend(library_ids)
+            clauses_b.append(f"b.library_id IN ({ph})")
+            params_b.extend(library_ids)
+
+        where_s = f"WHERE {' AND '.join(clauses_s)}" if clauses_s else ""
+        where_b = f"WHERE {' AND '.join(clauses_b)}"
+
+        search_clause = ""
+        search_params: List[Any] = []
+        if search:
+            search_clause = "AND tag LIKE ?"
+            search_params.append(f"%{search}%")
+
+        query = f"""
+            SELECT DISTINCT tag FROM (
+                SELECT CASE WHEN t.type = 'object' THEN json_extract(t.value, '$.name') ELSE t.value END as tag
+                FROM series s, json_each(s.raw_json, '$.tags') as t
+                {where_s}
+                UNION
+                SELECT CASE WHEN t.type = 'object' THEN json_extract(t.value, '$.name') ELSE t.value END as tag
+                FROM books b, json_each(b.raw_json, '$.metadata.tags') as t
+                {where_b}
+                UNION
+                SELECT CASE WHEN t.type = 'object' THEN json_extract(t.value, '$.name') ELSE t.value END as tag
+                FROM books b, json_each(b.raw_json, '$.tags') as t
+                {where_b}
+            )
+            WHERE tag IS NOT NULL AND TRIM(tag) != '' {search_clause}
+            ORDER BY tag COLLATE NOCASE ASC
+        """
+        async with self.get_db() as db:
+            cursor = await db.execute(query, params_s + params_b + params_b + search_params)
+            rows = await cursor.fetchall()
+            return [r[0] for r in rows if r[0]]
+
+    async def get_book_tags(
+        self,
+        library_ids: Optional[List[int]] = None,
+        series_id: Optional[str] = None,
+        search: Optional[str] = None,
+    ) -> List[str]:
+        clauses_b = ["b.deleted = 0"]
+        params_b: List[Any] = []
+
+        if library_ids is not None:
+            if len(library_ids) == 0:
+                return []
+            ph = ",".join("?" for _ in library_ids)
+            clauses_b.append(f"b.library_id IN ({ph})")
+            params_b.extend(library_ids)
+
+        if series_id:
+            clauses_b.append("(b.series_id = ? OR b.series_id LIKE ? OR b.series_id LIKE ?)")
+            params_b.extend([series_id, f"{series_id}-%", f"%-{series_id}"])
+
+        where_b = f"WHERE {' AND '.join(clauses_b)}"
+
+        search_clause = ""
+        search_params: List[Any] = []
+        if search:
+            search_clause = "AND tag LIKE ?"
+            search_params.append(f"%{search}%")
+
+        query = f"""
+            SELECT DISTINCT tag FROM (
+                SELECT CASE WHEN t.type = 'object' THEN json_extract(t.value, '$.name') ELSE t.value END as tag
+                FROM books b, json_each(b.raw_json, '$.metadata.tags') as t
+                {where_b}
+                UNION
+                SELECT CASE WHEN t.type = 'object' THEN json_extract(t.value, '$.name') ELSE t.value END as tag
+                FROM books b, json_each(b.raw_json, '$.tags') as t
+                {where_b}
+            )
+            WHERE tag IS NOT NULL AND TRIM(tag) != '' {search_clause}
+            ORDER BY tag COLLATE NOCASE ASC
+        """
+        async with self.get_db() as db:
+            cursor = await db.execute(query, params_b + params_b + search_params)
+            rows = await cursor.fetchall()
+            return [r[0] for r in rows if r[0]]
+
+    async def get_series_tags(
+        self,
+        library_ids: Optional[List[int]] = None,
+        search: Optional[str] = None,
+    ) -> List[str]:
+        clauses_s = []
+        params_s: List[Any] = []
+
+        if library_ids is not None:
+            if len(library_ids) == 0:
+                return []
+            ph = ",".join("?" for _ in library_ids)
+            clauses_s.append(f"s.library_id IN ({ph})")
+            params_s.extend(library_ids)
+
+        where_s = f"WHERE {' AND '.join(clauses_s)}" if clauses_s else ""
+
+        search_clause = ""
+        search_params: List[Any] = []
+        if search:
+            search_clause = "AND tag LIKE ?"
+            search_params.append(f"%{search}%")
+
+        query = f"""
+            SELECT DISTINCT
+                CASE WHEN t.type = 'object' THEN json_extract(t.value, '$.name') ELSE t.value END as tag
+            FROM series s, json_each(s.raw_json, '$.tags') as t
+            {where_s}
+            WHERE tag IS NOT NULL AND TRIM(tag) != '' {search_clause}
+            ORDER BY tag COLLATE NOCASE ASC
+        """
+        async with self.get_db() as db:
+            cursor = await db.execute(query, params_s + search_params)
+            rows = await cursor.fetchall()
+            return [r[0] for r in rows if r[0]]
+
+    async def get_author_roles(self) -> List[str]:
+        standard = ["writer", "penciller", "inker", "colorist", "letterer", "cover", "editor", "translator"]
+        async with self.get_db() as db:
+            cursor = await db.execute("SELECT DISTINCT role FROM authors WHERE role IS NOT NULL AND TRIM(role) != ''")
+            rows = await cursor.fetchall()
+            db_roles = [r[0] for r in rows if r[0]]
+        all_roles = sorted(set(standard + db_roles))
+        return all_roles
+
+    async def get_authors_list(
+        self,
+        search: Optional[str] = None,
+        role: Optional[str] = None,
+        library_ids: Optional[List[int]] = None,
+        series_ids: Optional[List[str]] = None,
+        offset: int = 0,
+        limit: int = 20,
+        unpaged: bool = False,
+    ) -> Tuple[List[Dict[str, str]], int]:
+        clauses_b = ["b.deleted = 0"]
+        params_b: List[Any] = []
+        if library_ids is not None:
+            if len(library_ids) == 0:
+                return [], 0
+            ph = ",".join("?" for _ in library_ids)
+            clauses_b.append(f"b.library_id IN ({ph})")
+            params_b.extend(library_ids)
+        if series_ids:
+            s_clauses = []
+            for s_id in series_ids:
+                s_clauses.append("(b.series_id = ? OR b.series_id LIKE ? OR b.series_id LIKE ?)")
+                params_b.extend([s_id, f"{s_id}-%", f"%-{s_id}"])
+            clauses_b.append(f"({' OR '.join(s_clauses)})")
+
+        where_b = f"WHERE {' AND '.join(clauses_b)}"
+
+        outer_clauses = ["name IS NOT NULL AND TRIM(name) != ''"]
+        outer_params: List[Any] = []
+        if search:
+            outer_clauses.append("name LIKE ?")
+            outer_params.append(f"%{search}%")
+        if role:
+            outer_clauses.append("LOWER(role) = LOWER(?)")
+            outer_params.append(role)
+        where_outer = f"WHERE {' AND '.join(outer_clauses)}"
+
+        base_cte = f"""
+            WITH extracted_authors AS (
+                SELECT DISTINCT
+                    CASE WHEN a.type = 'object' THEN json_extract(a.value, '$.name') ELSE a.value END as name,
+                    CASE WHEN a.type = 'object' THEN COALESCE(json_extract(a.value, '$.role'), 'writer') ELSE 'writer' END as role
+                FROM books b, json_each(b.raw_json, '$.metadata.authors') as a
+                {where_b}
+                UNION
+                SELECT DISTINCT
+                    CASE WHEN a.type = 'object' THEN json_extract(a.value, '$.name') ELSE a.value END as name,
+                    CASE WHEN a.type = 'object' THEN COALESCE(json_extract(a.value, '$.role'), 'writer') ELSE 'writer' END as role
+                FROM books b, json_each(b.raw_json, '$.authors') as a
+                {where_b}
+                UNION
+                SELECT name, COALESCE(role, 'writer') as role FROM authors
+            )
+        """
+        count_q = f"{base_cte} SELECT COUNT(*) as total FROM extracted_authors {where_outer}"
+        if unpaged:
+            data_q = f"{base_cte} SELECT name, role FROM extracted_authors {where_outer} ORDER BY name COLLATE NOCASE ASC"
+            data_params = params_b + params_b + outer_params
+        else:
+            data_q = f"{base_cte} SELECT name, role FROM extracted_authors {where_outer} ORDER BY name COLLATE NOCASE ASC LIMIT ? OFFSET ?"
+            data_params = params_b + params_b + outer_params + [limit, offset]
+
+        async with self.get_db() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(count_q, params_b + params_b + outer_params)
+            row = await cur.fetchone()
+            total = row["total"] if row else 0
+            cur_data = await db.execute(data_q, data_params)
+            rows = await cur_data.fetchall()
+            return [{"name": r["name"], "role": r["role"]} for r in rows], total
+
+    async def get_author_names_list(
+        self,
+        search: Optional[str] = None,
+        role: Optional[str] = None,
+        library_ids: Optional[List[int]] = None,
+        series_ids: Optional[List[str]] = None,
+        offset: int = 0,
+        limit: int = 20,
+        unpaged: bool = False,
+    ) -> Tuple[List[str], int]:
+        authors, total = await self.get_authors_list(
+            search=search,
+            role=role,
+            library_ids=library_ids,
+            series_ids=series_ids,
+            offset=offset,
+            limit=limit,
+            unpaged=unpaged,
+        )
+        seen = set()
+        names = []
+        for a in authors:
+            if a["name"].lower() not in seen:
+                seen.add(a["name"].lower())
+                names.append(a["name"])
+        return names, total
