@@ -21,6 +21,10 @@ def get_series_router(db: Database) -> APIRouter:
     async def _query_series(
         library_ids: Optional[List[int]] = None,
         search: Optional[str] = None,
+        genres: Optional[List[str]] = None,
+        tags: Optional[List[str]] = None,
+        publishers: Optional[List[str]] = None,
+        authors: Optional[List[str]] = None,
         page: int = 0,
         size: int = 20,
         sort: str = "title,asc",
@@ -46,6 +50,10 @@ def get_series_router(db: Database) -> APIRouter:
         records, total = await db.get_series_list(
             library_ids=effective_libs,
             search=search,
+            genres=genres,
+            tags=tags,
+            publishers=publishers,
+            authors=authors,
             offset=0 if unpaged else page * size,
             limit=size,
             sort_by=sort_by,
@@ -69,6 +77,10 @@ def get_series_router(db: Database) -> APIRouter:
         return await _query_series(
             library_ids=filters["library_ids"],
             search=filters["search"],
+            genres=filters.get("genres"),
+            tags=filters.get("tags"),
+            publishers=filters.get("publishers"),
+            authors=filters.get("authors"),
             page=page,
             size=size,
             sort=sort,
@@ -99,6 +111,10 @@ def get_series_router(db: Database) -> APIRouter:
         return await _query_series(
             library_ids=filters["library_ids"],
             search=filters["search"],
+            genres=filters.get("genres"),
+            tags=filters.get("tags"),
+            publishers=filters.get("publishers"),
+            authors=filters.get("authors"),
             page=page,
             size=size,
             sort=sort,
@@ -117,6 +133,10 @@ def get_series_router(db: Database) -> APIRouter:
         return await _query_series(
             library_ids=filters["library_ids"],
             search=filters["search"],
+            genres=filters.get("genres"),
+            tags=filters.get("tags"),
+            publishers=filters.get("publishers"),
+            authors=filters.get("authors"),
             page=page,
             size=size,
             sort="lastmodified,desc",
@@ -135,6 +155,10 @@ def get_series_router(db: Database) -> APIRouter:
         return await _query_series(
             library_ids=filters["library_ids"],
             search=filters["search"],
+            genres=filters.get("genres"),
+            tags=filters.get("tags"),
+            publishers=filters.get("publishers"),
+            authors=filters.get("authors"),
             page=page,
             size=size,
             sort="created,desc",
@@ -153,6 +177,10 @@ def get_series_router(db: Database) -> APIRouter:
         return await _query_series(
             library_ids=filters["library_ids"],
             search=filters["search"],
+            genres=filters.get("genres"),
+            tags=filters.get("tags"),
+            publishers=filters.get("publishers"),
+            authors=filters.get("authors"),
             page=page,
             size=size,
             sort="lastmodified,desc",
@@ -182,8 +210,10 @@ def get_series_router(db: Database) -> APIRouter:
     async def get_series_genres(
         user: UserSession = Depends(AuthService.require_user),
     ) -> List[str]:
-        # Return unique genres found in series/books
-        return ["Action", "Adventure", "Comedy", "Drama", "Fantasy", "Horror", "Mystery", "Romance", "Sci-Fi"]
+        effective_libs = resolve_effective_library_ids(user, [])
+        if effective_libs is not None and len(effective_libs) == 0:
+            return []
+        return await db.get_all_genres(library_ids=effective_libs)
 
     @router.get("/api/v1/series/release-dates")
     async def get_series_release_dates(

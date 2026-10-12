@@ -2092,6 +2092,184 @@ async def test_grimmory_client_token_401_retry():
     assert mock_http.post.call_args_list[1][1]["headers"]["Authorization"] == "Bearer valid_sync_token"
 
 
+@pytest.mark.asyncio
+async def test_komga_metadata_endpoints_and_filtering():
+    import json
+    from datetime import datetime, timezone, timedelta
+    from app.main import db
+    from app.models.internal import UserSession
+    from app.services.auth import AuthService
+
+    await db.connect()
+
+    # Seed libraries, series, books with rich metadata
+    await db.upsert_libraries([
+        {"id": 55, "name": "Manga Library", "paths": []},
+    ])
+
+    series_json = json.dumps({
+        "authors": [{"name": "Eiichiro Oda", "role": "writer"}, {"name": "Boichi", "role": "penciller"}],
+        "genres": ["Action", "Adventure"],
+        "tags": ["Pirates", "Shonen"],
+        "publisher": "Shueisha",
+        "summary": "Epic pirate adventures",
+        "releaseDate": "1997-07-22",
+    })
+    await db.upsert_series_batch([
+        {
+            "id": "55-onepiece",
+            "library_id": 55,
+            "name": "One Piece",
+            "slug": "onepiece",
+            "books_count": 2,
+            "raw_json": series_json,
+        }
+    ])
+
+    book1_json = json.dumps({
+        "authors": [{"name": "Eiichiro Oda", "role": "writer"}],
+        "tags": ["East Blue", "Pirates"],
+        "genres": ["Action"],
+        "publisher": "Shueisha",
+        "summary": "Romance Dawn",
+        "releaseDate": "1997-12-24",
+    })
+    book2_json = json.dumps({
+        "authors": [{"name": "Boichi", "role": "penciller"}],
+        "tags": ["Spinoff", "Pirates"],
+        "genres": ["Adventure"],
+        "publisher": "Shueisha",
+        "summary": "Ace Novel Manga",
+        "releaseDate": "2020-09-16",
+    })
+
+    await db.upsert_books_batch([
+        {
+            "id": 5501,
+            "series_id": "55-onepiece",
+            "library_id": 55,
+            "name": "One Piece Vol 1",
+            "number": 1.0,
+            "raw_json": book1_json,
+        },
+        {
+            "id": 5502,
+            "series_id": "55-onepiece",
+            "library_id": 55,
+            "name": "One Piece: Ace 1",
+            "number": 2.0,
+            "raw_json": book2_json,
+        },
+    ])
+
+    test_user = UserSession(
+        user_id=550,
+        username="manga_fan",
+        token="token_manga_fan",
+        is_admin=True,
+        assigned_library_ids=[],
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    AuthService.cache_session(test_user)
+    headers = {"Authorization": "Bearer token_manga_fan"}
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # 1. Test GET /api/v1/genres (List[str]) and /api/v2/genres (PageableDto[str])
+        resp_genres_v1 = await client.get("/api/v1/genres", headers=headers)
+        assert resp_genres_v1.status_code == 200
+        genres_v1 = resp_genres_v1.json()
+        assert isinstance(genres_v1, list)
+        assert "Action" in genres_v1
+        assert "Adventure" in genres_v1
+
+        resp_genres_v2 = await client.get("/api/v2/genres", headers=headers)
+        assert resp_genres_v2.status_code == 200
+        genres_v2 = resp_genres_v2.json()
+        assert "content" in genres_v2
+        assert "Action" in genres_v2["content"]
+
+        # 2. Test GET /api/v1/series/genres
+        resp_series_genres = await client.get("/api/v1/series/genres", headers=headers)
+        assert resp_series_genres.status_code == 200
+        assert "Action" in resp_series_genres.json()
+
+        # 3. Test GET /api/v1/publishers & /api/v2/publishers
+        resp_pub_v1 = await client.get("/api/v1/publishers", headers=headers)
+        assert resp_pub_v1.status_code == 200
+        assert "Shueisha" in resp_pub_v1.json()
+
+        resp_pub_v2 = await client.get("/api/v2/publishers", headers=headers)
+        assert resp_pub_v2.status_code == 200
+        assert "Shueisha" in resp_pub_v2.json()["content"]
+
+        # 4. Test GET /api/v1/tags, /api/v2/tags, /api/v1/tags/book, /api/v1/tags/series
+        resp_tags_v1 = await client.get("/api/v1/tags", headers=headers)
+        assert resp_tags_v1.status_code == 200
+        tags_v1 = resp_tags_v1.json()
+        assert "Pirates" in tags_v1
+        assert "Shonen" in tags_v1
+
+        resp_book_tags = await client.get("/api/v1/tags/book", headers=headers)
+        assert resp_book_tags.status_code == 200
+        assert "East Blue" in resp_book_tags.json()
+
+        resp_series_tags = await client.get("/api/v1/tags/series", headers=headers)
+        assert resp_series_tags.status_code == 200
+        assert "Shonen" in resp_series_tags.json()
+
+        # 5. Test GET /api/v1/authors & /api/v2/authors & /api/v1/authors/roles
+        resp_authors_v1 = await client.get("/api/v1/authors", headers=headers)
+        assert resp_authors_v1.status_code == 200
+        authors_v1 = resp_authors_v1.json()
+        assert isinstance(authors_v1, list)
+        assert any(a["name"] == "Eiichiro Oda" and a["role"] == "writer" for a in authors_v1)
+
+        resp_authors_roles = await client.get("/api/v1/authors/roles", headers=headers)
+        assert resp_authors_roles.status_code == 200
+        roles = resp_authors_roles.json()
+        assert "writer" in roles
+        assert "penciller" in roles
+
+        # 6. Test Series DTO metadata mapping
+        resp_series_one = await client.get("/api/v1/series/55-onepiece", headers=headers)
+        assert resp_series_one.status_code == 200
+        s_dto = resp_series_one.json()
+        assert s_dto["metadata"]["publisher"] == "Shueisha"
+        assert "Action" in s_dto["metadata"]["genres"]
+        assert "Shonen" in s_dto["metadata"]["tags"]
+        assert any(a["name"] == "Eiichiro Oda" for a in s_dto["booksMetadata"]["authors"])
+
+        # 7. Test Book DTO metadata mapping
+        resp_book_one = await client.get("/api/v1/books/5501", headers=headers)
+        assert resp_book_one.status_code == 200
+        b_dto = resp_book_one.json()
+        assert any(a["name"] == "Eiichiro Oda" and a["role"] == "writer" for a in b_dto["metadata"]["authors"])
+        assert "East Blue" in b_dto["metadata"]["tags"]
+        assert b_dto["metadata"]["isbn"] is None or isinstance(b_dto["metadata"]["isbn"], str)
+
+        # 8. Test Filtering Series by genre and tag
+        resp_filter_series_genre = await client.get("/api/v1/series?genre=Action", headers=headers)
+        assert resp_filter_series_genre.status_code == 200
+        assert resp_filter_series_genre.json()["totalElements"] == 1
+
+        resp_filter_series_genre_nomatch = await client.get("/api/v1/series?genre=Horror", headers=headers)
+        assert resp_filter_series_genre_nomatch.status_code == 200
+        assert resp_filter_series_genre_nomatch.json()["totalElements"] == 0
+
+        # 9. Test Filtering Books by author and tag
+        resp_filter_books_author = await client.get("/api/v1/books?author=Boichi", headers=headers)
+        assert resp_filter_books_author.status_code == 200
+        assert resp_filter_books_author.json()["totalElements"] == 1
+        assert resp_filter_books_author.json()["content"][0]["id"] == "5502"
+
+        resp_filter_books_tag = await client.get("/api/v1/books?tag=East Blue", headers=headers)
+        assert resp_filter_books_tag.status_code == 200
+        assert resp_filter_books_tag.json()["totalElements"] == 1
+        assert resp_filter_books_tag.json()["content"][0]["id"] == "5501"
+
+
+
 
 
 

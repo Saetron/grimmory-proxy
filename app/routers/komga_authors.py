@@ -1,12 +1,12 @@
 import logging
 from typing import List, Optional
-from fastapi import APIRouter, Depends, Query
-import aiosqlite
+from fastapi import APIRouter, Depends, Query, Request
 
 from app.database import Database
 from app.models.internal import UserSession
 from app.models.komga import AuthorDto, PageableDto, build_pageable
 from app.services.auth import AuthService
+from app.services.filter_utils import resolve_effective_library_ids
 
 logger = logging.getLogger("grimmory_proxy.komga_authors")
 
@@ -14,45 +14,143 @@ logger = logging.getLogger("grimmory_proxy.komga_authors")
 def get_authors_router(db: Database) -> APIRouter:
     router = APIRouter(tags=["Komga Authors"])
 
-    @router.get("/api/v1/authors", response_model=PageableDto[AuthorDto])
-    @router.get("/api/v2/authors", response_model=PageableDto[AuthorDto])
-    async def get_all_authors(
+    # ---------------- Authors List ----------------
+
+    @router.get("/api/v1/authors", response_model=List[AuthorDto])
+    async def get_authors_v1(
         search: Optional[str] = Query(None),
+        library_id: Optional[str] = Query(None),
+        collection_id: Optional[str] = Query(None),
+        series_id: Optional[str] = Query(None),
+        user: UserSession = Depends(AuthService.require_user),
+    ) -> List[AuthorDto]:
+        parsed_libs: List[int] = []
+        if library_id:
+            for part in str(library_id).split(","):
+                if part.strip().isdigit():
+                    parsed_libs.append(int(part.strip()))
+
+        effective_libs = resolve_effective_library_ids(user, parsed_libs)
+        if effective_libs is not None and len(effective_libs) == 0:
+            return []
+
+        series_ids = [series_id] if series_id else None
+        authors, _ = await db.get_authors_list(
+            search=search,
+            library_ids=effective_libs,
+            series_ids=series_ids,
+            unpaged=True,
+        )
+        return [AuthorDto(name=a["name"], role=a.get("role", "writer")) for a in authors]
+
+    @router.get("/api/v2/authors", response_model=PageableDto[AuthorDto])
+    async def get_authors_v2(
+        request: Request,
+        search: Optional[str] = Query(None),
+        role: Optional[str] = Query(None),
+        library_id: Optional[List[int]] = Query(None),
+        collection_id: Optional[List[str]] = Query(None),
+        series_id: Optional[List[str]] = Query(None),
+        readlist_id: Optional[List[str]] = Query(None),
+        unpaged: bool = Query(False),
         page: int = Query(0, ge=0),
         size: int = Query(20, ge=1, le=500),
         user: UserSession = Depends(AuthService.require_user),
     ) -> PageableDto[AuthorDto]:
-        async with db.get_connection() as conn:
-            conn.row_factory = aiosqlite.Row
-            if search:
-                cursor = await conn.execute(
-                    "SELECT COUNT(*) as total FROM authors WHERE name LIKE ?",
-                    (f"%{search}%",),
-                )
-                total = (await cursor.fetchone())["total"]
-                cur = await conn.execute(
-                    "SELECT name FROM authors WHERE name LIKE ? ORDER BY name ASC LIMIT ? OFFSET ?",
-                    (f"%{search}%", size, page * size),
-                )
-            else:
-                cursor = await conn.execute("SELECT COUNT(*) as total FROM authors")
-                total = (await cursor.fetchone())["total"]
-                cur = await conn.execute(
-                    "SELECT name FROM authors ORDER BY name ASC LIMIT ? OFFSET ?",
-                    (size, page * size),
-                )
-            rows = await cur.fetchall()
+        is_unpaged = unpaged or request.query_params.get("unpaged", "").lower() in ("true", "1")
+        lib_ids = request.query_params.getlist("library_id") or (library_id if library_id is not None else [])
+        parsed_libs: List[int] = []
+        for l in lib_ids:
+            for part in str(l).split(","):
+                if part.strip().isdigit():
+                    parsed_libs.append(int(part.strip()))
 
-        authors = [AuthorDto(name=r["name"], role="writer") for r in rows]
-        return build_pageable(authors, page, size, total)
+        effective_libs = resolve_effective_library_ids(user, parsed_libs)
+        if effective_libs is not None and len(effective_libs) == 0:
+            return build_pageable([], page, size, 0, unpaged=is_unpaged)
+
+        authors, total = await db.get_authors_list(
+            search=search,
+            role=role,
+            library_ids=effective_libs,
+            series_ids=series_id,
+            offset=0 if is_unpaged else page * size,
+            limit=size,
+            unpaged=is_unpaged,
+        )
+        content = [AuthorDto(name=a["name"], role=a.get("role", "writer")) for a in authors]
+        return build_pageable(content, page, size if not is_unpaged else total, total, unpaged=is_unpaged)
+
+    # ---------------- Authors Names ----------------
 
     @router.get("/api/v1/authors/names", response_model=List[str])
-    async def get_author_names(
+    async def get_author_names_v1(
+        search: Optional[str] = Query(None),
         user: UserSession = Depends(AuthService.require_user),
     ) -> List[str]:
-        async with db.get_connection() as conn:
-            cur = await conn.execute("SELECT name FROM authors ORDER BY name ASC LIMIT 1000")
-            rows = await cur.fetchall()
-            return [r[0] for r in rows]
+        effective_libs = resolve_effective_library_ids(user, [])
+        if effective_libs is not None and len(effective_libs) == 0:
+            return []
+        names, _ = await db.get_author_names_list(search=search, library_ids=effective_libs, unpaged=True)
+        return names
+
+    @router.get("/api/v2/authors/names", response_model=PageableDto[str])
+    async def get_author_names_v2(
+        request: Request,
+        search: Optional[str] = Query(None),
+        role: Optional[str] = Query(None),
+        library_id: Optional[List[int]] = Query(None),
+        collection_id: Optional[List[str]] = Query(None),
+        series_id: Optional[List[str]] = Query(None),
+        readlist_id: Optional[List[str]] = Query(None),
+        unpaged: bool = Query(False),
+        page: int = Query(0, ge=0),
+        size: int = Query(20, ge=1, le=500),
+        user: UserSession = Depends(AuthService.require_user),
+    ) -> PageableDto[str]:
+        is_unpaged = unpaged or request.query_params.get("unpaged", "").lower() in ("true", "1")
+        lib_ids = request.query_params.getlist("library_id") or (library_id if library_id is not None else [])
+        parsed_libs: List[int] = []
+        for l in lib_ids:
+            for part in str(l).split(","):
+                if part.strip().isdigit():
+                    parsed_libs.append(int(part.strip()))
+
+        effective_libs = resolve_effective_library_ids(user, parsed_libs)
+        if effective_libs is not None and len(effective_libs) == 0:
+            return build_pageable([], page, size, 0, unpaged=is_unpaged)
+
+        names, total = await db.get_author_names_list(
+            search=search,
+            role=role,
+            library_ids=effective_libs,
+            series_ids=series_id,
+            offset=0 if is_unpaged else page * size,
+            limit=size,
+            unpaged=is_unpaged,
+        )
+        return build_pageable(names, page, size if not is_unpaged else total, total, unpaged=is_unpaged)
+
+    # ---------------- Authors Roles ----------------
+
+    @router.get("/api/v1/authors/roles", response_model=List[str])
+    async def get_author_roles_v1(
+        user: UserSession = Depends(AuthService.require_user),
+    ) -> List[str]:
+        return await db.get_author_roles()
+
+    @router.get("/api/v2/authors/roles", response_model=PageableDto[str])
+    async def get_author_roles_v2(
+        request: Request,
+        unpaged: bool = Query(False),
+        page: int = Query(0, ge=0),
+        size: int = Query(20, ge=1),
+        user: UserSession = Depends(AuthService.require_user),
+    ) -> PageableDto[str]:
+        is_unpaged = unpaged or request.query_params.get("unpaged", "").lower() in ("true", "1")
+        roles = await db.get_author_roles()
+        total = len(roles)
+        content = roles if is_unpaged else roles[page * size : (page + 1) * size]
+        return build_pageable(content, page, size if not is_unpaged else total, total, unpaged=is_unpaged)
 
     return router
