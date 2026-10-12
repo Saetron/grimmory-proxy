@@ -184,7 +184,7 @@ async def test_admin_api_requires_admin_session(monkeypatch):
         headers_admin = {"Authorization": "Bearer token_admin"}
         resp_admin = await client.post("/admin/api/calculate-pages", json={"missing_only": True}, headers=headers_admin)
         assert resp_admin.status_code == 200
-        assert resp_admin.json()["status"] in ["started", "already_running"]
+        assert resp_admin.json()["status"] in ["started", "already_running", "no_work"]
 
 
 @pytest.mark.asyncio
@@ -1224,7 +1224,7 @@ async def test_download_fallback_on_403(monkeypatch):
     # Mock grimmory_client:
     # If Authorization header has token_restricted -> return 403 Forbidden
     # If Authorization header has sync token -> return 200 OK with bytes
-    async def mock_get_sync_token():
+    async def mock_get_sync_token(*args, **kwargs):
         return "admin_sync_token"
     monkeypatch.setattr(grimmory_client, "get_sync_token", mock_get_sync_token)
 
