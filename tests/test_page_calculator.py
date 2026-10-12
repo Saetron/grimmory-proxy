@@ -103,3 +103,43 @@ async def test_page_calculator_run_job_with_books():
     assert status.updated_books == 2
     assert status.current_book == "Calculation completed"
 
+
+@pytest.mark.asyncio
+async def test_page_calculator_request_stop_cancels_and_resets():
+    import asyncio
+    from unittest.mock import AsyncMock
+    from app.database import Database
+
+    mock_db = AsyncMock(spec=Database)
+    mock_db.get_books_missing_pages = AsyncMock(return_value=[
+        {"id": 1, "name": "Book 1", "book_type": "EPUB"},
+        {"id": 2, "name": "Book 2", "book_type": "EPUB"},
+    ])
+    mock_db.create_page_calc_job = AsyncMock(return_value=999)
+    mock_db.update_page_calc_progress = AsyncMock()
+    mock_db.get_latest_page_calc_job = AsyncMock(return_value={"id": 999, "status": "running"})
+
+    calc = PageCalculator(db=mock_db)
+
+    async def slow_calc(book):
+        await asyncio.sleep(10)
+        return "updated"
+
+    calc.calculate_and_save_book = slow_calc
+
+    # Start job in background
+    started = calc.start_calculation_job(missing_only=True)
+    assert started is True
+    assert calc.is_running is True
+
+    # Attempting to start another job while running should be rejected
+    assert calc.start_calculation_job(missing_only=True) is False
+
+    # Stop the job
+    await calc.request_stop()
+    assert calc.is_running is False
+    assert calc.status.is_running is False
+    assert calc.status.status == "stopped"
+    assert "stopped" in calc.status.current_book.lower()
+
+
