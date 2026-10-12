@@ -105,6 +105,7 @@ grimmory-proxy/
 - Upstream Grimmory stores rich metadata (authors, publishers, genres, tags) primarily on book records.
 - Komga clients (Komic, Panels, Mihon, Tachiyomi, Kuro Reader) query series-level metadata (`/api/v1/series`, `booksMetadata`, `/api/v1/genres`, `/api/v1/tags`, `/api/v1/publishers`, `/api/v2/publishers`).
 - The proxy aggregates book-level authors, publishers, genres, and tags into series `raw_json` during sync and database startup migrations, enabling filtering across books and series.
+- Clients like Komic filter by author using SearchCondition objects (`{"author": {"value": {"name": "...", "role": "..."}, "operator": "is"}}`) or query params (`?author=Name,role`). `filter_utils.py` and `database.py` normalize both structured author objects and comma-delimited strings with role awareness, matching series metadata and falling back to series books.
 
 ### E. Page Calculation Engine & Catalog Enrichment
 - Page counts are computed using Calibre's ADE algorithm (1,024 uncompressed chars/page) for EPUBs and 1:1 image counts for CBZ/PDF archives.

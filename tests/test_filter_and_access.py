@@ -81,6 +81,42 @@ def test_filter_utils_extraction():
     f7 = extract_filter_params(req3, body7)
     assert f7["series_ids"] == ["s-ast-field"]
 
+    # 7. Post body with Komga SearchCondition schema with author object (Komic format)
+    body_komic = {
+        "condition": {
+            "allOf": [
+                {"author": {"value": {"role": "writer", "name": "Raita"}, "operator": "is"}}
+            ]
+        }
+    }
+    f_komic = extract_filter_params(req3, body_komic)
+    assert f_komic["authors"] == [{"name": "Raita", "role": "writer"}]
+
+    # 8. Query parameter author with name and role (e.g. ?author=Raita,writer)
+    req_author_role = Request({"type": "http", "query_string": b"author=Raita,writer"})
+    f_author_role = extract_filter_params(req_author_role)
+    assert f_author_role["authors"] == [{"name": "Raita", "role": "writer"}]
+
+    # 9. Query parameter author name only (e.g. ?author=Eiichiro Oda)
+    req_author_plain = Request({"type": "http", "query_string": b"author=Eiichiro+Oda"})
+    f_author_plain = extract_filter_params(req_author_plain)
+    assert f_author_plain["authors"] == [{"name": "Eiichiro Oda", "role": None}]
+
+    # 10. Post body with flat author dict and metadata objects
+    body_meta_objs = {
+        "condition": {
+            "author": {"name": "Boichi", "role": "penciller"},
+            "genre": {"value": {"name": "Action"}},
+            "tag": {"value": "Manga"},
+            "publisher": {"value": {"name": "Shueisha"}},
+        }
+    }
+    f_meta_objs = extract_filter_params(req3, body_meta_objs)
+    assert f_meta_objs["authors"] == [{"name": "Boichi", "role": "penciller"}]
+    assert f_meta_objs["genres"] == ["Action"]
+    assert f_meta_objs["tags"] == ["Manga"]
+    assert f_meta_objs["publishers"] == ["Shueisha"]
+
 
 def test_effective_library_resolution():
     admin = UserSession(

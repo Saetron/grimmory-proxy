@@ -2268,6 +2268,45 @@ async def test_komga_metadata_endpoints_and_filtering():
         assert resp_filter_books_tag.json()["totalElements"] == 1
         assert resp_filter_books_tag.json()["content"][0]["id"] == "5501"
 
+        # 10. Test POST /api/v1/series/list and /api/v1/books/list with Komic-style author SearchCondition
+        komic_series_query = {
+            "condition": {
+                "allOf": [
+                    {"author": {"value": {"role": "writer", "name": "Eiichiro Oda"}, "operator": "is"}}
+                ]
+            }
+        }
+        resp_post_series_author = await client.post("/api/v1/series/list", json=komic_series_query, headers=headers)
+        assert resp_post_series_author.status_code == 200
+        post_series_data = resp_post_series_author.json()
+        assert post_series_data["totalElements"] == 1
+        assert post_series_data["content"][0]["id"] == "55-onepiece"
+
+        komic_books_query = {
+            "condition": {
+                "allOf": [
+                    {"author": {"value": {"role": "penciller", "name": "Boichi"}, "operator": "is"}}
+                ]
+            }
+        }
+        resp_post_books_author = await client.post("/api/v1/books/list", json=komic_books_query, headers=headers)
+        assert resp_post_books_author.status_code == 200
+        post_books_data = resp_post_books_author.json()
+        assert post_books_data["totalElements"] == 1
+        assert post_books_data["content"][0]["id"] == "5502"
+
+        # Non-matching author query
+        komic_nomatch_query = {
+            "condition": {
+                "allOf": [
+                    {"author": {"value": {"role": "writer", "name": "Unknown Author"}, "operator": "is"}}
+                ]
+            }
+        }
+        resp_post_nomatch = await client.post("/api/v1/series/list", json=komic_nomatch_query, headers=headers)
+        assert resp_post_nomatch.status_code == 200
+        assert resp_post_nomatch.json()["totalElements"] == 0
+
 
 
 

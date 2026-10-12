@@ -7,6 +7,72 @@ from app.models.internal import UserSession
 logger = logging.getLogger("grimmory_proxy.filter_utils")
 
 
+KNOWN_AUTHOR_ROLES: Set[str] = {
+    "writer", "penciller", "inker", "colorist", "letterer",
+    "cover", "editor", "translator", "assistant",
+}
+
+
+def _parse_author_items(item: Any) -> List[Dict[str, Optional[str]]]:
+    """
+    Normalizes diverse author representations from Komga queries and conditions
+    into structured author filters: [{'name': str, 'role': Optional[str]}].
+    """
+    results: List[Dict[str, Optional[str]]] = []
+    if item is None:
+        return results
+
+    if isinstance(item, dict):
+        if "value" in item:
+            return _parse_author_items(item["value"])
+        if "values" in item and isinstance(item["values"], list):
+            for v in item["values"]:
+                results.extend(_parse_author_items(v))
+            return results
+
+        name = str(item.get("name") or "").strip()
+        role = str(item.get("role") or "").strip() or None
+        if name:
+            results.append({"name": name, "role": role})
+        return results
+
+    if isinstance(item, list):
+        for sub in item:
+            results.extend(_parse_author_items(sub))
+        return results
+
+    s = str(item).strip()
+    if not s:
+        return results
+
+    # Support stringified dict/JSON representations
+    if (s.startswith("{") and s.endswith("}")) or (s.startswith("[") and s.endswith("]")):
+        import ast
+        import json
+        try:
+            parsed = json.loads(s)
+            return _parse_author_items(parsed)
+        except Exception:
+            try:
+                parsed = ast.literal_eval(s)
+                return _parse_author_items(parsed)
+            except Exception:
+                pass
+
+    if "," in s:
+        parts = [p.strip() for p in s.split(",") if p.strip()]
+        if len(parts) == 2 and parts[1].lower() in KNOWN_AUTHOR_ROLES:
+            results.append({"name": parts[0], "role": parts[1].lower()})
+        else:
+            for part in parts:
+                if part.lower() not in KNOWN_AUTHOR_ROLES:
+                    results.append({"name": part, "role": None})
+    else:
+        results.append({"name": s, "role": None})
+
+    return results
+
+
 def _extract_ids_recursive(data: Any, key_names: Set[str]) -> List[Any]:
     """
     Recursively extracts values associated with key_names from dicts and lists.
@@ -37,8 +103,8 @@ def _extract_ids_recursive(data: Any, key_names: Set[str]) -> List[Any]:
                         extracted.append(v["id"])
                     if "ids" in v and isinstance(v["ids"], list):
                         extracted.extend(v["ids"])
-                    if "name" in v and isinstance(v["name"], str):
-                        extracted.append(v["name"])
+                    if "role" in v or "name" in v:
+                        extracted.append(v)
                     extracted.extend(_extract_ids_recursive(v, key_names))
                 elif v is not None:
                     extracted.append(v)
@@ -145,6 +211,11 @@ def extract_filter_params(request: Request, body: Optional[Any] = None) -> Dict[
         raw_genres.extend(_extract_ids_recursive(body, genre_keys))
     genres: List[str] = []
     for item in raw_genres:
+        if isinstance(item, dict):
+            val = item.get("name") or item.get("value")
+            if val and str(val).strip() and str(val).strip() not in genres:
+                genres.append(str(val).strip())
+            continue
         for part in str(item).split(","):
             part = part.strip()
             if part and part not in genres:
@@ -160,6 +231,11 @@ def extract_filter_params(request: Request, body: Optional[Any] = None) -> Dict[
         raw_tags.extend(_extract_ids_recursive(body, tag_keys))
     tags: List[str] = []
     for item in raw_tags:
+        if isinstance(item, dict):
+            val = item.get("name") or item.get("value")
+            if val and str(val).strip() and str(val).strip() not in tags:
+                tags.append(str(val).strip())
+            continue
         for part in str(item).split(","):
             part = part.strip()
             if part and part not in tags:
@@ -175,6 +251,11 @@ def extract_filter_params(request: Request, body: Optional[Any] = None) -> Dict[
         raw_publishers.extend(_extract_ids_recursive(body, publisher_keys))
     publishers: List[str] = []
     for item in raw_publishers:
+        if isinstance(item, dict):
+            val = item.get("name") or item.get("value")
+            if val and str(val).strip() and str(val).strip() not in publishers:
+                publishers.append(str(val).strip())
+            continue
         for part in str(item).split(","):
             part = part.strip()
             if part and part not in publishers:
@@ -188,12 +269,11 @@ def extract_filter_params(request: Request, body: Optional[Any] = None) -> Dict[
             raw_authors.append(qv)
     if body:
         raw_authors.extend(_extract_ids_recursive(body, author_keys))
-    authors: List[str] = []
+    authors: List[Dict[str, Optional[str]]] = []
     for item in raw_authors:
-        for part in str(item).split(","):
-            part = part.strip()
-            if part and part not in authors:
-                authors.append(part)
+        for parsed in _parse_author_items(item):
+            if parsed not in authors:
+                authors.append(parsed)
 
     # 9. Extract Unpaged Flag
     unpaged = False
