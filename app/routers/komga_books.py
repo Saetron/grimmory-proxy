@@ -34,6 +34,7 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
     async def _query_books(
         library_ids: Optional[List[int]] = None,
         series_ids: Optional[List[str]] = None,
+        collection_ids: Optional[List[str]] = None,
         read_status: Optional[List[str]] = None,
         search: Optional[str] = None,
         genres: Optional[List[str]] = None,
@@ -46,12 +47,46 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
         unpaged: bool = False,
         user: Optional[UserSession] = None,
     ) -> PageableDto[BookDto]:
+        is_fav_scoped = False
+        target_series_ids = series_ids
+
+        # Check for fav- prefixed series IDs
+        if series_ids:
+            clean_series_ids = []
+            for s_id in series_ids:
+                if s_id.startswith("fav-"):
+                    parts = s_id.split("-", 2)
+                    if len(parts) < 3 or not parts[1].isdigit() or not user or int(parts[1]) != user.user_id:
+                        return build_pageable([], page, size, 0, unpaged=unpaged)
+                    clean_series_ids.append(parts[2])
+                    is_fav_scoped = True
+                else:
+                    clean_series_ids.append(s_id)
+            target_series_ids = clean_series_ids
+
+        # Check for Favorites collection in collection_ids
+        if collection_ids:
+            for cid in collection_ids:
+                if cid.startswith("favorites-"):
+                    if not user or cid != f"favorites-{user.user_id}":
+                        return build_pageable([], page, size, 0, unpaged=unpaged)
+                    is_fav_scoped = True
+
+        filter_book_ids: Optional[List[int]] = None
+        if is_fav_scoped:
+            if not user:
+                return build_pageable([], page, size, 0, unpaged=unpaged)
+            fav_book_ids = await grimmory_client.get_user_favorite_book_ids(user.user_id, token=user.token)
+            if not fav_book_ids:
+                return build_pageable([], page, size, 0, unpaged=unpaged)
+            filter_book_ids = fav_book_ids
+
         # Resolve series IDs to canonical database IDs if possible
         canonical_series_ids = None
-        if series_ids:
+        if target_series_ids:
             canonical_series_ids = []
             series_lib_ids = []
-            for s_id in series_ids:
+            for s_id in target_series_ids:
                 series_rec = await db.find_series_by_id_or_slug(s_id)
                 if series_rec:
                     if series_rec["id"] not in canonical_series_ids:
@@ -66,7 +101,7 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
             if user and not user.is_admin and user.assigned_library_ids:
                 if series_lib_ids and not any(lid in user.assigned_library_ids for lid in series_lib_ids):
                     logger.warning(
-                        f"User {user.username} blocked from series {series_ids} outside assigned libraries {user.assigned_library_ids}"
+                        f"User {user.username} blocked from series {target_series_ids} outside assigned libraries {user.assigned_library_ids}"
                     )
                     return build_pageable([], page, size, 0, unpaged=unpaged)
 
@@ -81,6 +116,7 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
         records, total = await db.get_books_list(
             library_ids=effective_libs if not canonical_series_ids else None,
             series_ids=canonical_series_ids,
+            book_ids=filter_book_ids,
             read_status=read_status,
             search=search,
             genres=genres,
@@ -94,7 +130,12 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
             user_id=user.user_id if user else None,
         )
 
-        content = [KomgaMapper.to_book_dto(r) for r in records]
+        content = []
+        for r in records:
+            dto = KomgaMapper.to_book_dto(r)
+            if is_fav_scoped and user:
+                dto.seriesId = f"fav-{user.user_id}-{dto.seriesId}"
+            content.append(dto)
         return build_pageable(content, page, size if not unpaged else total, total, unpaged=unpaged)
 
     @router.get("/api/v1/books", response_model=PageableDto[BookDto])
@@ -111,6 +152,7 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
         return await _query_books(
             library_ids=filters["library_ids"],
             series_ids=filters["series_ids"],
+            collection_ids=filters.get("collection_ids"),
             read_status=filters["read_status"],
             search=filters["search"],
             genres=filters.get("genres"),
@@ -149,6 +191,7 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
         return await _query_books(
             library_ids=filters["library_ids"],
             series_ids=filters["series_ids"],
+            collection_ids=filters.get("collection_ids"),
             read_status=filters["read_status"],
             search=filters["search"],
             genres=filters.get("genres"),

@@ -669,10 +669,11 @@ async def test_user_connect_captures_data_and_checks_grimmory_read_states(monkey
         assert resp_me.json()["id"] == "400"
 
         # Allow background sync task to complete
-        await asyncio.sleep(0.05)
-
-        # 4. Verify user data was captured in SQLite users table
-        user_record = await db.get_user_by_id(test_user_id)
+        for _ in range(40):
+            await asyncio.sleep(0.05)
+            user_record = await db.get_user_by_id(test_user_id)
+            if user_record and user_record.get("last_sync_progress_at") is not None:
+                break
         assert user_record is not None
         assert user_record["username"] == "alice"
         assert user_record["token"] == "mock_token_alice_123"
@@ -2306,6 +2307,259 @@ async def test_komga_metadata_endpoints_and_filtering():
         resp_post_nomatch = await client.post("/api/v1/series/list", json=komic_nomatch_query, headers=headers)
         assert resp_post_nomatch.status_code == 200
         assert resp_post_nomatch.json()["totalElements"] == 0
+
+
+@pytest.mark.asyncio
+async def test_grimmory_favorites_collection_user_gating_and_renaming(monkeypatch):
+    import base64
+    from app.main import db
+    from app.clients.grimmory import grimmory_client
+    from app.models.grimmory import GrimmoryLoginResponse, GrimmoryPermissions, GrimmoryUser
+
+    await db.connect()
+    grimmory_client.clear_user_favorites_cache()
+
+    # Populate test library and books
+    await db.upsert_libraries([{"id": 40, "name": "Favorites Lib", "paths": []}])
+    await db.upsert_series_batch([{
+        "id": "40-series1",
+        "library_id": 40,
+        "name": "Sync Series",
+        "slug": "sync-series",
+        "books_count": 3,
+    }])
+    await db.upsert_books_batch([
+        {"id": 401, "series_id": "40-series1", "library_id": 40, "name": "Sync Book 1", "number": 1.0, "page_count": 250},
+        {"id": 402, "series_id": "40-series1", "library_id": 40, "name": "Sync Book 2", "number": 2.0, "page_count": 120},
+        {"id": 403, "series_id": "40-series1", "library_id": 40, "name": "Sync Book 3", "number": 3.0, "page_count": 80},
+    ])
+
+    # Setup Alice (user 400) and Bob (user 500)
+    async def mock_login(username, password):
+        if username == "alice":
+            return GrimmoryLoginResponse(accessToken="tok_alice_fav", expires=3600)
+        elif username == "bob":
+            return GrimmoryLoginResponse(accessToken="tok_bob_fav", expires=3600)
+        raise ValueError("Invalid user")
+
+    async def mock_get_current_user(token):
+        if token == "tok_alice_fav":
+            return GrimmoryUser(id=400, username="alice", permissions=GrimmoryPermissions(admin=False), assignedLibraries=[40])
+        elif token == "tok_bob_fav":
+            return GrimmoryUser(id=500, username="bob", permissions=GrimmoryPermissions(admin=False), assignedLibraries=[40])
+        raise ValueError("Invalid token")
+
+    async def mock_get_shelves(token=None):
+        if token == "tok_alice_fav":
+            return [{"id": 11, "name": "Favorites", "books": [{"id": 401}, {"id": 402}]}]
+        elif token == "tok_bob_fav":
+            return [{"id": 22, "name": "Favorites", "books": [{"id": 403}]}]
+        return []
+
+    async def mock_get_magic_shelves(token=None):
+        return []
+
+    monkeypatch.setattr(grimmory_client, "login", mock_login)
+    monkeypatch.setattr(grimmory_client, "get_current_user", mock_get_current_user)
+    monkeypatch.setattr(grimmory_client, "get_shelves", mock_get_shelves)
+    monkeypatch.setattr(grimmory_client, "get_magic_shelves", mock_get_magic_shelves)
+
+    alice_headers = {"Authorization": f"Basic {base64.b64encode(b'alice:pw').decode('utf-8')}"}
+    bob_headers = {"Authorization": f"Basic {base64.b64encode(b'bob:pw').decode('utf-8')}"}
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # 1. Alice queries collections -> sees ONLY "Favorites - alice" (favorites-400)
+        resp_a = await client.get("/api/v1/collections", headers=alice_headers)
+        assert resp_a.status_code == 200
+        data_a = resp_a.json()
+        assert data_a["totalElements"] == 1
+        coll_a = data_a["content"][0]
+        assert coll_a["id"] == "favorites-400"
+        assert coll_a["name"] == "Favorites - alice"
+        assert coll_a["seriesIds"] == ["fav-400-40-series1"]
+
+        # 2. Bob queries collections -> sees ONLY "Favorites - bob" (favorites-500)
+        resp_b = await client.get("/api/v1/collections", headers=bob_headers)
+        assert resp_b.status_code == 200
+        data_b = resp_b.json()
+        assert data_b["totalElements"] == 1
+        coll_b = data_b["content"][0]
+        assert coll_b["id"] == "favorites-500"
+        assert coll_b["name"] == "Favorites - bob"
+        assert coll_b["seriesIds"] == ["fav-500-40-series1"]
+
+        # 3. User Gating checks: Alice cannot access Bob's collection or series
+        assert (await client.get("/api/v1/collections/favorites-500", headers=alice_headers)).status_code == 404
+        assert (await client.get("/api/v1/collections/favorites-500/series", headers=alice_headers)).status_code == 404
+        assert (await client.get("/api/v1/collections/favorites-500/books", headers=alice_headers)).status_code == 404
+        assert (await client.get("/api/v1/series/fav-500-40-series1", headers=alice_headers)).status_code == 404
+        assert (await client.get("/api/v1/series/fav-500-40-series1/books", headers=alice_headers)).status_code == 404
+        assert (await client.get("/api/v1/series/fav-500-40-series1/thumbnail", headers=alice_headers)).status_code == 404
+
+        # Bob cannot access Alice's collection or series
+        assert (await client.get("/api/v1/collections/favorites-400", headers=bob_headers)).status_code == 404
+        assert (await client.get("/api/v1/collections/favorites-400/series", headers=bob_headers)).status_code == 404
+        assert (await client.get("/api/v1/series/fav-400-40-series1", headers=bob_headers)).status_code == 404
+        assert (await client.get("/api/v1/series/fav-400-40-series1/books", headers=bob_headers)).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_grimmory_favorites_collection_empty_exclusion(monkeypatch):
+    import base64
+    from app.main import db
+    from app.clients.grimmory import grimmory_client
+    from app.models.grimmory import GrimmoryLoginResponse, GrimmoryPermissions, GrimmoryUser
+
+    await db.connect()
+    grimmory_client.clear_user_favorites_cache()
+
+    async def mock_login(username, password):
+        return GrimmoryLoginResponse(accessToken="tok_charlie_fav", expires=3600)
+
+    async def mock_get_current_user(token):
+        return GrimmoryUser(id=600, username="charlie", permissions=GrimmoryPermissions(admin=False), assignedLibraries=[40])
+
+    # Charlie has an empty Favorites shelf or no Favorites shelf at all
+    async def mock_get_shelves(token=None):
+        return [{"id": 33, "name": "Other Shelf", "books": []}]
+
+    async def mock_get_magic_shelves(token=None):
+        return []
+
+    monkeypatch.setattr(grimmory_client, "login", mock_login)
+    monkeypatch.setattr(grimmory_client, "get_current_user", mock_get_current_user)
+    monkeypatch.setattr(grimmory_client, "get_shelves", mock_get_shelves)
+    monkeypatch.setattr(grimmory_client, "get_magic_shelves", mock_get_magic_shelves)
+
+    charlie_headers = {"Authorization": f"Basic {base64.b64encode(b'charlie:pw').decode('utf-8')}"}
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # Stipulation 2: If a user has no favorites collection, don't show it to them at all
+        resp = await client.get("/api/v1/collections", headers=charlie_headers)
+        assert resp.status_code == 200
+        assert resp.json()["totalElements"] == 0
+        assert len(resp.json()["content"]) == 0
+
+        # Direct access to favorites-600 must return 404
+        assert (await client.get("/api/v1/collections/favorites-600", headers=charlie_headers)).status_code == 404
+        assert (await client.get("/api/v1/collections/favorites-600/series", headers=charlie_headers)).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_grimmory_favorites_collection_scoped_books_population(monkeypatch):
+    import base64
+    from app.main import db
+    from app.clients.grimmory import grimmory_client
+    from app.models.grimmory import GrimmoryLoginResponse, GrimmoryPermissions, GrimmoryUser
+
+    await db.connect()
+    grimmory_client.clear_user_favorites_cache()
+
+    # Populate test library and 3 books in "40-series1"
+    await db.upsert_libraries([{"id": 40, "name": "Favorites Lib", "paths": []}])
+    await db.upsert_series_batch([{
+        "id": "40-series1",
+        "library_id": 40,
+        "name": "Sync Series",
+        "slug": "sync-series",
+        "books_count": 3,
+    }])
+    await db.upsert_books_batch([
+        {"id": 401, "series_id": "40-series1", "library_id": 40, "name": "Sync Book 1", "number": 1.0, "page_count": 250},
+        {"id": 402, "series_id": "40-series1", "library_id": 40, "name": "Sync Book 2", "number": 2.0, "page_count": 120},
+        {"id": 403, "series_id": "40-series1", "library_id": 40, "name": "Sync Book 3", "number": 3.0, "page_count": 80},
+    ])
+
+    async def mock_login(username, password):
+        return GrimmoryLoginResponse(accessToken="tok_alice_fav2", expires=3600)
+
+    async def mock_get_current_user(token):
+        return GrimmoryUser(id=400, username="alice", permissions=GrimmoryPermissions(admin=False), assignedLibraries=[40])
+
+    # Alice has books 401 and 402 as favorites (book 403 is NOT favorited)
+    async def mock_get_shelves(token=None):
+        return [{"id": 11, "name": "Favorites", "books": [{"id": 401}, {"id": 402}]}]
+
+    async def mock_get_magic_shelves(token=None):
+        return []
+
+    async def mock_stream_thumbnail(book_id, token=None):
+        return b"fake_thumb_bytes"
+
+    monkeypatch.setattr(grimmory_client, "login", mock_login)
+    monkeypatch.setattr(grimmory_client, "get_current_user", mock_get_current_user)
+    monkeypatch.setattr(grimmory_client, "get_shelves", mock_get_shelves)
+    monkeypatch.setattr(grimmory_client, "get_magic_shelves", mock_get_magic_shelves)
+    monkeypatch.setattr(grimmory_client, "stream_thumbnail", mock_stream_thumbnail)
+
+    alice_headers = {"Authorization": f"Basic {base64.b64encode(b'alice:pw').decode('utf-8')}"}
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # 1. Collection series count reflects only favorited books (booksCount = 2, not 3)
+        resp_series = await client.get("/api/v1/collections/favorites-400/series", headers=alice_headers)
+        assert resp_series.status_code == 200
+        s_data = resp_series.json()
+        assert s_data["totalElements"] == 1
+        s_item = s_data["content"][0]
+        assert s_item["id"] == "fav-400-40-series1"
+        assert s_item["booksCount"] == 2
+
+        # 2. Opening the series via the collection (GET /api/v1/series/fav-400-40-series1/books):
+        # ONLY populates books marked as favorites (401 and 402). 403 is EXCLUDED!
+        resp_fav_books = await client.get("/api/v1/series/fav-400-40-series1/books", headers=alice_headers)
+        assert resp_fav_books.status_code == 200
+        fb_data = resp_fav_books.json()
+        assert fb_data["totalElements"] == 2
+        book_ids = [b["id"] for b in fb_data["content"]]
+        assert book_ids == ["401", "402"]
+        assert "403" not in book_ids
+        for b in fb_data["content"]:
+            assert b["seriesId"] == "fav-400-40-series1"
+
+        # 3. Opening series with collection_id query param:
+        resp_coll_param = await client.get("/api/v1/series/40-series1/books?collection_id=favorites-400", headers=alice_headers)
+        assert resp_coll_param.status_code == 200
+        cp_data = resp_coll_param.json()
+        assert cp_data["totalElements"] == 2
+        assert [b["id"] for b in cp_data["content"]] == ["401", "402"]
+
+        # 4. Opening books via collection books endpoint:
+        resp_coll_books = await client.get("/api/v1/collections/favorites-400/books", headers=alice_headers)
+        assert resp_coll_books.status_code == 200
+        cb_data = resp_coll_books.json()
+        assert cb_data["totalElements"] == 2
+        assert [b["id"] for b in cb_data["content"]] == ["401", "402"]
+
+        # 5. Opening GET /api/v1/books?collection_id=favorites-400:
+        resp_books_coll = await client.get("/api/v1/books?collection_id=favorites-400", headers=alice_headers)
+        assert resp_books_coll.status_code == 200
+        bc_data = resp_books_coll.json()
+        assert bc_data["totalElements"] == 2
+        assert [b["id"] for b in bc_data["content"]] == ["401", "402"]
+
+        # 6. Normal library browsing (GET /api/v1/series/40-series1/books):
+        # MUST return ALL 3 books (401, 402, and 403)!
+        resp_all_books = await client.get("/api/v1/series/40-series1/books", headers=alice_headers)
+        assert resp_all_books.status_code == 200
+        ab_data = resp_all_books.json()
+        assert ab_data["totalElements"] == 3
+        all_ids = [b["id"] for b in ab_data["content"]]
+        assert all_ids == ["401", "402", "403"]
+
+        # 7. Series collections:
+        resp_s_colls = await client.get("/api/v1/series/fav-400-40-series1/collections", headers=alice_headers)
+        assert resp_s_colls.status_code == 200
+        assert len(resp_s_colls.json()) == 1
+        assert resp_s_colls.json()[0]["id"] == "favorites-400"
+
+        # 8. Collection thumbnail:
+        resp_thumb = await client.get("/api/v1/collections/favorites-400/thumbnail", headers=alice_headers)
+        assert resp_thumb.status_code == 200
+        assert resp_thumb.content == b"fake_thumb_bytes"
+
 
 
 

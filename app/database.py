@@ -184,8 +184,13 @@ class Database:
 
     @property
     def write_lock(self) -> asyncio.Lock:
-        if self._write_lock is None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if self._write_lock is None or getattr(self, "_lock_loop", None) != loop:
             self._write_lock = asyncio.Lock()
+            self._lock_loop = loop
         return self._write_lock
 
     @asynccontextmanager
@@ -675,6 +680,12 @@ class Database:
             await db.commit()
 
     async def find_series_by_id_or_slug(self, identifier: str, user_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
+        # Strip fav-{uid}- prefix if present to locate canonical series
+        if identifier.startswith("fav-"):
+            parts = identifier.split("-", 2)
+            if len(parts) >= 3 and parts[1].isdigit():
+                identifier = parts[2]
+
         async with self.get_db() as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("SELECT id FROM series WHERE id = ?", (identifier,))
@@ -703,6 +714,64 @@ class Database:
                 actual_id = row["id"]
                 return await self.get_series_by_id(actual_id, user_id=user_id)
             return None
+
+    async def count_books_in_series(self, series_id: str, book_ids: Optional[List[int]] = None) -> int:
+        conditions = ["b.deleted = 0", "(b.series_id = ? OR b.series_id LIKE ? OR b.series_id LIKE ?)"]
+        params: List[Any] = [series_id, f"{series_id}-%", f"%-{series_id}"]
+        if book_ids is not None:
+            if not book_ids:
+                return 0
+            placeholders = ",".join("?" for _ in book_ids)
+            conditions.append(f"b.id IN ({placeholders})")
+            params.extend(book_ids)
+        query = f"SELECT COUNT(*) FROM books b WHERE {' AND '.join(conditions)}"
+        async with self.get_db() as db:
+            cursor = await db.execute(query, params)
+            row = await cursor.fetchone()
+            return row[0] if row else 0
+
+    async def get_series_for_books(
+        self,
+        book_ids: List[int],
+        library_ids: Optional[List[int]] = None,
+        user_id: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        if not book_ids:
+            return []
+        placeholders = ",".join("?" for _ in book_ids)
+        conditions = [f"b.id IN ({placeholders})", "b.deleted = 0"]
+        params: List[Any] = list(book_ids)
+        if library_ids is not None:
+            if not library_ids:
+                return []
+            lib_placeholders = ",".join("?" for _ in library_ids)
+            conditions.append(f"b.library_id IN ({lib_placeholders})")
+            params.extend(library_ids)
+
+        query = f"""
+            SELECT DISTINCT b.series_id
+            FROM books b
+            WHERE {' AND '.join(conditions)}
+        """
+        async with self.get_db() as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(query, params)
+            rows = await cursor.fetchall()
+            series_ids = [r[0] for r in rows if r[0]]
+
+        if not series_ids:
+            return []
+
+        series_list = []
+        seen_ids = set()
+        for sid in series_ids:
+            s_row = await self.get_series_by_id(sid, user_id=user_id)
+            if not s_row:
+                s_row = await self.find_series_by_id_or_slug(sid, user_id=user_id)
+            if s_row and s_row["id"] not in seen_ids:
+                seen_ids.add(s_row["id"])
+                series_list.append(s_row)
+        return series_list
 
     async def get_books_by_series(self, series_id: str) -> List[Dict[str, Any]]:
         async with self.get_db() as db:
@@ -1449,6 +1518,7 @@ class Database:
         library_ids: Optional[List[int]] = None,
         series_id: Optional[str] = None,
         series_ids: Optional[List[str]] = None,
+        book_ids: Optional[List[int]] = None,
         search: Optional[str] = None,
         read_status: Optional[List[str]] = None,
         genres: Optional[List[str]] = None,
@@ -1465,6 +1535,13 @@ class Database:
     ) -> Tuple[List[Dict[str, Any]], int]:
         conditions = ["b.deleted = 0"]
         params: List[Any] = []
+
+        if book_ids is not None:
+            if len(book_ids) == 0:
+                return [], 0
+            placeholders = ",".join("?" for _ in book_ids)
+            conditions.append(f"b.id IN ({placeholders})")
+            params.extend(book_ids)
 
         target_libs = library_ids if library_ids is not None else ([library_id] if library_id is not None else None)
         if target_libs is not None:
