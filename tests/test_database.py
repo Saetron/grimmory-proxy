@@ -45,8 +45,9 @@ async def test_database_crud(tmp_path):
     missing = await db.get_books_missing_pages()
     assert len(missing) == 1
 
-    # 5. Update page count
+    # 5. Update page count and page entries
     await db.update_book_page_count(10, 350)
+    await db.upsert_book_pages(10, [{"number": 1, "fileName": "page-001.jpg"}])
     book = await db.get_book_by_id(10)
     assert book["page_count"] == 350
 

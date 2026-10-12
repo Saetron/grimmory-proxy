@@ -11,6 +11,26 @@ window.fetch = async (...args) => {
   return res;
 };
 
+function showCalcBanner(message, type = "info") {
+  const banner = document.getElementById("calc-feedback-banner");
+  if (!banner) return;
+  banner.style.display = "block";
+  if (type === "success") {
+    banner.style.background = "var(--color-success-bg)";
+    banner.style.border = "1px solid var(--color-success-border)";
+    banner.style.color = "#4ade80";
+  } else if (type === "danger" || type === "error") {
+    banner.style.background = "var(--color-danger-bg)";
+    banner.style.border = "1px solid var(--color-danger-border)";
+    banner.style.color = "#f87171";
+  } else {
+    banner.style.background = "rgba(59, 130, 246, 0.12)";
+    banner.style.border = "1px solid rgba(59, 130, 246, 0.3)";
+    banner.style.color = "#60a5fa";
+  }
+  banner.innerText = message;
+}
+
 async function triggerPageCalc(missingOnly, clickedBtn = null) {
   const btn = clickedBtn || document.getElementById(missingOnly ? "btn-calc-missing" : "btn-calc-all") || (window.event && window.event.target ? window.event.target.closest("button") : null);
   const originalHtml = btn ? btn.innerHTML : "";
@@ -18,6 +38,10 @@ async function triggerPageCalc(missingOnly, clickedBtn = null) {
     btn.disabled = true;
     btn.innerHTML = `<span style="display:inline-block;width:12px;height:12px;border:2px solid currentColor;border-top-color:transparent;border-radius:50%;animation:spin 0.8s linear infinite;margin-right:6px;"></span> Starting...`;
   }
+
+  // Clear previous banner
+  const banner = document.getElementById("calc-feedback-banner");
+  if (banner) banner.style.display = "none";
 
   // Immediately make the job status card visible with an active starting state
   const jobBox = document.getElementById("active-job-box");
@@ -30,7 +54,7 @@ async function triggerPageCalc(missingOnly, clickedBtn = null) {
     }
     const currentBook = document.getElementById("job-current-book");
     if (currentBook) {
-      currentBook.innerText = "Initializing page calculation task...";
+      currentBook.innerText = missingOnly ? "Checking catalog for books missing page counts..." : "Initializing full catalog recalculation...";
     }
   }
 
@@ -42,9 +66,20 @@ async function triggerPageCalc(missingOnly, clickedBtn = null) {
     });
     const data = await res.json();
     if (!res.ok) {
-      alert("Error: " + (data.detail || "Failed to trigger page calculation"));
+      const errMsg = "Error: " + (data.detail || "Failed to trigger page calculation");
+      showCalcBanner(errMsg, "danger");
+      if (jobBox) {
+        const badge = document.getElementById("job-status-badge");
+        if (badge) {
+          badge.innerText = "FAILED";
+          badge.className = "status-badge status-failed";
+        }
+        const currentBook = document.getElementById("job-current-book");
+        if (currentBook) currentBook.innerText = data.detail || "Error starting calculation";
+      }
     } else if (data.status === "no_work") {
-      alert(data.message || "All books already have page counts calculated!");
+      const msg = data.message || "All books already have page counts calculated! If you wish to recalculate existing pages, use 'Recalculate All Pages'.";
+      showCalcBanner(msg, "success");
       if (jobBox) {
         const badge = document.getElementById("job-status-badge");
         if (badge) {
@@ -53,14 +88,17 @@ async function triggerPageCalc(missingOnly, clickedBtn = null) {
         }
         const currentBook = document.getElementById("job-current-book");
         if (currentBook) {
-          currentBook.innerText = "All books already enriched with page counts";
+          currentBook.innerText = "All catalog books already enriched with page counts.";
         }
       }
     } else if (data.status === "already_running") {
-      alert("A calculation job is already running.");
+      showCalcBanner("A calculation job is already running.", "info");
+    } else {
+      showCalcBanner("Page calculation job started successfully.", "success");
     }
   } catch (err) {
-    alert("Request failed: " + err);
+    const errText = "Request failed: " + err;
+    showCalcBanner(errText, "danger");
   } finally {
     if (btn) {
       btn.disabled = false;
@@ -81,9 +119,13 @@ async function stopPageCalc(clickedBtn = null) {
   try {
     const res = await fetch("/admin/api/stop-calculation", { method: "POST" });
     const data = await res.json();
-    if (!res.ok) alert(data.detail || "Failed to stop job");
+    if (!res.ok) {
+      showCalcBanner(data.detail || "Failed to stop job", "danger");
+    } else {
+      showCalcBanner("Page calculation stop requested.", "info");
+    }
   } catch (err) {
-    alert("Request failed: " + err);
+    showCalcBanner("Request failed: " + err, "danger");
   } finally {
     if (btn) {
       btn.disabled = false;
