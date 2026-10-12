@@ -16,6 +16,7 @@ class UserSession(BaseModel):
 class PageCalcStatus(BaseModel):
     job_id: Optional[int] = None
     is_running: bool = False
+    status: str = "idle"
     total_books: int = 0
     processed_books: int = 0
     updated_books: int = 0

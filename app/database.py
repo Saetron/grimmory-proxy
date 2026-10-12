@@ -1988,6 +1988,13 @@ class Database:
             row = await cursor.fetchone()
             return dict(row) if row else None
 
+    async def cleanup_stale_page_calc_jobs(self) -> None:
+        async with self.get_db() as db:
+            await db.execute(
+                "UPDATE page_calc_jobs SET status = 'stopped', current_book = 'Stopped (server restarted)' WHERE status = 'running'"
+            )
+            await db.commit()
+
     # ---------------- Metadata Queries (Genres, Publishers, Tags, Authors) ----------------
 
     async def get_all_genres(

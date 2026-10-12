@@ -95,6 +95,18 @@ async function triggerPageCalc(missingOnly, clickedBtn = null) {
       showCalcBanner("A calculation job is already running.", "info");
     } else {
       showCalcBanner("Page calculation job started successfully.", "success");
+      if (jobBox) {
+        jobBox.style.display = "block";
+        const badge = document.getElementById("job-status-badge");
+        if (badge) {
+          badge.innerText = "RUNNING";
+          badge.className = "status-badge status-running";
+        }
+        const currentBook = document.getElementById("job-current-book");
+        if (currentBook) {
+          currentBook.innerText = "Starting calculation...";
+        }
+      }
     }
   } catch (err) {
     const errText = "Request failed: " + err;
@@ -110,6 +122,7 @@ async function triggerPageCalc(missingOnly, clickedBtn = null) {
 
 async function stopPageCalc(clickedBtn = null) {
   const btn = clickedBtn || document.getElementById("btn-calc-stop") || (window.event && window.event.target ? window.event.target.closest("button") : null);
+  const jobBox = document.getElementById("active-job-box");
   const originalHtml = btn ? btn.innerHTML : "";
   if (btn) {
     btn.disabled = true;
@@ -122,7 +135,18 @@ async function stopPageCalc(clickedBtn = null) {
     if (!res.ok) {
       showCalcBanner(data.detail || "Failed to stop job", "danger");
     } else {
-      showCalcBanner("Page calculation stop requested.", "info");
+      showCalcBanner(data.message || "Page calculation job stopped.", "info");
+      if (jobBox) {
+        const badge = document.getElementById("job-status-badge");
+        if (badge) {
+          badge.innerText = "STOPPED";
+          badge.className = "status-badge status-idle";
+        }
+        const currentBook = document.getElementById("job-current-book");
+        if (currentBook) {
+          currentBook.innerText = "Calculation stopped by user";
+        }
+      }
     }
   } catch (err) {
     showCalcBanner("Request failed: " + err, "danger");

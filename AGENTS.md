@@ -111,6 +111,8 @@ grimmory-proxy/
 - Page counts are computed using Calibre's ADE algorithm (1,024 uncompressed chars/page) for EPUBs and 1:1 image counts for CBZ/PDF archives.
 - Calculated page counts are written upstream to Grimmory via `PUT /api/v1/books/{id}/metadata?replaceMode=REPLACE_WHEN_PROVIDED` and cached in SQLite `book_pages` and `page_calc_jobs`.
 - Missing pages queries check both `(page_count IS NULL OR page_count <= 0)` and missing cached `book_pages` rows (`id NOT IN (SELECT DISTINCT book_id FROM book_pages)`) to ensure all books have page entries available for reader streaming.
+- Calculation Job Lifecycle & Cancellation: `PageCalculator.is_running` tracks the active `asyncio.Task` directly. `request_stop()` immediately cancels in-flight worker tasks, cancels the background task, resets `is_running = False`, and transitions the DB record to `stopped`. On startup, `cleanup_stale_page_calc_jobs()` marks orphaned jobs as `stopped` to prevent stale locks.
+- Network Timeouts: Individual book downloads have a 60-second timeout and metadata updates have a 30-second timeout, preventing stuck connections from freezing background workers.
 - Static assets (`app.js`, `style.css`) include cache-busting query strings (`?v={{ app_version }}`) and no-cache HTTP headers to prevent browsers from caching stale frontend code.
 - When catalogs are already fully enriched (`0` books missing pages), the WebUI reports `no_work` with an in-page notification banner and updates the Calculation Task Status card (`UP TO DATE`) without silent failures or modal blocking.
 

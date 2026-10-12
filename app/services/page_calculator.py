@@ -26,6 +26,8 @@ class PageCalculator:
         self.status = PageCalcStatus()
         self._stop_requested = False
         self._lock: Optional[asyncio.Lock] = None
+        self._task: Optional[asyncio.Task] = None
+        self._worker_tasks: List[asyncio.Task] = []
 
     @property
     def lock(self) -> asyncio.Lock:
@@ -33,9 +35,71 @@ class PageCalculator:
             self._lock = asyncio.Lock()
         return self._lock
 
-    def request_stop(self) -> None:
+    @property
+    def is_running(self) -> bool:
+        if self._task is not None and not self._task.done():
+            return True
+        if self.status.is_running:
+            self.status.is_running = False
+        return False
+
+    def start_calculation_job(self, missing_only: bool = True) -> bool:
+        if self.is_running:
+            return False
+        self._stop_requested = False
+        self.status.is_running = True
+        self.status.status = "running"
+        self._task = asyncio.create_task(self.run_calculation_job(missing_only=missing_only))
+        return True
+
+    async def request_stop(self) -> None:
         self._stop_requested = True
         logger.info("Page calculation job stop requested")
+
+        # Cancel in-flight worker tasks immediately
+        for t in list(self._worker_tasks):
+            if not t.done():
+                t.cancel()
+        self._worker_tasks.clear()
+
+        # Cancel main task if active
+        if self._task and not self._task.done():
+            self._task.cancel()
+            try:
+                await asyncio.wait_for(asyncio.shield(self._task), timeout=2.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
+                pass
+            self._task = None
+
+        self.status.is_running = False
+        self.status.status = "stopped"
+        self.status.current_book = "Calculation stopped by user"
+
+        try:
+            if self.status.job_id:
+                await self.db.update_page_calc_progress(
+                    job_id=self.status.job_id,
+                    processed=self.status.processed_books,
+                    updated=self.status.updated_books,
+                    removed=self.status.removed_books,
+                    errors=self.status.error_count,
+                    current_book="Calculation stopped by user",
+                    status="stopped",
+                )
+            else:
+                latest = await self.db.get_latest_page_calc_job()
+                if latest and latest.get("status") == "running":
+                    await self.db.update_page_calc_progress(
+                        job_id=latest["id"],
+                        processed=latest.get("processed_books", 0),
+                        updated=latest.get("updated_books", 0),
+                        removed=latest.get("removed_books", 0),
+                        errors=latest.get("error_count", 0),
+                        current_book="Calculation stopped by user",
+                        status="stopped",
+                    )
+        except Exception as e:
+            logger.debug(f"Error marking stopped job in DB: {e}")
 
     @staticmethod
     def count_epub_pages(epub_bytes: bytes, chars_per_page: int = 1024) -> Tuple[int, List[PageDto]]:
@@ -218,11 +282,17 @@ class PageCalculator:
         book_type = book.get("book_type", "EPUB")
 
         try:
-            page_count, page_dtos = await self.inspect_book_pages(book_id, book_type)
+            page_count, page_dtos = await asyncio.wait_for(
+                self.inspect_book_pages(book_id, book_type),
+                timeout=60.0,
+            )
             logger.info(f"Calculated {page_count} pages for book {book_id} ('{book_name}') [{book_type}]")
 
-            # 1. Update Grimmory metadata
-            await grimmory_client.update_book_metadata(book_id, {"pageCount": page_count})
+            # 1. Update Grimmory metadata with timeout
+            await asyncio.wait_for(
+                grimmory_client.update_book_metadata(book_id, {"pageCount": page_count}),
+                timeout=30.0,
+            )
 
             # 2. Update local SQLite DB
             await self.db.update_book_page_count(book_id, page_count)
@@ -232,6 +302,9 @@ class PageCalculator:
             await self.db.upsert_book_pages(book_id, page_records)
 
             return "updated"
+        except asyncio.TimeoutError:
+            logger.warning(f"Timeout inspecting/updating pages for book {book_id} ('{book_name}')")
+            return "error"
         except httpx.HTTPStatusError as e:
             if e.response.status_code in (404, 410):
                 logger.warning(f"Book {book_id} ('{book_name}') was removed from Grimmory (HTTP {e.response.status_code}); marking as deleted.")
@@ -253,47 +326,59 @@ class PageCalculator:
         Runs the background page calculation loop across books using SYNC_CONCURRENCY workers.
         """
         async with self.lock:
-            if self.status.is_running:
+            if self._task and not self._task.done() and self._task != asyncio.current_task():
                 logger.warning("A page calculation job is already in progress")
                 return self.status
 
             self._stop_requested = False
             self.status.is_running = True
+            self.status.status = "running"
             self.status.error_message = None
 
-            # Fetch books to process
-            if missing_only:
-                books = await self.db.get_books_missing_pages()
-            else:
-                books = await self.db.get_all_books_for_page_calc()
+            job_id = None
+            try:
+                # Fetch books to process
+                if missing_only:
+                    books = await self.db.get_books_missing_pages()
+                else:
+                    books = await self.db.get_all_books_for_page_calc()
 
-            total_books = len(books)
-            job_id = await self.db.create_page_calc_job(total_books)
+                total_books = len(books)
+                job_id = await self.db.create_page_calc_job(total_books)
 
-            self.status.job_id = job_id
-            self.status.total_books = total_books
-            self.status.processed_books = 0
-            self.status.updated_books = 0
-            self.status.removed_books = 0
-            self.status.error_count = 0
+                self.status.job_id = job_id
+                self.status.total_books = total_books
+                self.status.processed_books = 0
+                self.status.updated_books = 0
+                self.status.removed_books = 0
+                self.status.error_count = 0
+                self.status.current_book = "Initializing..."
 
-            if total_books == 0:
+                if total_books == 0:
+                    self.status.is_running = False
+                    self.status.status = "completed"
+                    msg = "All books already have page counts calculated" if missing_only else "No books found in catalog"
+                    self.status.current_book = msg
+                    await self.db.update_page_calc_progress(
+                        job_id=job_id,
+                        processed=0,
+                        updated=0,
+                        removed=0,
+                        errors=0,
+                        current_book=msg,
+                        status="completed",
+                    )
+                    logger.info(f"Page calculation job {job_id} finished immediately: {msg}")
+                    return self.status
+
+                logger.info(f"Starting page calculation job {job_id} for {total_books} books (concurrency: {settings.sync_concurrency})")
+            except Exception as e:
+                logger.error(f"Error initializing page calculation job: {e}", exc_info=True)
                 self.status.is_running = False
-                msg = "All books already have page counts calculated" if missing_only else "No books found in catalog"
-                self.status.current_book = msg
-                await self.db.update_page_calc_progress(
-                    job_id=job_id,
-                    processed=0,
-                    updated=0,
-                    removed=0,
-                    errors=0,
-                    current_book=msg,
-                    status="completed",
-                )
-                logger.info(f"Page calculation job {job_id} finished immediately: {msg}")
+                self.status.status = "failed"
+                self.status.error_message = str(e)
+                self.status.current_book = f"Error: {e}"
                 return self.status
-
-            logger.info(f"Starting page calculation job {job_id} for {total_books} books (concurrency: {settings.sync_concurrency})")
 
         sem = asyncio.Semaphore(settings.sync_concurrency)
 
@@ -329,35 +414,56 @@ class PageCalculator:
 
         try:
             tasks = [asyncio.create_task(worker(b)) for b in books]
+            self._worker_tasks = tasks
             await asyncio.gather(*tasks, return_exceptions=True)
 
             final_status = "stopped" if self._stop_requested else "completed"
-            self.status.is_running = False
+            self.status.status = final_status
             self.status.current_book = "Calculation stopped" if self._stop_requested else "Calculation completed"
-            await self.db.update_page_calc_progress(
-                job_id=job_id,
-                processed=self.status.processed_books,
-                updated=self.status.updated_books,
-                removed=self.status.removed_books,
-                errors=self.status.error_count,
-                current_book=self.status.current_book,
-                status=final_status,
-            )
+            if job_id:
+                await self.db.update_page_calc_progress(
+                    job_id=job_id,
+                    processed=self.status.processed_books,
+                    updated=self.status.updated_books,
+                    removed=self.status.removed_books,
+                    errors=self.status.error_count,
+                    current_book=self.status.current_book,
+                    status=final_status,
+                )
             logger.info(f"Page calculation job finished with status '{final_status}': {self.status.updated_books}/{total_books} updated, {self.status.removed_books} removed")
+        except asyncio.CancelledError:
+            logger.info(f"Page calculation job {job_id} was cancelled")
+            self.status.status = "stopped"
+            self.status.current_book = "Calculation stopped"
+            if job_id:
+                await self.db.update_page_calc_progress(
+                    job_id=job_id,
+                    processed=self.status.processed_books,
+                    updated=self.status.updated_books,
+                    removed=self.status.removed_books,
+                    errors=self.status.error_count,
+                    current_book="Calculation stopped",
+                    status="stopped",
+                )
         except Exception as e:
-            logger.error(f"Page calculation job failed: {e}")
-            self.status.is_running = False
+            logger.error(f"Page calculation job failed: {e}", exc_info=True)
+            self.status.status = "failed"
             self.status.error_message = str(e)
             self.status.current_book = f"Error: {e}"
-            await self.db.update_page_calc_progress(
-                job_id=job_id,
-                processed=self.status.processed_books,
-                updated=self.status.updated_books,
-                removed=self.status.removed_books,
-                errors=self.status.error_count,
-                status="failed",
-                error_message=str(e),
-                current_book=f"Error: {e}",
-            )
+            if job_id:
+                await self.db.update_page_calc_progress(
+                    job_id=job_id,
+                    processed=self.status.processed_books,
+                    updated=self.status.updated_books,
+                    removed=self.status.removed_books,
+                    errors=self.status.error_count,
+                    status="failed",
+                    error_message=str(e),
+                    current_book=f"Error: {e}",
+                )
+        finally:
+            self.status.is_running = False
+            self._stop_requested = False
+            self._worker_tasks.clear()
 
         return self.status

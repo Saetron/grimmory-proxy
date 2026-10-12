@@ -204,13 +204,14 @@ def get_admin_router(
             users_list = []
 
         calc_job_status = page_calculator.status
-        if calc_job_status.job_id is None:
+        calc_job_status.is_running = page_calculator.is_running
+        if not page_calculator.is_running and calc_job_status.job_id is None:
             try:
                 latest_job = await db.get_latest_page_calc_job()
                 if latest_job:
                     calc_job_status = PageCalcStatus(
                         job_id=latest_job["id"],
-                        is_running=(latest_job["status"] == "running"),
+                        is_running=False,
                         total_books=latest_job.get("total_books", 0),
                         processed_books=latest_job.get("processed_books", 0),
                         updated_books=latest_job.get("updated_books", 0),
@@ -218,6 +219,7 @@ def get_admin_router(
                         error_count=latest_job.get("error_count", 0),
                         current_book=latest_job.get("current_book") or ("Completed" if latest_job["status"] == "completed" else "-"),
                         error_message=latest_job.get("error_message"),
+                        status=latest_job.get("status", "idle"),
                     )
             except Exception as e:
                 logger.debug(f"Could not load latest calc job for dashboard: {e}")
@@ -269,13 +271,14 @@ def get_admin_router(
             users_list = []
 
         calc_dict = page_calculator.status.model_dump()
-        if page_calculator.status.job_id is None:
+        calc_dict["is_running"] = page_calculator.is_running
+        if not page_calculator.is_running and page_calculator.status.job_id is None:
             try:
                 latest_job = await db.get_latest_page_calc_job()
                 if latest_job:
                     calc_dict = {
                         "job_id": latest_job["id"],
-                        "is_running": (latest_job["status"] == "running"),
+                        "is_running": False,
                         "total_books": latest_job.get("total_books", 0),
                         "processed_books": latest_job.get("processed_books", 0),
                         "updated_books": latest_job.get("updated_books", 0),
@@ -307,7 +310,7 @@ def get_admin_router(
     ) -> Dict[str, Any]:
         user = await require_admin_session(request)
 
-        if page_calculator.status.is_running:
+        if page_calculator.is_running:
             return {"status": "already_running", "message": "A calculation job is already running"}
 
         if payload.missing_only:
@@ -320,15 +323,15 @@ def get_admin_router(
                     "books_to_process": 0,
                 }
 
-        asyncio.create_task(page_calculator.run_calculation_job(missing_only=payload.missing_only))
+        page_calculator.start_calculation_job(missing_only=payload.missing_only)
         return {"status": "started", "missing_only": payload.missing_only}
 
     @router.post("/admin/api/stop-calculation")
     async def stop_calculate_pages(request: Request) -> Dict[str, Any]:
         user = await require_admin_session(request)
 
-        page_calculator.request_stop()
-        return {"status": "stopping"}
+        await page_calculator.request_stop()
+        return {"status": "stopped", "message": "Page calculation job stopped"}
 
     @router.post("/admin/api/sync")
     async def trigger_manual_sync(request: Request) -> Dict[str, Any]:

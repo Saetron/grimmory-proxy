@@ -46,6 +46,7 @@ async def lifespan(app: FastAPI):
     logger.info("Initializing Grimmory Proxy (Komga API Bridge)...")
     settings.ensure_directories()
     await db.connect()
+    await db.cleanup_stale_page_calc_jobs()
 
     # Start background sync tasks
     sync_task = asyncio.create_task(sync_service.start_background_loop())
