@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
@@ -20,6 +21,158 @@ from app.models.komga import (
 )
 
 logger = logging.getLogger("grimmory_proxy.mapper")
+
+
+def extract_authors_data(data: Dict[str, Any]) -> List[Dict[str, str]]:
+    if not isinstance(data, dict):
+        return []
+    meta = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+    candidates = []
+
+    # Check meta.get("authors") and data.get("authors")
+    for source in [meta.get("authors"), data.get("authors")]:
+        if isinstance(source, list):
+            candidates.extend(source)
+        elif isinstance(source, str) and source.strip():
+            for part in source.split(","):
+                if part.strip():
+                    candidates.append(part.strip())
+
+    # Check singular meta.get("author") and data.get("author")
+    for source in [meta.get("author"), data.get("author")]:
+        if isinstance(source, str) and source.strip():
+            for part in source.split(","):
+                if part.strip():
+                    candidates.append(part.strip())
+        elif isinstance(source, dict):
+            candidates.append(source)
+        elif isinstance(source, list):
+            candidates.extend(source)
+
+    authors: List[Dict[str, str]] = []
+    seen = set()
+    for item in candidates:
+        name = ""
+        role = "writer"
+        if isinstance(item, str):
+            name = item.strip()
+        elif isinstance(item, dict):
+            name = str(item.get("name") or "").strip()
+            role = str(item.get("role") or "writer").strip() or "writer"
+        if name:
+            key = (name.lower(), role.lower())
+            if key not in seen:
+                seen.add(key)
+                authors.append({"name": name, "role": role})
+    return authors
+
+
+def extract_authors(data: Dict[str, Any]) -> List[AuthorDto]:
+    return [AuthorDto(name=a["name"], role=a["role"]) for a in extract_authors_data(data)]
+
+
+def extract_publisher(data: Dict[str, Any]) -> str:
+    if not isinstance(data, dict):
+        return ""
+    meta = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+    for source in [
+        meta.get("publisher"),
+        data.get("publisher"),
+        meta.get("publishers"),
+        data.get("publishers"),
+        meta.get("imprint"),
+        data.get("imprint"),
+    ]:
+        if isinstance(source, str) and source.strip():
+            return source.strip()
+        elif isinstance(source, dict) and source.get("name"):
+            return str(source["name"]).strip()
+        elif isinstance(source, list) and source:
+            first = source[0]
+            if isinstance(first, str) and first.strip():
+                return first.strip()
+            elif isinstance(first, dict) and first.get("name"):
+                return str(first["name"]).strip()
+    return ""
+
+
+def extract_genres(data: Dict[str, Any]) -> List[str]:
+    if not isinstance(data, dict):
+        return []
+    meta = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+    candidates = []
+    for source in [meta.get("genres"), data.get("genres"), meta.get("genre"), data.get("genre")]:
+        if isinstance(source, list):
+            candidates.extend(source)
+        elif isinstance(source, str) and source.strip():
+            parts = re.split(r"[,;]", source)
+            candidates.extend([p.strip() for p in parts if p.strip()])
+
+    genres: List[str] = []
+    seen = set()
+    for item in candidates:
+        val = ""
+        if isinstance(item, str):
+            val = item.strip()
+        elif isinstance(item, dict) and item.get("name"):
+            val = str(item["name"]).strip()
+        if val and val.lower() not in seen:
+            seen.add(val.lower())
+            genres.append(val)
+    return genres
+
+
+def extract_tags(data: Dict[str, Any]) -> List[str]:
+    if not isinstance(data, dict):
+        return []
+    meta = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+    candidates = []
+    for source in [
+        meta.get("tags"),
+        data.get("tags"),
+        meta.get("tag"),
+        data.get("tag"),
+        meta.get("keywords"),
+        data.get("keywords"),
+        meta.get("categories"),
+        data.get("categories"),
+    ]:
+        if isinstance(source, list):
+            candidates.extend(source)
+        elif isinstance(source, str) and source.strip():
+            parts = re.split(r"[,;]", source)
+            candidates.extend([p.strip() for p in parts if p.strip()])
+
+    tags: List[str] = []
+    seen = set()
+    for item in candidates:
+        val = ""
+        if isinstance(item, str):
+            val = item.strip()
+        elif isinstance(item, dict) and item.get("name"):
+            val = str(item["name"]).strip()
+        if val and val.lower() not in seen:
+            seen.add(val.lower())
+            tags.append(val)
+    return tags
+
+
+def extract_summary(data: Dict[str, Any]) -> str:
+    if not isinstance(data, dict):
+        return ""
+    meta = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+    for source in [
+        meta.get("description"),
+        meta.get("summary"),
+        meta.get("synopsis"),
+        data.get("description"),
+        data.get("summary"),
+        data.get("synopsis"),
+    ]:
+        if isinstance(source, str) and source.strip():
+            return source.strip()
+    return ""
+
 
 
 def _safe_float(val: Any, default: float = 0.0) -> float:
@@ -124,7 +277,7 @@ class KomgaMapper:
 
         metadata_obj = raw.get("metadata", {})
         title = metadata_obj.get("title") or name
-        summary = metadata_obj.get("description", "")
+        summary = extract_summary(raw) or metadata_obj.get("description", "")
         raw_released = (
             record.get("released")
             or metadata_obj.get("released")
@@ -143,21 +296,10 @@ class KomgaMapper:
             else:
                 release_date = r_str[:10] if len(r_str) >= 10 else r_str
 
-        isbn = metadata_obj.get("isbn13") or metadata_obj.get("isbn10")
+        isbn = metadata_obj.get("isbn13") or metadata_obj.get("isbn10") or raw.get("isbn13") or raw.get("isbn10") or raw.get("isbn")
 
-        authors_list: List[AuthorDto] = []
-        for a in metadata_obj.get("authors", []):
-            if isinstance(a, str):
-                authors_list.append(AuthorDto(name=a, role="writer"))
-            elif isinstance(a, dict) and "name" in a:
-                authors_list.append(AuthorDto(name=a["name"], role=a.get("role", "writer")))
-
-        tags_list: List[str] = []
-        for t in metadata_obj.get("tags", []):
-            if isinstance(t, str):
-                tags_list.append(t)
-            elif isinstance(t, dict) and "name" in t:
-                tags_list.append(t["name"])
+        authors_list: List[AuthorDto] = extract_authors(raw)
+        tags_list: List[str] = extract_tags(raw)
 
         media_type, media_profile = get_media_type_and_profile(book_type)
 
@@ -311,19 +453,61 @@ class KomgaMapper:
                 "url": f"{settings.public_grimmory_url}/series/{quote(name, safe='')}",
             })
 
+        # Parse raw_json if available
+        raw = {}
+        if record.get("raw_json"):
+            try:
+                raw = json.loads(record["raw_json"]) if isinstance(record["raw_json"], str) else record["raw_json"]
+            except Exception:
+                pass
+        if not isinstance(raw, dict):
+            raw = {}
+
+        publisher = record.get("publisher") or raw.get("publisher", "") or extract_publisher(raw)
+        genres = raw.get("genres") or extract_genres(raw)
+        tags = raw.get("tags") or extract_tags(raw)
+        authors = extract_authors(raw)
+
+        series_summary = raw.get("summary") or record.get("summary") or extract_summary(raw) or ""
+        books_summary = series_summary or f"Series {name}"
+        raw_rel = raw.get("releaseDate") or record.get("released")
+        release_date = None
+        if raw_rel:
+            r_str = str(raw_rel).strip()
+            if len(r_str) >= 10 and r_str[:4].isdigit() and r_str[4] == "-" and r_str[7] == "-":
+                release_date = r_str[:10]
+            elif len(r_str) == 4 and r_str.isdigit():
+                release_date = f"{r_str}-01-01"
+            else:
+                release_date = r_str[:10] if len(r_str) >= 10 else r_str
+
+        language = raw.get("language") or record.get("language") or "en"
+        reading_direction = raw.get("readingDirection") or "LEFT_TO_RIGHT"
+        series_status = raw.get("status") or "ONGOING"
+        age_rating = raw.get("ageRating")
+
         meta = SeriesMetadataDto(
-            status="ONGOING",
+            status=series_status,
             created=series_created,
             lastModified=series_modified,
             title=name,
             titleSort=record.get("sort_title", name),
-            readingDirection="LEFT_TO_RIGHT",
+            readingDirection=reading_direction,
+            publisher=publisher,
+            ageRating=age_rating,
+            language=language,
+            genres=genres,
+            tags=tags,
             totalBookCount=count,
             links=series_links,
+            summary=series_summary,
         )
 
         books_meta = BookMetadataAggregationDto(
-            summary=f"Series {name}",
+            authors=authors,
+            tags=tags,
+            releaseDate=release_date,
+            summary=books_summary,
             created=series_created,
             lastModified=series_modified,
         )

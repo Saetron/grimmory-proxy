@@ -134,3 +134,78 @@ def test_kotlin_dto_serialization_compliance():
     assert "seriesCover" in lib_json
     assert lib_json["seriesCover"] == "FIRST"
 
+
+def test_metadata_extraction_and_mapping():
+    # 1. Book with comprehensive metadata
+    book_raw = {
+        "id": 100,
+        "series_id": "1-one-piece",
+        "library_id": 1,
+        "name": "One Piece Vol. 1",
+        "number": 1.0,
+        "page_count": 200,
+        "raw_json": {
+            "metadata": {
+                "title": "Romance Dawn",
+                "description": "Luffy sets sail to become the Pirate King.",
+                "authors": [
+                    {"name": "Eiichiro Oda", "role": "writer"},
+                    "Akira Toriyama",
+                ],
+                "publisher": "Viz Media",
+                "genres": ["Action", "Adventure", "Comedy"],
+                "tags": ["Pirates", "Shonen", "Devil Fruit"],
+                "isbn13": "9781569319017",
+                "released": "1997-12-24",
+            }
+        },
+    }
+    book_dto = KomgaMapper.to_book_dto(book_raw)
+    assert book_dto.metadata.title == "Romance Dawn"
+    assert book_dto.metadata.summary == "Luffy sets sail to become the Pirate King."
+    assert len(book_dto.metadata.authors) == 2
+    assert book_dto.metadata.authors[0].name == "Eiichiro Oda"
+    assert book_dto.metadata.authors[0].role == "writer"
+    assert book_dto.metadata.authors[1].name == "Akira Toriyama"
+    assert book_dto.metadata.authors[1].role == "writer"
+    assert book_dto.metadata.tags == ["Pirates", "Shonen", "Devil Fruit"]
+    assert book_dto.metadata.isbn == "9781569319017"
+    assert book_dto.metadata.releaseDate == "1997-12-24"
+
+    # 2. Series with aggregated metadata
+    series_raw = {
+        "id": "1-one-piece",
+        "library_id": 1,
+        "name": "One Piece",
+        "books_count": 105,
+        "raw_json": {
+            "name": "One Piece",
+            "publisher": "Shueisha",
+            "genres": ["Action", "Adventure", "Fantasy"],
+            "tags": ["Pirates", "Grand Line"],
+            "authors": [
+                {"name": "Eiichiro Oda", "role": "writer"},
+                {"name": "Takeshi Maekawa", "role": "assistant"},
+            ],
+            "summary": "Follow Monkey D. Luffy and his Straw Hat crew.",
+            "releaseDate": "1997-12-24",
+            "language": "ja",
+        },
+    }
+    series_dto = KomgaMapper.to_series_dto(series_raw)
+    assert series_dto.metadata.publisher == "Shueisha"
+    assert series_dto.metadata.genres == ["Action", "Adventure", "Fantasy"]
+    assert series_dto.metadata.tags == ["Pirates", "Grand Line"]
+    assert series_dto.metadata.summary == "Follow Monkey D. Luffy and his Straw Hat crew."
+    assert series_dto.metadata.language == "ja"
+
+    assert len(series_dto.booksMetadata.authors) == 2
+    assert series_dto.booksMetadata.authors[0].name == "Eiichiro Oda"
+    assert series_dto.booksMetadata.authors[0].role == "writer"
+    assert series_dto.booksMetadata.authors[1].name == "Takeshi Maekawa"
+    assert series_dto.booksMetadata.authors[1].role == "assistant"
+    assert series_dto.booksMetadata.tags == ["Pirates", "Grand Line"]
+    assert series_dto.booksMetadata.releaseDate == "1997-12-24"
+    assert series_dto.booksMetadata.summary == "Follow Monkey D. Luffy and his Straw Hat crew."
+
+
