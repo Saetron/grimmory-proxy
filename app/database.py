@@ -1663,7 +1663,16 @@ class Database:
         return sliced, total
 
     async def get_books_missing_pages(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
-        query = "SELECT * FROM books WHERE deleted = 0 AND (page_count IS NULL OR page_count <= 0) ORDER BY id ASC"
+        query = """
+            SELECT * FROM books
+            WHERE deleted = 0
+              AND (
+                page_count IS NULL
+                OR page_count <= 0
+                OR id NOT IN (SELECT DISTINCT book_id FROM book_pages)
+              )
+            ORDER BY id ASC
+        """
         if limit:
             query += f" LIMIT {limit}"
         async with self.get_db() as db:
@@ -1741,7 +1750,13 @@ class Database:
             series_count = (await (await db.execute("SELECT COUNT(*) as count FROM series")).fetchone())["count"]
 
             books_row = await (await db.execute(
-                "SELECT COUNT(*) as total, SUM(CASE WHEN page_count > 0 THEN 1 ELSE 0 END) as with_pages FROM books WHERE deleted = 0"
+                """
+                SELECT COUNT(*) as total,
+                       SUM(CASE WHEN b.page_count > 0 AND bp.book_id IS NOT NULL THEN 1 ELSE 0 END) as with_pages
+                FROM books b
+                LEFT JOIN (SELECT DISTINCT book_id FROM book_pages) bp ON bp.book_id = b.id
+                WHERE b.deleted = 0
+                """
             )).fetchone()
             books_count = books_row["total"] if books_row else 0
             books_with_pages = books_row["with_pages"] or 0 if books_row else 0
