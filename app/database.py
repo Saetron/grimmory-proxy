@@ -12,6 +12,11 @@ import aiosqlite
 
 logger = logging.getLogger("grimmory_proxy.database")
 
+KNOWN_AUTHOR_ROLES = {
+    "writer", "penciller", "inker", "colorist", "letterer",
+    "cover", "editor", "translator", "assistant",
+}
+
 SCHEMA_SQL = """
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous = NORMAL;
@@ -429,7 +434,7 @@ class Database:
         genres: Optional[List[str]] = None,
         tags: Optional[List[str]] = None,
         publishers: Optional[List[str]] = None,
-        authors: Optional[List[str]] = None,
+        authors: Optional[List[Any]] = None,
         offset: int = 0,
         limit: int = 20,
         sort_by: str = "name",
@@ -479,8 +484,85 @@ class Database:
         if authors:
             auth_clauses = []
             for a in authors:
-                auth_clauses.append("EXISTS (SELECT 1 FROM json_each(raw_json, '$.authors') WHERE LOWER(CASE WHEN type = 'object' THEN json_extract(value, '$.name') ELSE value END) = LOWER(?))")
-                params.append(a)
+                auth_name = None
+                auth_role = None
+                if isinstance(a, dict):
+                    auth_name = a.get("name")
+                    auth_role = a.get("role")
+                elif isinstance(a, str):
+                    if "," in a:
+                        parts = [p.strip() for p in a.split(",")]
+                        if len(parts) == 2 and parts[1].lower() in KNOWN_AUTHOR_ROLES:
+                            auth_name = parts[0]
+                            auth_role = parts[1].lower()
+                        else:
+                            auth_name = a.strip()
+                    else:
+                        auth_name = a.strip()
+
+                if not auth_name:
+                    continue
+
+                if auth_role:
+                    series_auth_sql = """(
+                        EXISTS (
+                            SELECT 1 FROM json_each(raw_json, '$.authors')
+                            WHERE LOWER(CASE WHEN type = 'object' THEN json_extract(value, '$.name') ELSE value END) = LOWER(?)
+                              AND (type != 'object' OR json_extract(value, '$.role') IS NULL OR LOWER(json_extract(value, '$.role')) = LOWER(?))
+                        )
+                        OR EXISTS (
+                            SELECT 1 FROM books b
+                            WHERE (b.series_id = series.id OR b.series_id = series.slug)
+                              AND b.deleted = 0
+                              AND (
+                                  EXISTS (
+                                      SELECT 1 FROM json_each(b.raw_json, '$.metadata.authors')
+                                      WHERE LOWER(CASE WHEN type = 'object' THEN json_extract(value, '$.name') ELSE value END) = LOWER(?)
+                                        AND (type != 'object' OR json_extract(value, '$.role') IS NULL OR LOWER(json_extract(value, '$.role')) = LOWER(?))
+                                  )
+                                  OR EXISTS (
+                                      SELECT 1 FROM json_each(b.raw_json, '$.authors')
+                                      WHERE LOWER(CASE WHEN type = 'object' THEN json_extract(value, '$.name') ELSE value END) = LOWER(?)
+                                        AND (type != 'object' OR json_extract(value, '$.role') IS NULL OR LOWER(json_extract(value, '$.role')) = LOWER(?))
+                                  )
+                                  OR (
+                                      LOWER(COALESCE(json_extract(b.raw_json, '$.metadata.author.name'), json_extract(b.raw_json, '$.metadata.author'), json_extract(b.raw_json, '$.author.name'), json_extract(b.raw_json, '$.author'))) = LOWER(?)
+                                      AND (
+                                          COALESCE(json_extract(b.raw_json, '$.metadata.author.role'), json_extract(b.raw_json, '$.author.role')) IS NULL
+                                          OR LOWER(COALESCE(json_extract(b.raw_json, '$.metadata.author.role'), json_extract(b.raw_json, '$.author.role'))) = LOWER(?)
+                                      )
+                                  )
+                              )
+                        )
+                    )"""
+                    auth_clauses.append(series_auth_sql)
+                    params.extend([auth_name, auth_role, auth_name, auth_role, auth_name, auth_role, auth_name, auth_role])
+                else:
+                    series_auth_sql = """(
+                        EXISTS (
+                            SELECT 1 FROM json_each(raw_json, '$.authors')
+                            WHERE LOWER(CASE WHEN type = 'object' THEN json_extract(value, '$.name') ELSE value END) = LOWER(?)
+                        )
+                        OR EXISTS (
+                            SELECT 1 FROM books b
+                            WHERE (b.series_id = series.id OR b.series_id = series.slug)
+                              AND b.deleted = 0
+                              AND (
+                                  EXISTS (
+                                      SELECT 1 FROM json_each(b.raw_json, '$.metadata.authors')
+                                      WHERE LOWER(CASE WHEN type = 'object' THEN json_extract(value, '$.name') ELSE value END) = LOWER(?)
+                                  )
+                                  OR EXISTS (
+                                      SELECT 1 FROM json_each(b.raw_json, '$.authors')
+                                      WHERE LOWER(CASE WHEN type = 'object' THEN json_extract(value, '$.name') ELSE value END) = LOWER(?)
+                                  )
+                                  OR LOWER(COALESCE(json_extract(b.raw_json, '$.metadata.author.name'), json_extract(b.raw_json, '$.metadata.author'), json_extract(b.raw_json, '$.author.name'), json_extract(b.raw_json, '$.author'))) = LOWER(?)
+                              )
+                        )
+                    )"""
+                    auth_clauses.append(series_auth_sql)
+                    params.extend([auth_name, auth_name, auth_name, auth_name])
+
             if auth_clauses:
                 conditions.append(f"({' OR '.join(auth_clauses)})")
 
@@ -1331,7 +1413,7 @@ class Database:
         genres: Optional[List[str]] = None,
         tags: Optional[List[str]] = None,
         publishers: Optional[List[str]] = None,
-        authors: Optional[List[str]] = None,
+        authors: Optional[List[Any]] = None,
         user_id: Optional[int] = None,
         offset: int = 0,
         limit: int = 20,
@@ -1376,8 +1458,62 @@ class Database:
         if authors:
             auth_clauses = []
             for a in authors:
-                auth_clauses.append("(EXISTS (SELECT 1 FROM json_each(b.raw_json, '$.metadata.authors') WHERE LOWER(CASE WHEN type = 'object' THEN json_extract(value, '$.name') ELSE value END) = LOWER(?)) OR EXISTS (SELECT 1 FROM json_each(b.raw_json, '$.authors') WHERE LOWER(CASE WHEN type = 'object' THEN json_extract(value, '$.name') ELSE value END) = LOWER(?)))")
-                params.extend([a, a])
+                auth_name = None
+                auth_role = None
+                if isinstance(a, dict):
+                    auth_name = a.get("name")
+                    auth_role = a.get("role")
+                elif isinstance(a, str):
+                    if "," in a:
+                        parts = [p.strip() for p in a.split(",")]
+                        if len(parts) == 2 and parts[1].lower() in KNOWN_AUTHOR_ROLES:
+                            auth_name = parts[0]
+                            auth_role = parts[1].lower()
+                        else:
+                            auth_name = a.strip()
+                    else:
+                        auth_name = a.strip()
+
+                if not auth_name:
+                    continue
+
+                if auth_role:
+                    book_auth_sql = """(
+                        EXISTS (
+                            SELECT 1 FROM json_each(b.raw_json, '$.metadata.authors')
+                            WHERE LOWER(CASE WHEN type = 'object' THEN json_extract(value, '$.name') ELSE value END) = LOWER(?)
+                              AND (type != 'object' OR json_extract(value, '$.role') IS NULL OR LOWER(json_extract(value, '$.role')) = LOWER(?))
+                        )
+                        OR EXISTS (
+                            SELECT 1 FROM json_each(b.raw_json, '$.authors')
+                            WHERE LOWER(CASE WHEN type = 'object' THEN json_extract(value, '$.name') ELSE value END) = LOWER(?)
+                              AND (type != 'object' OR json_extract(value, '$.role') IS NULL OR LOWER(json_extract(value, '$.role')) = LOWER(?))
+                        )
+                        OR (
+                            LOWER(COALESCE(json_extract(b.raw_json, '$.metadata.author.name'), json_extract(b.raw_json, '$.metadata.author'), json_extract(b.raw_json, '$.author.name'), json_extract(b.raw_json, '$.author'))) = LOWER(?)
+                            AND (
+                                COALESCE(json_extract(b.raw_json, '$.metadata.author.role'), json_extract(b.raw_json, '$.author.role')) IS NULL
+                                OR LOWER(COALESCE(json_extract(b.raw_json, '$.metadata.author.role'), json_extract(b.raw_json, '$.author.role'))) = LOWER(?)
+                            )
+                        )
+                    )"""
+                    auth_clauses.append(book_auth_sql)
+                    params.extend([auth_name, auth_role, auth_name, auth_role, auth_name, auth_role])
+                else:
+                    book_auth_sql = """(
+                        EXISTS (
+                            SELECT 1 FROM json_each(b.raw_json, '$.metadata.authors')
+                            WHERE LOWER(CASE WHEN type = 'object' THEN json_extract(value, '$.name') ELSE value END) = LOWER(?)
+                        )
+                        OR EXISTS (
+                            SELECT 1 FROM json_each(b.raw_json, '$.authors')
+                            WHERE LOWER(CASE WHEN type = 'object' THEN json_extract(value, '$.name') ELSE value END) = LOWER(?)
+                        )
+                        OR LOWER(COALESCE(json_extract(b.raw_json, '$.metadata.author.name'), json_extract(b.raw_json, '$.metadata.author'), json_extract(b.raw_json, '$.author.name'), json_extract(b.raw_json, '$.author'))) = LOWER(?)
+                    )"""
+                    auth_clauses.append(book_auth_sql)
+                    params.extend([auth_name, auth_name, auth_name])
+
             if auth_clauses:
                 conditions.append(f"({' OR '.join(auth_clauses)})")
 

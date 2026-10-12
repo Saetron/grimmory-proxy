@@ -24,7 +24,7 @@ def get_series_router(db: Database) -> APIRouter:
         genres: Optional[List[str]] = None,
         tags: Optional[List[str]] = None,
         publishers: Optional[List[str]] = None,
-        authors: Optional[List[str]] = None,
+        authors: Optional[List[Any]] = None,
         page: int = 0,
         size: int = 20,
         sort: str = "title,asc",
