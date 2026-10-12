@@ -17,7 +17,7 @@ from app.routers.komga_auth import router as auth_router
 from app.routers.komga_authors import get_authors_router
 from app.routers.komga_books import get_books_router
 from app.routers.komga_client_settings import get_client_settings_router
-from app.routers.komga_collections import router as collections_router
+from app.routers.komga_collections import get_collections_router
 from app.routers.komga_libraries import get_libraries_router
 from app.routers.komga_metadata import get_metadata_router
 from app.routers.komga_progress import get_progress_router
@@ -100,7 +100,7 @@ app.include_router(get_libraries_router(db))
 app.include_router(get_series_router(db))
 app.include_router(get_books_router(db, page_calculator))
 app.include_router(get_progress_router(db))
-app.include_router(collections_router)
+app.include_router(get_collections_router(db))
 app.include_router(get_authors_router(db))
 app.include_router(get_metadata_router(db))
 app.include_router(get_admin_router(db, page_calculator, sync_service, user_sync_service))

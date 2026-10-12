@@ -20,6 +20,8 @@ def get_series_router(db: Database) -> APIRouter:
 
     async def _query_series(
         library_ids: Optional[List[int]] = None,
+        series_ids: Optional[List[str]] = None,
+        collection_ids: Optional[List[str]] = None,
         search: Optional[str] = None,
         genres: Optional[List[str]] = None,
         tags: Optional[List[str]] = None,
@@ -46,6 +48,39 @@ def get_series_router(db: Database) -> APIRouter:
                 return build_pageable([], page, size, 0, unpaged=unpaged)
         elif library_ids:
             effective_libs = library_ids
+
+        # Handle Favorites collection filtering
+        if collection_ids:
+            for cid in collection_ids:
+                if cid.startswith("favorites-"):
+                    if not user or cid != f"favorites-{user.user_id}":
+                        return build_pageable([], page, size, 0, unpaged=unpaged)
+                    fav_book_ids = await grimmory_client.get_user_favorite_book_ids(
+                        user.user_id, token=user.token
+                    )
+                    if not fav_book_ids:
+                        return build_pageable([], page, size, 0, unpaged=unpaged)
+                    series_list = await db.get_series_for_books(
+                        fav_book_ids,
+                        library_ids=effective_libs,
+                        user_id=user.user_id,
+                    )
+                    if not series_list:
+                        return build_pageable([], page, size, 0, unpaged=unpaged)
+
+                    series_dtos: List[SeriesDto] = []
+                    for s in series_list:
+                        if search and search.lower() not in s["name"].lower():
+                            continue
+                        fav_count = await db.count_books_in_series(s["id"], book_ids=fav_book_ids)
+                        dto = KomgaMapper.to_series_dto(s)
+                        dto.id = f"fav-{user.user_id}-{s['id']}"
+                        dto.booksCount = fav_count
+                        series_dtos.append(dto)
+
+                    total = len(series_dtos)
+                    slice_items = series_dtos if unpaged else series_dtos[page * size : (page + 1) * size]
+                    return build_pageable(slice_items, page, size if not unpaged else total, total, unpaged=unpaged)
 
         records, total = await db.get_series_list(
             library_ids=effective_libs,
@@ -76,6 +111,8 @@ def get_series_router(db: Database) -> APIRouter:
         filters = extract_filter_params(request)
         return await _query_series(
             library_ids=filters["library_ids"],
+            series_ids=filters.get("series_ids"),
+            collection_ids=filters.get("collection_ids"),
             search=filters["search"],
             genres=filters.get("genres"),
             tags=filters.get("tags"),
@@ -110,6 +147,8 @@ def get_series_router(db: Database) -> APIRouter:
         )
         return await _query_series(
             library_ids=filters["library_ids"],
+            series_ids=filters.get("series_ids"),
+            collection_ids=filters.get("collection_ids"),
             search=filters["search"],
             genres=filters.get("genres"),
             tags=filters.get("tags"),
@@ -227,6 +266,27 @@ def get_series_router(db: Database) -> APIRouter:
         user: UserSession = Depends(AuthService.require_user),
     ) -> SeriesDto:
         uid = user.user_id if user else None
+        # Handle fav-{uid}-{canonical_id} prefixed series
+        if series_id.startswith("fav-"):
+            parts = series_id.split("-", 2)
+            if len(parts) < 3 or not parts[1].isdigit() or int(parts[1]) != user.user_id:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Series not found")
+            canonical_id = parts[2]
+            record = await db.get_series_by_id(canonical_id, user_id=uid)
+            if not record:
+                record = await db.find_series_by_id_or_slug(canonical_id, user_id=uid)
+            if not record:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Series not found")
+            if not user.is_admin and user.assigned_library_ids and record["library_id"] not in user.assigned_library_ids:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Series not found")
+
+            fav_book_ids = await grimmory_client.get_user_favorite_book_ids(user.user_id, token=user.token)
+            fav_count = await db.count_books_in_series(record["id"], book_ids=fav_book_ids)
+            dto = KomgaMapper.to_series_dto(record)
+            dto.id = series_id
+            dto.booksCount = fav_count
+            return dto
+
         record = await db.get_series_by_id(series_id, user_id=uid)
         if not record:
             record = await db.find_series_by_id_or_slug(series_id, user_id=uid)
@@ -243,14 +303,36 @@ def get_series_router(db: Database) -> APIRouter:
         series_id: str,
         user: UserSession = Depends(AuthService.require_user),
     ) -> List[CollectionDto]:
-        series = await db.get_series_by_id(series_id)
+        target_series_id = series_id
+        if series_id.startswith("fav-"):
+            parts = series_id.split("-", 2)
+            if len(parts) < 3 or not parts[1].isdigit() or int(parts[1]) != user.user_id:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Series not found")
+            target_series_id = parts[2]
+
+        series = await db.get_series_by_id(target_series_id)
         if not series:
-            series = await db.find_series_by_id_or_slug(series_id)
+            series = await db.find_series_by_id_or_slug(target_series_id)
         if not series:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Series not found")
 
         if not user.is_admin and user.assigned_library_ids and series["library_id"] not in user.assigned_library_ids:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Series not found")
+
+        fav_book_ids = await grimmory_client.get_user_favorite_book_ids(user.user_id, token=user.token)
+        fav_count = await db.count_books_in_series(series["id"], book_ids=fav_book_ids)
+        if fav_count > 0:
+            return [
+                CollectionDto(
+                    id=f"favorites-{user.user_id}",
+                    name=f"Favorites - {user.username}",
+                    ordered=False,
+                    seriesIds=[f"fav-{user.user_id}-{series['id']}"],
+                    createdDate="2026-01-01T00:00:00Z",
+                    lastModifiedDate="2026-01-01T00:00:00Z",
+                    filtered=False,
+                )
+            ]
 
         return []
 
@@ -266,9 +348,24 @@ def get_series_router(db: Database) -> APIRouter:
     ) -> PageableDto[BookDto]:
         is_unpaged = unpaged or request.query_params.get("unpaged", "").lower() in ("true", "1")
 
-        series = await db.get_series_by_id(series_id)
+        is_fav_scoped = False
+        target_series_id = series_id
+        if series_id.startswith("fav-"):
+            parts = series_id.split("-", 2)
+            if len(parts) < 3 or not parts[1].isdigit() or int(parts[1]) != user.user_id:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Series not found")
+            target_series_id = parts[2]
+            is_fav_scoped = True
+        else:
+            coll_id = request.query_params.get("collection_id") or request.query_params.get("collection")
+            if coll_id and coll_id.startswith("favorites-"):
+                if coll_id != f"favorites-{user.user_id}":
+                    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Series not found")
+                is_fav_scoped = True
+
+        series = await db.get_series_by_id(target_series_id)
         if not series:
-            series = await db.find_series_by_id_or_slug(series_id)
+            series = await db.find_series_by_id_or_slug(target_series_id)
         if not series:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Series not found")
 
@@ -282,8 +379,16 @@ def get_series_router(db: Database) -> APIRouter:
             if len(parts) > 1:
                 sort_dir = parts[1].strip()
 
+        filter_book_ids: Optional[List[int]] = None
+        if is_fav_scoped:
+            fav_book_ids = await grimmory_client.get_user_favorite_book_ids(user.user_id, token=user.token)
+            if not fav_book_ids:
+                return build_pageable([], page, size, 0, unpaged=is_unpaged)
+            filter_book_ids = fav_book_ids
+
         records, total = await db.get_books_list(
             series_id=series["id"],
+            book_ids=filter_book_ids,
             offset=0 if is_unpaged else page * size,
             limit=size,
             sort_by=sort_col,
@@ -292,7 +397,13 @@ def get_series_router(db: Database) -> APIRouter:
             user_id=user.user_id if user else None,
         )
 
-        content = [KomgaMapper.to_book_dto(r) for r in records]
+        content = []
+        for r in records:
+            dto = KomgaMapper.to_book_dto(r)
+            if is_fav_scoped:
+                dto.seriesId = f"fav-{user.user_id}-{series['id']}"
+            content.append(dto)
+
         return build_pageable(content, page, size if not is_unpaged else total, total, unpaged=is_unpaged)
 
     @router.get("/api/v1/series/{series_id}/thumbnail")
@@ -300,13 +411,22 @@ def get_series_router(db: Database) -> APIRouter:
         series_id: str,
         user: UserSession = Depends(AuthService.require_user),
     ) -> Response:
+        target_series_id = series_id
+        if series_id.startswith("fav-"):
+            parts = series_id.split("-", 2)
+            if len(parts) < 3 or not parts[1].isdigit() or int(parts[1]) != user.user_id:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Series thumbnail not found")
+            target_series_id = parts[2]
+
         # Check disk cache first
         cached = thumbnail_cache.get_thumbnail("series", series_id)
+        if not cached and target_series_id != series_id:
+            cached = thumbnail_cache.get_thumbnail("series", target_series_id)
         if cached:
             return Response(content=cached, media_type="image/jpeg")
 
         # Find first book in series
-        books, _ = await db.get_books_list(series_id=series_id, limit=1)
+        books, _ = await db.get_books_list(series_id=target_series_id, limit=1)
         if not books:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Series thumbnail not found")
 

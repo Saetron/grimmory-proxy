@@ -184,6 +184,29 @@ def extract_filter_params(request: Request, body: Optional[Any] = None) -> Dict[
             if "fullTextSearch" in cond and str(cond["fullTextSearch"]).strip():
                 search = str(cond["fullTextSearch"]).strip()
 
+    # 3b. Extract Collection IDs
+    collection_keys = {
+        "collection", "collections", "collection_id", "collection_ids",
+        "collection[]", "collections[]", "collection_id[]", "collection_ids[]",
+    }
+    raw_collection_ids: List[Any] = []
+    for qk, qv in request.query_params.multi_items():
+        if qk.lower() in collection_keys:
+            raw_collection_ids.append(qv)
+    if body:
+        raw_collection_ids.extend(_extract_ids_recursive(body, collection_keys))
+    collection_ids: List[str] = []
+    for item in raw_collection_ids:
+        if isinstance(item, dict):
+            val = item.get("id") or item.get("value")
+            if val and str(val).strip() and str(val).strip() not in collection_ids:
+                collection_ids.append(str(val).strip())
+            continue
+        for part in str(item).split(","):
+            part = part.strip()
+            if part and part not in collection_ids:
+                collection_ids.append(part)
+
     # 4. Extract Read Status
     read_status_keys = {"read_status", "readstatus", "read_status[]", "readstatus[]"}
     raw_read_status: List[Any] = []
@@ -285,6 +308,7 @@ def extract_filter_params(request: Request, body: Optional[Any] = None) -> Dict[
     return {
         "library_ids": library_ids,
         "series_ids": series_ids,
+        "collection_ids": collection_ids,
         "search": search,
         "read_status": read_status,
         "genres": genres,

@@ -1,7 +1,8 @@
 import asyncio
 import logging
+import time
 from datetime import datetime, timezone, timedelta
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 import httpx
 
 from app.config import settings
@@ -19,7 +20,9 @@ class GrimmoryClient:
         self.base_url = base_url.rstrip("/")
         self._sync_token: Optional[str] = None
         self._sync_token_expires_at: Optional[datetime] = None
-        self._lock = asyncio.Lock()
+        self._lock: Optional[asyncio.Lock] = None
+        self._lock_loop = None
+        self._user_favorites_cache: Dict[int, Tuple[float, List[int]]] = {}
         self._http_client = httpx.AsyncClient(
             base_url=self.base_url,
             timeout=httpx.Timeout(connect=15.0, read=120.0, write=30.0, pool=30.0),
@@ -54,9 +57,20 @@ class GrimmoryClient:
         resp.raise_for_status()
         return GrimmoryUser(**resp.json())
 
+    @property
+    def lock(self) -> asyncio.Lock:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if self._lock is None or self._lock_loop != loop:
+            self._lock = asyncio.Lock()
+            self._lock_loop = loop
+        return self._lock
+
     async def get_sync_token(self, force: bool = False) -> str:
         """Get or refresh dedicated sync account token."""
-        async with self._lock:
+        async with self.lock:
             now = datetime.now(timezone.utc)
             if not force and self._sync_token and self._sync_token_expires_at and (self._sync_token_expires_at - now).total_seconds() > 120:
                 return self._sync_token
@@ -144,6 +158,112 @@ class GrimmoryClient:
         if resp.status_code == 200:
             return resp.json()
         return []
+
+    async def get_shelves(self, token: Optional[str] = None) -> List[Dict[str, Any]]:
+        auth_token = token or await self.get_sync_token()
+        resp = await self._http_client.get("/api/v1/shelves", headers=self._headers(auth_token))
+        if resp.status_code in (401, 403):
+            auth_token = await self.get_sync_token(force=True)
+            resp = await self._http_client.get("/api/v1/shelves", headers=self._headers(auth_token))
+        if resp.status_code == 200:
+            return resp.json()
+        return []
+
+    async def get_shelf_books(self, shelf_id: Any, token: Optional[str] = None) -> List[Dict[str, Any]]:
+        auth_token = token or await self.get_sync_token()
+        resp = await self._http_client.get(f"/api/v1/shelves/{shelf_id}/books", headers=self._headers(auth_token))
+        if resp.status_code in (401, 403):
+            auth_token = await self.get_sync_token(force=True)
+            resp = await self._http_client.get(f"/api/v1/shelves/{shelf_id}/books", headers=self._headers(auth_token))
+        if resp.status_code == 200:
+            return resp.json()
+        return []
+
+    async def get_user_favorite_book_ids(
+        self, user_id: int, token: Optional[str] = None, force: bool = False
+    ) -> List[int]:
+        now = time.time()
+        if not force and user_id in self._user_favorites_cache:
+            cache_ts, cached_ids = self._user_favorites_cache[user_id]
+            if now - cache_ts < 30.0:
+                return list(cached_ids)
+
+        if not token:
+            return []
+
+        def _extract_ids(items: Any) -> List[int]:
+            ids: List[int] = []
+            if isinstance(items, list):
+                for it in items:
+                    if isinstance(it, int):
+                        ids.append(it)
+                    elif isinstance(it, str) and it.isdigit():
+                        ids.append(int(it))
+                    elif isinstance(it, dict):
+                        b_id = it.get("id") or it.get("bookId")
+                        if b_id is not None:
+                            try:
+                                ids.append(int(b_id))
+                            except (ValueError, TypeError):
+                                pass
+            return ids
+
+        fav_ids: List[int] = []
+        found_shelf = False
+
+        # 1. Check /api/v1/shelves
+        try:
+            shelves = await self.get_shelves(token=token)
+            for s in shelves:
+                if str(s.get("name", "")).strip().lower() == "favorites":
+                    found_shelf = True
+                    books = s.get("books") or s.get("items") or s.get("bookIds")
+                    if books:
+                        fav_ids = _extract_ids(books)
+                    elif "id" in s:
+                        shelf_books = await self.get_shelf_books(s["id"], token=token)
+                        fav_ids = _extract_ids(shelf_books)
+                    break
+        except Exception as e:
+            logger.debug(f"Error checking Grimmory shelves for user {user_id}: {e}")
+
+        # 2. Fallback to /api/v1/magic-shelves
+        if not found_shelf or not fav_ids:
+            try:
+                magic_shelves = await self.get_magic_shelves(token=token)
+                for s in magic_shelves:
+                    if str(s.get("name", "")).strip().lower() == "favorites":
+                        found_shelf = True
+                        books = s.get("books") or s.get("items") or s.get("bookIds")
+                        if books:
+                            extracted = _extract_ids(books)
+                            if extracted:
+                                fav_ids = extracted
+                        elif "id" in s:
+                            shelf_books = await self.get_shelf_books(s["id"], token=token)
+                            extracted = _extract_ids(shelf_books)
+                            if extracted:
+                                fav_ids = extracted
+                        break
+            except Exception as e:
+                logger.debug(f"Error checking Grimmory magic-shelves for user {user_id}: {e}")
+
+        # Deduplicate while preserving order
+        deduped: List[int] = []
+        seen = set()
+        for bid in fav_ids:
+            if bid not in seen:
+                seen.add(bid)
+                deduped.append(bid)
+
+        self._user_favorites_cache[user_id] = (now, deduped)
+        return deduped
+
+    def clear_user_favorites_cache(self, user_id: Optional[int] = None) -> None:
+        if user_id is not None:
+            self._user_favorites_cache.pop(user_id, None)
+        else:
+            self._user_favorites_cache.clear()
 
     # ---------------- Streaming & Media ----------------
 

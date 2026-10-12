@@ -38,7 +38,8 @@ class UserSyncService:
         self.cooldown_seconds = cooldown_seconds
         self._user_locks: Dict[int, asyncio.Lock] = {}
         self._last_sync_times: Dict[int, datetime] = {}
-        self._global_lock = asyncio.Lock()
+        self._global_lock: Optional[asyncio.Lock] = None
+        self._global_lock_loop = None
         self._background_tasks: Set[asyncio.Task] = set()
         self.status = ReadSyncStatus()
 
@@ -165,8 +166,19 @@ class UserSyncService:
                 logger.error(f"Error in periodic user read status sync loop: {e}")
                 await asyncio.sleep(30)
 
+    def _get_global_lock(self) -> asyncio.Lock:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if self._global_lock is None or self._global_lock_loop != loop:
+            self._global_lock = asyncio.Lock()
+            self._global_lock_loop = loop
+            self._user_locks.clear()
+        return self._global_lock
+
     async def _get_user_lock(self, user_id: int) -> asyncio.Lock:
-        async with self._global_lock:
+        async with self._get_global_lock():
             if user_id not in self._user_locks:
                 self._user_locks[user_id] = asyncio.Lock()
             return self._user_locks[user_id]
