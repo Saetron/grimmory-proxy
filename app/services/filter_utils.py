@@ -37,6 +37,8 @@ def _extract_ids_recursive(data: Any, key_names: Set[str]) -> List[Any]:
                         extracted.append(v["id"])
                     if "ids" in v and isinstance(v["ids"], list):
                         extracted.extend(v["ids"])
+                    if "name" in v and isinstance(v["name"], str):
+                        extracted.append(v["name"])
                     extracted.extend(_extract_ids_recursive(v, key_names))
                 elif v is not None:
                     extracted.append(v)
@@ -50,9 +52,9 @@ def _extract_ids_recursive(data: Any, key_names: Set[str]) -> List[Any]:
 
 def extract_filter_params(request: Request, body: Optional[Any] = None) -> Dict[str, Any]:
     """
-    Extracts library_ids, series_ids, search terms, and unpaged flag from query parameters
-    and/or JSON request body (supporting both Komga standard SearchCondition schemas
-    and flat client variations).
+    Extracts library_ids, series_ids, search terms, read_status, genres, tags, publishers, authors,
+    and unpaged flag from query parameters and/or JSON request body (supporting both Komga standard
+    SearchCondition schemas and flat client variations).
     """
     # 1. Extract Library IDs
     lib_id_keys = {
@@ -133,7 +135,67 @@ def extract_filter_params(request: Request, body: Optional[Any] = None) -> Dict[
             if part and part not in read_status:
                 read_status.append(part)
 
-    # 5. Extract Unpaged Flag
+    # 5. Extract Genres
+    genre_keys = {"genre", "genres", "genre[]", "genres[]"}
+    raw_genres: List[Any] = []
+    for qk, qv in request.query_params.multi_items():
+        if qk.lower() in genre_keys:
+            raw_genres.append(qv)
+    if body:
+        raw_genres.extend(_extract_ids_recursive(body, genre_keys))
+    genres: List[str] = []
+    for item in raw_genres:
+        for part in str(item).split(","):
+            part = part.strip()
+            if part and part not in genres:
+                genres.append(part)
+
+    # 6. Extract Tags
+    tag_keys = {"tag", "tags", "tag[]", "tags[]"}
+    raw_tags: List[Any] = []
+    for qk, qv in request.query_params.multi_items():
+        if qk.lower() in tag_keys:
+            raw_tags.append(qv)
+    if body:
+        raw_tags.extend(_extract_ids_recursive(body, tag_keys))
+    tags: List[str] = []
+    for item in raw_tags:
+        for part in str(item).split(","):
+            part = part.strip()
+            if part and part not in tags:
+                tags.append(part)
+
+    # 7. Extract Publishers
+    publisher_keys = {"publisher", "publishers", "publisher[]", "publishers[]"}
+    raw_publishers: List[Any] = []
+    for qk, qv in request.query_params.multi_items():
+        if qk.lower() in publisher_keys:
+            raw_publishers.append(qv)
+    if body:
+        raw_publishers.extend(_extract_ids_recursive(body, publisher_keys))
+    publishers: List[str] = []
+    for item in raw_publishers:
+        for part in str(item).split(","):
+            part = part.strip()
+            if part and part not in publishers:
+                publishers.append(part)
+
+    # 8. Extract Authors
+    author_keys = {"author", "authors", "author[]", "authors[]"}
+    raw_authors: List[Any] = []
+    for qk, qv in request.query_params.multi_items():
+        if qk.lower() in author_keys:
+            raw_authors.append(qv)
+    if body:
+        raw_authors.extend(_extract_ids_recursive(body, author_keys))
+    authors: List[str] = []
+    for item in raw_authors:
+        for part in str(item).split(","):
+            part = part.strip()
+            if part and part not in authors:
+                authors.append(part)
+
+    # 9. Extract Unpaged Flag
     unpaged = False
     if "unpaged" in request.query_params:
         unpaged = request.query_params.get("unpaged", "").lower() in ("true", "1")
@@ -145,6 +207,10 @@ def extract_filter_params(request: Request, body: Optional[Any] = None) -> Dict[
         "series_ids": series_ids,
         "search": search,
         "read_status": read_status,
+        "genres": genres,
+        "tags": tags,
+        "publishers": publishers,
+        "authors": authors,
         "unpaged": unpaged,
     }
 

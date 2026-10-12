@@ -11,6 +11,13 @@ from app.clients.grimmory import grimmory_client
 from app.config import settings
 from app.database import Database
 from app.models.internal import SyncStatus
+from app.services.mapper import (
+    extract_authors_data,
+    extract_genres,
+    extract_publisher,
+    extract_summary,
+    extract_tags,
+)
 from app.services.page_calculator import PageCalculator
 
 logger = logging.getLogger("grimmory_proxy.sync")
@@ -115,7 +122,8 @@ class SyncService:
             self.status.current_phase = "processing_series_and_books"
             series_dict: Dict[str, Dict[str, Any]] = {}
             book_records: List[Dict[str, Any]] = []
-            author_names: set[str] = set()
+            author_records: set = set()
+            author_names: set = set()
 
             for b in books_raw:
                 meta = b.get("metadata") or {}
@@ -135,6 +143,23 @@ class SyncService:
                 series_slug = generate_series_slug(series_name)
                 series_id = f"{lib_id}-{series_slug}"
 
+                b_authors = extract_authors_data(b)
+                b_publisher = extract_publisher(b)
+                b_genres = extract_genres(b)
+                b_tags = extract_tags(b)
+                b_summary = extract_summary(b)
+                b_lang = meta.get("language") or b.get("language") or "en"
+
+                # Grimmory released date field
+                raw_released = (
+                    meta.get("released")
+                    or b.get("released")
+                    or meta.get("releaseDate")
+                    or b.get("releaseDate")
+                    or meta.get("publishedDate")
+                )
+                released_str = str(raw_released).strip() if raw_released else None
+
                 if series_id not in series_dict:
                     series_dict[series_id] = {
                         "id": series_id,
@@ -149,26 +174,45 @@ class SyncService:
                             "name": series_name,
                             "libraryId": lib_id,
                             "slug": series_slug,
+                            "publisher": b_publisher,
+                            "genres": list(b_genres),
+                            "tags": list(b_tags),
+                            "authors": list(b_authors),
+                            "summary": b_summary,
+                            "releaseDate": released_str,
+                            "language": b_lang,
                         },
                     }
+                else:
+                    s_raw = series_dict[series_id]["raw_json"]
+                    existing_auths = {(a["name"].lower(), a.get("role", "writer").lower()) for a in s_raw.get("authors", [])}
+                    for a in b_authors:
+                        key = (a["name"].lower(), a.get("role", "writer").lower())
+                        if key not in existing_auths:
+                            existing_auths.add(key)
+                            s_raw["authors"].append(a)
+                    existing_genres = {g.lower() for g in s_raw.get("genres", [])}
+                    for g in b_genres:
+                        if g.lower() not in existing_genres:
+                            existing_genres.add(g.lower())
+                            s_raw["genres"].append(g)
+                    existing_tags = {t.lower() for t in s_raw.get("tags", [])}
+                    for t in b_tags:
+                        if t.lower() not in existing_tags:
+                            existing_tags.add(t.lower())
+                            s_raw["tags"].append(t)
+                    if not s_raw.get("publisher") and b_publisher:
+                        s_raw["publisher"] = b_publisher
+                    if not s_raw.get("summary") and b_summary:
+                        s_raw["summary"] = b_summary
+                    if released_str and (not s_raw.get("releaseDate") or released_str < s_raw["releaseDate"]):
+                        s_raw["releaseDate"] = released_str
+
                 series_dict[series_id]["books_count"] += 1
 
-                # Authors
-                for auth in meta.get("authors", []):
-                    if isinstance(auth, str) and auth.strip():
-                        author_names.add(auth.strip())
-                    elif isinstance(auth, dict) and "name" in auth:
-                        author_names.add(auth["name"].strip())
-
-                # Grimmory released date field
-                raw_released = (
-                    meta.get("released")
-                    or b.get("released")
-                    or meta.get("releaseDate")
-                    or b.get("releaseDate")
-                    or meta.get("publishedDate")
-                )
-                released_str = str(raw_released).strip() if raw_released else None
+                for a in b_authors:
+                    author_records.add((a["name"], a.get("role", "writer")))
+                    author_names.add(a["name"])
 
                 book_records.append({
                     "id": b["id"],
@@ -201,10 +245,20 @@ class SyncService:
             await self.db.cleanup_empty_series()
 
             # Update authors table
-            if author_names:
+            if author_records:
                 async with self.db.get_db() as db:
                     await db.executemany(
-                        "INSERT INTO authors (name, count) VALUES (?, 1) ON CONFLICT(name) DO UPDATE SET count = count + 1",
+                        """
+                        INSERT INTO authors (name, role, count) VALUES (?, ?, 1)
+                        ON CONFLICT(name) DO UPDATE SET count = count + 1, role = COALESCE(excluded.role, authors.role)
+                        """,
+                        [(name, role) for name, role in author_records],
+                    )
+                    await db.commit()
+            elif author_names:
+                async with self.db.get_db() as db:
+                    await db.executemany(
+                        "INSERT INTO authors (name, role, count) VALUES (?, 'writer', 1) ON CONFLICT(name) DO UPDATE SET count = count + 1",
                         [(author,) for author in author_names],
                     )
                     await db.commit()
