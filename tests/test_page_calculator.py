@@ -55,3 +55,51 @@ def test_cbz_page_calculation():
     assert dtos[0].fileName == "page_001.jpg"
     assert dtos[0].mediaType == "image/jpeg"
     assert dtos[4].number == 5
+
+
+@pytest.mark.asyncio
+async def test_page_calculator_run_job_empty_catalog():
+    from unittest.mock import AsyncMock
+    from app.database import Database
+
+    mock_db = AsyncMock(spec=Database)
+    mock_db.get_books_missing_pages = AsyncMock(return_value=[])
+    mock_db.create_page_calc_job = AsyncMock(return_value=123)
+    mock_db.update_page_calc_progress = AsyncMock()
+
+    calc = PageCalculator(db=mock_db)
+    status = await calc.run_calculation_job(missing_only=True)
+
+    assert status.job_id == 123
+    assert status.is_running is False
+    assert status.total_books == 0
+    assert "All books already have page counts calculated" in status.current_book
+    mock_db.update_page_calc_progress.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_page_calculator_run_job_with_books():
+    from unittest.mock import AsyncMock, patch
+    from app.database import Database
+    from app.models.komga import PageDto
+
+    mock_db = AsyncMock(spec=Database)
+    mock_db.get_books_missing_pages = AsyncMock(return_value=[
+        {"id": 1, "name": "Book One", "book_type": "EPUB"},
+        {"id": 2, "name": "Book Two", "book_type": "CBZ"},
+    ])
+    mock_db.create_page_calc_job = AsyncMock(return_value=124)
+    mock_db.update_page_calc_progress = AsyncMock()
+
+    calc = PageCalculator(db=mock_db)
+    calc.calculate_and_save_book = AsyncMock(return_value="updated")
+
+    status = await calc.run_calculation_job(missing_only=True)
+
+    assert status.job_id == 124
+    assert status.is_running is False
+    assert status.total_books == 2
+    assert status.processed_books == 2
+    assert status.updated_books == 2
+    assert status.current_book == "Calculation completed"
+

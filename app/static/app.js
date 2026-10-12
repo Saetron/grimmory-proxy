@@ -11,11 +11,28 @@ window.fetch = async (...args) => {
   return res;
 };
 
-async function triggerPageCalc(missingOnly) {
-  const btn = event.target;
-  const originalText = btn.innerText;
-  btn.disabled = true;
-  btn.innerText = "Starting...";
+async function triggerPageCalc(missingOnly, clickedBtn = null) {
+  const btn = clickedBtn || document.getElementById(missingOnly ? "btn-calc-missing" : "btn-calc-all") || (window.event && window.event.target ? window.event.target.closest("button") : null);
+  const originalHtml = btn ? btn.innerHTML : "";
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = `<span style="display:inline-block;width:12px;height:12px;border:2px solid currentColor;border-top-color:transparent;border-radius:50%;animation:spin 0.8s linear infinite;margin-right:6px;"></span> Starting...`;
+  }
+
+  // Immediately make the job status card visible with an active starting state
+  const jobBox = document.getElementById("active-job-box");
+  if (jobBox) {
+    jobBox.style.display = "block";
+    const badge = document.getElementById("job-status-badge");
+    if (badge) {
+      badge.innerText = "STARTING";
+      badge.className = "status-badge status-running";
+    }
+    const currentBook = document.getElementById("job-current-book");
+    if (currentBook) {
+      currentBook.innerText = "Initializing page calculation task...";
+    }
+  }
 
   try {
     const res = await fetch("/admin/api/calculate-pages", {
@@ -26,17 +43,41 @@ async function triggerPageCalc(missingOnly) {
     const data = await res.json();
     if (!res.ok) {
       alert("Error: " + (data.detail || "Failed to trigger page calculation"));
+    } else if (data.status === "no_work") {
+      alert(data.message || "All books already have page counts calculated!");
+      if (jobBox) {
+        const badge = document.getElementById("job-status-badge");
+        if (badge) {
+          badge.innerText = "UP TO DATE";
+          badge.className = "status-badge status-completed";
+        }
+        const currentBook = document.getElementById("job-current-book");
+        if (currentBook) {
+          currentBook.innerText = "All books already enriched with page counts";
+        }
+      }
+    } else if (data.status === "already_running") {
+      alert("A calculation job is already running.");
     }
   } catch (err) {
     alert("Request failed: " + err);
   } finally {
-    btn.disabled = false;
-    btn.innerText = originalText;
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = originalHtml;
+    }
     pollStatus();
   }
 }
 
-async function stopPageCalc() {
+async function stopPageCalc(clickedBtn = null) {
+  const btn = clickedBtn || document.getElementById("btn-calc-stop") || (window.event && window.event.target ? window.event.target.closest("button") : null);
+  const originalHtml = btn ? btn.innerHTML : "";
+  if (btn) {
+    btn.disabled = true;
+    btn.innerText = "Stopping...";
+  }
+
   try {
     const res = await fetch("/admin/api/stop-calculation", { method: "POST" });
     const data = await res.json();
@@ -44,6 +85,10 @@ async function stopPageCalc() {
   } catch (err) {
     alert("Request failed: " + err);
   } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = originalHtml;
+    }
     pollStatus();
   }
 }
@@ -281,20 +326,34 @@ async function pollStatus() {
     if (jobBox && jobStatus) {
       if (jobStatus.is_running) {
         jobBox.style.display = "block";
-        document.getElementById("job-status-badge").innerText = "RUNNING";
-        document.getElementById("job-status-badge").className = "status-badge status-running";
-        document.getElementById("job-processed").innerText = jobStatus.processed_books + " / " + jobStatus.total_books;
-        document.getElementById("job-updated").innerText = jobStatus.updated_books;
-        document.getElementById("job-errors").innerText = jobStatus.error_count;
+        const badge = document.getElementById("job-status-badge");
+        if (badge) {
+          badge.innerText = "RUNNING";
+          badge.className = "status-badge status-running";
+        }
+        document.getElementById("job-processed").innerText = (jobStatus.processed_books || 0) + " / " + (jobStatus.total_books || 0);
+        document.getElementById("job-updated").innerText = jobStatus.updated_books || 0;
+        document.getElementById("job-errors").innerText = jobStatus.error_count || 0;
         document.getElementById("job-current-book").innerText = jobStatus.current_book || "-";
-      } else if (jobStatus.total_books > 0) {
+      } else if (jobStatus.job_id || jobStatus.total_books > 0) {
         jobBox.style.display = "block";
-        document.getElementById("job-status-badge").innerText = "COMPLETED";
-        document.getElementById("job-status-badge").className = "status-badge status-completed";
-        document.getElementById("job-processed").innerText = jobStatus.processed_books + " / " + jobStatus.total_books;
-        document.getElementById("job-updated").innerText = jobStatus.updated_books;
-        document.getElementById("job-errors").innerText = jobStatus.error_count;
-        document.getElementById("job-current-book").innerText = "Finished";
+        const badge = document.getElementById("job-status-badge");
+        if (badge) {
+          if (jobStatus.error_message) {
+            badge.innerText = "FAILED";
+            badge.className = "status-badge status-failed";
+          } else if (jobStatus.status === "stopped") {
+            badge.innerText = "STOPPED";
+            badge.className = "status-badge status-idle";
+          } else {
+            badge.innerText = "COMPLETED";
+            badge.className = "status-badge status-completed";
+          }
+        }
+        document.getElementById("job-processed").innerText = (jobStatus.processed_books || 0) + " / " + (jobStatus.total_books || 0);
+        document.getElementById("job-updated").innerText = jobStatus.updated_books || 0;
+        document.getElementById("job-errors").innerText = jobStatus.error_count || 0;
+        document.getElementById("job-current-book").innerText = jobStatus.current_book || (jobStatus.error_message ? jobStatus.error_message : "Finished");
       }
     }
 
