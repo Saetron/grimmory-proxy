@@ -3,8 +3,9 @@ import hashlib
 import logging
 import re
 import unicodedata
+from collections import defaultdict
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Set, Tuple
 import aiosqlite
 
 from app.clients.grimmory import grimmory_client
@@ -32,6 +33,54 @@ def generate_series_slug(name: str) -> str:
     if cleaned:
         return f"{cleaned[:50]}-{name_hash}"
     return f"s-{name_hash}"
+
+
+def get_primary_author_name(b_authors: List[Dict[str, Any]]) -> Optional[str]:
+    """Helper to extract primary writer/author name for book series attribution."""
+    if not b_authors:
+        return None
+    writer = next((a["name"] for a in b_authors if a.get("role") == "writer"), None)
+    name = writer or b_authors[0].get("name")
+    return str(name).strip() if name and str(name).strip() else None
+
+
+def detect_series_collisions(books_raw: List[Dict[str, Any]]) -> Set[Tuple[int, str]]:
+    """
+    Identifies (library_id, base_title_lower) pairs that have a series naming collision.
+    A collision occurs in a library when:
+    - An explicit series and one or more standalone books share the same base title, OR
+    - Multiple standalone series by different authors (or author vs no-author) share the same base title.
+    """
+    candidate_series_per_lib: Dict[Tuple[int, str], Set[Tuple[str, Optional[str]]]] = defaultdict(set)
+
+    for b in books_raw:
+        meta = b.get("metadata") or {}
+        pfile = b.get("primaryFile") or {}
+        lib_id = (
+            b.get("libraryId")
+            or (b.get("library", {}).get("id") if isinstance(b.get("library"), dict) else None)
+            or (b.get("metadata", {}).get("libraryId") if isinstance(b.get("metadata"), dict) else None)
+            or 1
+        )
+        raw_series_name = meta.get("seriesName")
+        has_explicit_series = bool(raw_series_name and str(raw_series_name).strip())
+
+        if has_explicit_series:
+            series_title = str(raw_series_name).strip()
+            title_key = series_title.lower()
+            candidate_series_per_lib[(lib_id, title_key)].add(("explicit", title_key))
+        else:
+            base_title = meta.get("title") or pfile.get("fileName") or "Unknown Series"
+            base_title = str(base_title).strip()
+            title_key = base_title.lower()
+            b_authors = extract_authors_data(b)
+            primary_author = get_primary_author_name(b_authors)
+            auth_key = primary_author.lower() if primary_author else None
+            candidate_series_per_lib[(lib_id, title_key)].add(("oneshot", auth_key))
+
+    return {
+        key for key, series_set in candidate_series_per_lib.items() if len(series_set) > 1
+    }
 
 
 class SyncService:
@@ -125,6 +174,8 @@ class SyncService:
             author_records: set = set()
             author_names: set = set()
 
+            colliding_series_keys = detect_series_collisions(books_raw)
+
             for b in books_raw:
                 meta = b.get("metadata") or {}
                 pfile = b.get("primaryFile") or {}
@@ -143,7 +194,8 @@ class SyncService:
                 b_lang = meta.get("language") or b.get("language") or "en"
 
                 # Series name heuristic: if book has an explicit seriesName, preserve it;
-                # otherwise disambiguate standalone books by appending ' - Author Name' so they aren't merged.
+                # otherwise for standalone books, disambiguate by appending ' - Author Name' ONLY
+                # if there is a collision with another series in the library sharing the same title.
                 raw_series_name = meta.get("seriesName")
                 has_explicit_series = bool(raw_series_name and str(raw_series_name).strip())
 
@@ -152,14 +204,13 @@ class SyncService:
                 else:
                     base_title = meta.get("title") or pfile.get("fileName") or "Unknown Series"
                     base_title = str(base_title).strip()
-                    author_name = None
-                    if b_authors:
-                        writer = next((a["name"] for a in b_authors if a.get("role") == "writer"), None)
-                        author_name = writer or b_authors[0]["name"]
-                    if author_name and str(author_name).strip():
-                        auth_clean = str(author_name).strip()
-                        if not base_title.endswith(f" - {auth_clean}"):
-                            series_name = f"{base_title} - {auth_clean}"
+                    title_key = base_title.lower()
+                    has_collision = (lib_id, title_key) in colliding_series_keys
+                    author_name = get_primary_author_name(b_authors)
+
+                    if has_collision and author_name:
+                        if not base_title.endswith(f" - {author_name}"):
+                            series_name = f"{base_title} - {author_name}"
                         else:
                             series_name = base_title
                     else:
