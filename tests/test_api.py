@@ -2075,8 +2075,9 @@ async def test_grimmory_client_token_401_retry():
 
     client = GrimmoryClient(base_url="http://mock-grimmory")
     client.get_sync_token = AsyncMock(return_value="valid_sync_token")
+    client._sync_token = "valid_sync_token"
 
-    # Mock response: 401 on first try with expired token, 200 on retry with sync token
+    # 1. Background / sync user call (token=None): 401 on first try with expired token, 200 on retry with sync token
     resp_401 = httpx.Response(401, request=httpx.Request("POST", "http://mock-grimmory"))
     resp_200 = httpx.Response(200, request=httpx.Request("POST", "http://mock-grimmory"))
 
@@ -2085,12 +2086,25 @@ async def test_grimmory_client_token_401_retry():
     client._http_client = mock_http
 
     req = GrimmoryReadProgressRequest(bookId=101, progressValid=True)
-    success = await client.update_read_progress(req, token="expired_token")
+    success = await client.update_read_progress(req, token=None)
 
     assert success is True
     assert mock_http.post.call_count == 2
     # Verify second call used the valid sync token
     assert mock_http.post.call_args_list[1][1]["headers"]["Authorization"] == "Bearer valid_sync_token"
+
+    # 2. Regular user call (token="user_token"): 401 must NOT fall back to sync token or update sync user progress
+    mock_http_user = AsyncMock()
+    mock_http_user.post = AsyncMock(return_value=resp_401)
+    client._http_client = mock_http_user
+
+    user_req = GrimmoryReadProgressRequest(bookId=102, progressValid=True)
+    user_success = await client.update_read_progress(user_req, token="user_token")
+
+    assert user_success is False
+    assert mock_http_user.post.call_count == 1
+    # Verify user token was passed and no sync token was leaked or called
+    assert mock_http_user.post.call_args_list[0][1]["headers"]["Authorization"] == "Bearer user_token"
 
 
 @pytest.mark.asyncio
@@ -2559,6 +2573,147 @@ async def test_grimmory_favorites_collection_scoped_books_population(monkeypatch
         resp_thumb = await client.get("/api/v1/collections/favorites-400/thumbnail", headers=alice_headers)
         assert resp_thumb.status_code == 200
         assert resp_thumb.content == b"fake_thumb_bytes"
+
+
+@pytest.mark.asyncio
+async def test_user_read_stats_isolation_restricted_libraries_and_no_sync_leak(monkeypatch):
+    import json
+    from app.main import db
+    from app.models.internal import UserSession
+    from app.services.user_sync import user_sync_service
+    from app.clients.grimmory import grimmory_client
+    from unittest.mock import AsyncMock
+
+    await db.connect()
+
+    # 1. Seed libraries
+    await db.upsert_libraries([
+        {"id": 1, "name": "Manga", "paths": []},
+        {"id": 2, "name": "Comics", "paths": []},
+        {"id": 3, "name": "Light Novel", "paths": []},
+    ])
+
+    # 2. Seed books: 100 in Manga, 100 in Comics, 9 in Light Novel (IDs 1001-1009)
+    books = []
+    series_list = [
+        {"id": "1-manga", "library_id": 1, "name": "Manga Series", "slug": "manga", "sort_title": "Manga Series", "books_count": 100, "raw_json": {}},
+        {"id": "2-comics", "library_id": 2, "name": "Comics Series", "slug": "comics", "sort_title": "Comics Series", "books_count": 100, "raw_json": {}},
+        {"id": "3-ln", "library_id": 3, "name": "Light Novel Series", "slug": "ln", "sort_title": "Light Novel Series", "books_count": 9, "raw_json": {}},
+    ]
+    await db.upsert_series_batch(series_list)
+
+    for i in range(1, 101):
+        books.append({
+            "id": i, "series_id": "1-manga", "library_id": 1, "name": f"Manga {i}",
+            "number": float(i), "book_type": "CBZ", "page_count": 20, "deleted": 0, "raw_json": {},
+        })
+    for i in range(101, 201):
+        books.append({
+            "id": i, "series_id": "2-comics", "library_id": 2, "name": f"Comic {i}",
+            "number": float(i - 100), "book_type": "CBZ", "page_count": 20, "deleted": 0, "raw_json": {},
+        })
+    for i in range(1001, 1010):
+        books.append({
+            "id": i, "series_id": "3-ln", "library_id": 3, "name": f"LN Book {i}",
+            "number": float(i - 1000), "book_type": "EPUB", "page_count": 250, "deleted": 0, "raw_json": {},
+        })
+    await db.upsert_books_batch(books)
+
+    # 3. Create users
+    # User 1: saetron (admin, all libraries)
+    await db.upsert_user(user_id=5001, username="saetron", token="saetron_token", is_admin=True, assigned_libraries=[])
+    # User 2: testuser (regular user, only Light Novel / library 3)
+    await db.upsert_user(user_id=5002, username="testuser", token="testuser_token", is_admin=False, assigned_libraries=[3])
+
+    # Seed read progress for saetron (read all 209 books)
+    saetron_progress = [
+        {"user_id": 5001, "book_id": b["id"], "page": 20, "completed": True, "read_date": "2026-10-14T07:23:11Z"}
+        for b in books
+    ]
+    await db.upsert_read_progress_batch(saetron_progress)
+
+    # Simulate the bug where saetron's read progress was previously erroneously synced to testuser
+    bogus_testuser_progress = [
+        {"user_id": 5002, "book_id": b["id"], "page": 20, "completed": True, "read_date": "2026-10-14T07:23:11Z"}
+        for b in books
+    ]
+    await db.upsert_read_progress_batch(bogus_testuser_progress)
+
+    # 4. Run cleanup
+    pruned = await db.cleanup_unauthorized_read_progress(user_id=5002)
+    assert pruned == 200  # 100 manga + 100 comics pruned from testuser
+
+    # Verify get_users_detailed:
+    users_detailed = await db.get_users_detailed()
+    users_by_id = {u["id"]: u for u in users_detailed}
+
+    saetron_info = users_by_id[5001]
+    testuser_info = users_by_id[5002]
+
+    assert saetron_info["progress_count"] == 209
+    assert saetron_info["completed_count"] == 209
+    assert saetron_info["libraries_display"] == "All Libraries"
+
+    assert testuser_info["progress_count"] == 9  # Only the 9 LN books remain
+    assert testuser_info["progress_count"] < 1000
+    assert testuser_info["libraries_display"] == "Light Novel"
+
+    # 5. Test user sync for testuser with mock Grimmory
+    # On Grimmory, testuser has only read 1 of the LN books (book 1001)
+    get_all_books_called = False
+    get_library_books_calls = []
+
+    async def mock_get_lib_books(lib_id, token=None):
+        get_library_books_calls.append((lib_id, token))
+        if lib_id == 3:
+            return [
+                {"id": 1001, "readStatus": "READ", "page_count": 250, "dateFinished": "2026-10-14T07:30:00Z"},
+                {"id": 1002, "readStatus": "UNREAD", "page_count": 250},
+            ]
+        return []
+
+    async def mock_get_all_books(token=None):
+        nonlocal get_all_books_called
+        get_all_books_called = True
+        return []
+
+    monkeypatch.setattr(grimmory_client, "get_library_books", mock_get_lib_books)
+    monkeypatch.setattr(grimmory_client, "get_all_books", mock_get_all_books)
+    monkeypatch.setattr(grimmory_client, "get_magic_shelves", AsyncMock(return_value=[]))
+
+    testuser_session = UserSession(
+        user_id=5002,
+        username="testuser",
+        token="testuser_valid_token",
+        is_admin=False,
+        assigned_library_ids=[3],
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=2),
+    )
+    res = await user_sync_service.capture_and_sync_user(testuser_session, force=True)
+    assert res is True
+    # get_all_books MUST NOT be called for restricted library users
+    assert get_all_books_called is False
+    # Only library 3 was queried
+    assert get_library_books_calls == [(3, "testuser_valid_token")]
+
+    # 6. Test that if testuser's token expires (returns 401), sync does NOT fall back to sync token
+    # and does NOT leak saetron's books
+    from app.clients.grimmory import GrimmoryClient
+    client_test = GrimmoryClient(base_url="http://mock-grimmory")
+    client_test.get_sync_token = AsyncMock(return_value="saetron_sync_token")
+    client_test._sync_token = "saetron_sync_token"
+
+    import httpx
+    resp_401 = httpx.Response(401, request=httpx.Request("GET", "http://mock-grimmory/api/v1/libraries/3/book"))
+    mock_http = AsyncMock()
+    mock_http.get = AsyncMock(return_value=resp_401)
+    client_test._http_client = mock_http
+
+    lib_books_res = await client_test.get_library_books(3, token="testuser_expired_token")
+    assert lib_books_res == []
+    # Verify it called Grimmory only once (did NOT retry with saetron_sync_token)
+    assert mock_http.get.call_count == 1
+    assert mock_http.get.call_args_list[0][1]["headers"]["Authorization"] == "Bearer testuser_expired_token"
 
 
 

@@ -207,6 +207,13 @@ class UserSyncService:
         except Exception as e:
             logger.warning(f"Error capturing user connection record for {user.username}: {e}")
 
+        # Prune any existing unauthorized read progress for restricted users
+        if not user.is_admin and user.assigned_library_ids:
+            try:
+                await self.database.cleanup_unauthorized_read_progress(user.user_id)
+            except Exception as e:
+                logger.debug(f"Error cleaning up unauthorized read progress for {user.username}: {e}")
+
         # If user has no Grimmory token, skip remote sync
         if not user.token:
             return False
@@ -261,44 +268,50 @@ class UserSyncService:
                         all_books_map[b["id"]] = b
                 except (httpx.ConnectError, httpx.ConnectTimeout, httpx.NetworkError) as e:
                     logger.debug(f"Grimmory unreachable for library {lib_id}: {e}")
-                    return
+                    return 0
                 except Exception as e:
                     logger.debug(f"Could not fetch books for library {lib_id} with user token: {e}")
         except (httpx.ConnectError, httpx.ConnectTimeout, httpx.NetworkError):
-            return
+            return 0
         except Exception as e:
             logger.debug(f"Error resolving libraries for user read states: {e}")
 
-        # 2. Fetch all books with user token as complement/fallback
-        try:
-            all_books = await grimmory_client.get_all_books(token=user.token)
-            for b in all_books:
-                if b["id"] not in all_books_map:
-                    all_books_map[b["id"]] = b
-                else:
-                    all_books_map[b["id"]].update(b)
-        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.NetworkError) as e:
-            logger.debug(f"Grimmory unreachable for all books: {e}")
-            return
-        except Exception as e:
-            logger.debug(f"Could not fetch all books with user token: {e}")
+        # 2. Fetch all books & magic shelves with user token ONLY if user has access to all libraries
+        if user.is_admin or not user.assigned_library_ids:
+            try:
+                all_books = await grimmory_client.get_all_books(token=user.token)
+                for b in all_books:
+                    if b["id"] not in all_books_map:
+                        all_books_map[b["id"]] = b
+                    else:
+                        all_books_map[b["id"]].update(b)
+            except (httpx.ConnectError, httpx.ConnectTimeout, httpx.NetworkError) as e:
+                logger.debug(f"Grimmory unreachable for all books: {e}")
+                return 0
+            except Exception as e:
+                logger.debug(f"Could not fetch all books with user token: {e}")
 
-        # 3. Check magic shelves if available
-        try:
-            magic_shelves = await grimmory_client.get_magic_shelves(token=user.token)
-            for shelf in magic_shelves:
-                shelf_books = shelf.get("books") or shelf.get("items") or []
-                for b in shelf_books:
-                    if isinstance(b, dict) and "id" in b:
-                        bid = b["id"]
-                        if bid not in all_books_map:
-                            all_books_map[bid] = b
-                        else:
-                            all_books_map[bid].update(b)
-        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.NetworkError):
-            return
-        except Exception as e:
-            logger.debug(f"Could not fetch magic shelves with user token: {e}")
+            # 3. Check magic shelves if available (only for unrestricted users)
+            try:
+                magic_shelves = await grimmory_client.get_magic_shelves(token=user.token)
+                for shelf in magic_shelves:
+                    shelf_books = shelf.get("books") or shelf.get("items") or []
+                    for b in shelf_books:
+                        if isinstance(b, dict) and "id" in b:
+                            bid = b["id"]
+                            if bid not in all_books_map:
+                                all_books_map[bid] = b
+                            else:
+                                all_books_map[bid].update(b)
+            except (httpx.ConnectError, httpx.ConnectTimeout, httpx.NetworkError):
+                return 0
+            except Exception as e:
+                logger.debug(f"Could not fetch magic shelves with user token: {e}")
+
+        # 4. If user is restricted to specific libraries, strictly enforce allowed books
+        if not user.is_admin and user.assigned_library_ids:
+            allowed_book_ids = await self.database.get_book_ids_for_libraries(user.assigned_library_ids)
+            all_books_map = {bid: b for bid, b in all_books_map.items() if bid in allowed_book_ids}
 
         if not all_books_map:
             logger.debug(f"No books returned from Grimmory for user {user.username}")

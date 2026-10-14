@@ -348,6 +348,29 @@ class Database:
                         )
             except Exception as e:
                 logger.debug(f"Series metadata backfill check: {e}")
+
+            # Prune any invalid read progress records where non-admin users with restricted library access
+            # have records for books belonging to libraries they are not assigned to
+            try:
+                await db.execute("""
+                    DELETE FROM read_progress
+                    WHERE rowid IN (
+                        SELECT rp.rowid
+                        FROM read_progress rp
+                        JOIN users u ON rp.user_id = u.id
+                        JOIN books b ON rp.book_id = b.id
+                        WHERE u.is_admin = 0
+                          AND u.assigned_libraries IS NOT NULL
+                          AND u.assigned_libraries != ''
+                          AND u.assigned_libraries != '[]'
+                          AND b.library_id NOT IN (
+                              SELECT value FROM json_each(u.assigned_libraries)
+                          )
+                    )
+                """)
+            except Exception as e:
+                logger.debug(f"Unauthorized read progress cleanup migration: {e}")
+
             await db.commit()
         logger.info(f"Database initialized at {self.db_path} (WAL mode enabled, busy_timeout=60s)")
 
@@ -1124,6 +1147,50 @@ class Database:
             cursor = await db.execute("SELECT * FROM read_progress WHERE user_id = ?", (user_id,))
             rows = await cursor.fetchall()
             return {r["book_id"]: dict(r) for r in rows}
+
+    async def get_book_ids_for_libraries(self, library_ids: List[int]) -> Set[int]:
+        if not library_ids:
+            return set()
+        async with self.get_db() as db:
+            placeholders = ",".join("?" * len(library_ids))
+            cursor = await db.execute(
+                f"SELECT id FROM books WHERE library_id IN ({placeholders}) AND deleted = 0",
+                library_ids,
+            )
+            rows = await cursor.fetchall()
+            return {r[0] for r in rows}
+
+    async def cleanup_unauthorized_read_progress(self, user_id: Optional[int] = None) -> int:
+        """
+        Deletes any read_progress records for non-admin users where the book
+        belongs to a library that the user does not have access to.
+        """
+        async with self.write_db() as db:
+            user_clause = "AND u.id = ?" if user_id is not None else ""
+            params = [user_id] if user_id is not None else []
+            cursor = await db.execute(
+                f"""
+                DELETE FROM read_progress
+                WHERE rowid IN (
+                    SELECT rp.rowid
+                    FROM read_progress rp
+                    JOIN users u ON rp.user_id = u.id
+                    JOIN books b ON rp.book_id = b.id
+                    WHERE u.is_admin = 0
+                      AND u.assigned_libraries IS NOT NULL
+                      AND u.assigned_libraries != ''
+                      AND u.assigned_libraries != '[]'
+                      {user_clause}
+                      AND b.library_id NOT IN (
+                          SELECT value FROM json_each(u.assigned_libraries)
+                      )
+                )
+                """,
+                params,
+            )
+            deleted = cursor.rowcount
+            await db.commit()
+            return deleted
 
     # ---------------- User Operations ----------------
 
