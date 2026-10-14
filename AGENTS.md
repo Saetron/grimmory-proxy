@@ -119,7 +119,7 @@ grimmory-proxy/
 - When catalogs are already fully enriched (`0` books missing pages), the WebUI reports `no_work` with an in-page notification banner and updates the Calculation Task Status card (`UP TO DATE`) without silent failures or modal blocking.
 
 ### F. Series Identification & Slug Matching
-- Standalone Books Disambiguation: For books without an upstream `metadata.seriesName`, the proxy derives the series name from `meta.title`. To prevent one-shots or standalone books by different authors from colliding into a single merged series in Komga, `" - {author_name}"` is automatically appended to synthesize unique series titles and IDs.
+- Standalone Books Disambiguation: For books without an upstream `metadata.seriesName`, the proxy derives the series name from `meta.title`. To prevent one-shots or standalone books by different authors from colliding into a single merged series in Komga, `" - {author_name}"` is automatically appended only when there would be a collision with another series (i.e. two or more series sharing the same base title in the library). If there is only one series with that title, the author name is not appended.
 - Series identifiers in Komga requests can be numeric IDs (e.g. `123`), composite IDs (e.g. `90-pdf`), or slug-based strings (`series-pdf`).
 - `Database.find_series_by_id_or_slug` handles prefixes like `series-` to maintain compatibility with reader clients.
 
