@@ -90,6 +90,18 @@ class Settings(BaseSettings):
         default="/app/data/thumbnails",
         description="Path to disk cache for cover thumbnails",
     )
+    sqlite_cache_size: int = Field(
+        default=-8000,
+        description="SQLite page cache size limit in KiB (negative value specifies size in KiB, default: -8000 = 8MB)",
+    )
+    sqlite_mmap_size: int = Field(
+        default=67108864,
+        description="SQLite mmap size limit in bytes (default: 67108864 = 64MB, 0 to disable mmap)",
+    )
+    sqlite_wal_autocheckpoint: int = Field(
+        default=1000,
+        description="SQLite WAL autocheckpoint page threshold (default: 1000 pages)",
+    )
 
     # Server configuration
     port: int = Field(

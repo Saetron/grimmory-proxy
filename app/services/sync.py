@@ -344,6 +344,23 @@ class SyncService:
             self._log("Metadata sync cycle successfully completed!")
             logger.info("Metadata sync cycle successfully completed")
 
+            # Checkpoint WAL to flush pages to disk and release in-memory arrays to OS
+            try:
+                await self.db.checkpoint("TRUNCATE")
+            except Exception:
+                pass
+
+            try:
+                del series_dict
+                del book_records
+                del books_raw
+                del all_books_map
+            except Exception:
+                pass
+
+            from app.services.memory import release_memory
+            release_memory()
+
             # If this was initial startup with an empty database, trigger automatic page calculation!
             if was_database_empty and settings.sync_on_startup:
                 self._log("First startup with empty database detected: triggering background page calculation...")
@@ -357,6 +374,9 @@ class SyncService:
             self.status.error_message = str(e)
             self.status.current_phase = "failed"
             await self.db.set_state("sync_status", "idle")
+        finally:
+            from app.services.memory import release_memory
+            release_memory()
 
         return self.status
 

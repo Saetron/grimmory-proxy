@@ -416,6 +416,13 @@ class PageCalculator:
                             errors=self.status.error_count,
                             current_book=self.status.current_book,
                         )
+                    if self.status.processed_books % 50 == 0:
+                        try:
+                            await self.db.checkpoint("PASSIVE")
+                        except Exception:
+                            pass
+                        from app.services.memory import release_memory
+                        release_memory()
                 finally:
                     queue.task_done()
 
@@ -473,5 +480,11 @@ class PageCalculator:
             self.status.is_running = False
             self._stop_requested = False
             self._worker_tasks.clear()
+            try:
+                await self.db.checkpoint("TRUNCATE")
+            except Exception:
+                pass
+            from app.services.memory import release_memory
+            release_memory()
 
         return self.status
