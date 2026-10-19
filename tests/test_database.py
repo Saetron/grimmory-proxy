@@ -84,3 +84,36 @@ async def test_concurrent_writes_and_wal_mode(tmp_path):
     assert prog is not None
     assert prog["page"] == 25
 
+
+@pytest.mark.asyncio
+async def test_wal_checkpoint_and_storage_stats(tmp_path):
+    from app.services.memory import release_memory
+    db_file = tmp_path / "test_wal.db"
+    db = Database(str(db_file))
+    await db.connect()
+
+    # Verify initial stats include storage fields
+    stats = await db.get_stats()
+    assert "database_size_bytes" in stats
+    assert "wal_size_bytes" in stats
+    assert "total_storage_bytes" in stats
+
+    # Write data to cause WAL activity
+    await db.upsert_libraries([{"id": 1, "name": "Lib 1", "paths": []}])
+    await db.upsert_series_batch([{"id": "s1", "library_id": 1, "name": "Series 1", "slug": "series-1"}])
+    await db.upsert_books_batch([{
+        "id": 100,
+        "series_id": "s1",
+        "library_id": 1,
+        "name": "Book 100",
+        "number": 1.0,
+        "book_type": "EPUB",
+        "page_count": 100,
+    }])
+
+    # Test WAL checkpoint TRUNCATE
+    await db.checkpoint("TRUNCATE")
+
+    # Test memory release utility without error
+    release_memory()
+

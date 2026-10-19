@@ -1343,6 +1343,14 @@ async def test_admin_webui_sync_logs_and_clear():
         assert resp_status_after.status_code == 200
         assert resp_status_after.json()["sync_job"]["logs"] == []
 
+        # 4. Storage optimization endpoint checkpoints WAL and reclaims memory
+        resp_optimize = await client.post("/admin/api/optimize-storage", headers=headers)
+        assert resp_optimize.status_code == 200
+        opt_data = resp_optimize.json()
+        assert opt_data["success"] is True
+        assert "stats" in opt_data
+        assert "total_storage_bytes" in opt_data["stats"]
+
 
 @pytest.mark.asyncio
 async def test_series_and_book_read_progress_endpoints(monkeypatch):

@@ -138,6 +138,12 @@ class UserSyncService:
         finally:
             self.status.is_running = False
             self.status.current_user = ""
+            try:
+                await self.database.checkpoint("PASSIVE")
+            except Exception:
+                pass
+            from app.services.memory import release_memory
+            release_memory()
 
     async def start_background_loop(self) -> None:
         """
@@ -432,12 +438,21 @@ class UserSyncService:
                     "read_date": format_iso_timestamp(read_date or b.get("last_modified") or b.get("addedOn")),
                 })
 
+        synced_count = 0
         if progress_records:
             await self.database.upsert_read_progress_batch(progress_records)
             self.status.total_synced_records += len(progress_records)
             self._log(f"Synchronized {len(progress_records)} read states from Grimmory for user '{user.username}'")
-            return len(progress_records)
-        return 0
+            synced_count = len(progress_records)
+
+        try:
+            del all_books_map
+            del progress_records
+        except Exception:
+            pass
+        from app.services.memory import release_memory
+        release_memory()
+        return synced_count
 
 
 user_sync_service = UserSyncService()

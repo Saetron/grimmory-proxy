@@ -16,6 +16,12 @@
     </div>
   </div>
   <div style="display: flex; gap: 0.75rem; flex-wrap: wrap;">
+    <button id="btn-optimize-storage" onclick="optimizeStorage(this)" class="btn btn-secondary" title="Flush SQLite WAL pages to disk and release process heap memory back to the operating system">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
+      </svg>
+      <span>Optimize Storage & RAM</span>
+    </button>
     <button id="btn-sync" onclick="triggerSync()" class="btn btn-secondary">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
@@ -438,7 +444,7 @@
       </div>
       <div style="display: flex; justify-content: space-between; align-items: center;">
         <span style="color: var(--color-text-muted);">SQLite Cache:</span>
-        <strong style="color: var(--color-text-strong);">{{ "{:.2f} MB".format(stats.database_size_bytes / (1024 * 1024)) }}</strong>
+        <strong id="db-storage-info" style="color: var(--color-text-strong);">{{ "{:.2f} MB".format(stats.database_size_bytes / (1024 * 1024)) }}{% if stats.wal_size_bytes %} (WAL: {{ "{:.2f} MB".format(stats.wal_size_bytes / (1024 * 1024)) }}){% endif %}</strong>
       </div>
       <div style="display: flex; justify-content: space-between; align-items: center;">
         <span style="color: var(--color-text-muted);">Cover Thumbnails:</span>

@@ -367,6 +367,25 @@ def get_admin_router(
         user_sync.status.logs = []
         return {"status": "cleared"}
 
+    @router.post("/admin/api/optimize-storage")
+    async def optimize_storage_endpoint(request: Request) -> Dict[str, Any]:
+        user = await require_admin_session(request)
+
+        try:
+            await db.checkpoint("TRUNCATE")
+        except Exception as e:
+            logger.warning(f"Error during manual WAL checkpoint: {e}")
+
+        from app.services.memory import release_memory
+        release_memory()
+
+        stats = await db.get_stats()
+        return {
+            "success": True,
+            "message": "WAL checkpoint completed and memory reclaimed successfully.",
+            "stats": stats,
+        }
+
     # ---------------- User Management Endpoints ----------------
 
     @router.get("/admin/api/users")

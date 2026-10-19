@@ -10,6 +10,9 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Union
 import uuid
 import aiosqlite
 
+from app.config import settings
+from app.services.memory import release_memory
+
 logger = logging.getLogger("grimmory_proxy.database")
 
 KNOWN_AUTHOR_ROLES = {
@@ -197,6 +200,10 @@ class Database:
     async def get_db(self):
         async with aiosqlite.connect(self.db_path, timeout=60.0) as db:
             await db.execute("PRAGMA busy_timeout = 60000")
+            await db.execute("PRAGMA synchronous = NORMAL")
+            await db.execute(f"PRAGMA cache_size = {settings.sqlite_cache_size}")
+            await db.execute(f"PRAGMA mmap_size = {settings.sqlite_mmap_size}")
+            await db.execute("PRAGMA temp_store = MEMORY")
             yield db
 
     @asynccontextmanager
@@ -204,6 +211,17 @@ class Database:
         async with self.write_lock:
             async with self.get_db() as db:
                 yield db
+
+    async def checkpoint(self, mode: str = "PASSIVE") -> None:
+        """
+        Runs a WAL checkpoint to flush WAL frames to the database and reclaim memory/disk.
+        Modes: 'PASSIVE', 'FULL', 'RESTART', 'TRUNCATE'.
+        """
+        try:
+            async with self.write_db() as db:
+                await db.execute(f"PRAGMA wal_checkpoint({mode})")
+        except Exception as e:
+            logger.debug(f"WAL checkpoint ({mode}) exception: {e}")
 
     async def connect(self) -> None:
         try:
@@ -215,6 +233,9 @@ class Database:
             await db.execute("PRAGMA busy_timeout = 60000")
             await db.execute("PRAGMA synchronous = NORMAL")
             await db.execute("PRAGMA foreign_keys = ON")
+            await db.execute(f"PRAGMA cache_size = {settings.sqlite_cache_size}")
+            await db.execute(f"PRAGMA mmap_size = {settings.sqlite_mmap_size}")
+            await db.execute(f"PRAGMA wal_autocheckpoint = {settings.sqlite_wal_autocheckpoint}")
             await db.executescript(SCHEMA_SQL)
             # Automatic schema migration for existing databases
             try:
@@ -251,12 +272,27 @@ class Database:
 
             # Backfill series raw_json with aggregated authors, genres, tags, publisher if missing
             try:
-                cursor = await db.execute("""
-                    SELECT s.id, s.raw_json, b.raw_json
-                    FROM series s
-                    JOIN books b ON b.series_id = s.id
-                    WHERE b.deleted = 0 AND b.raw_json IS NOT NULL
-                """)
+                chk_cur = await db.execute("SELECT value FROM sync_state WHERE key = 'series_metadata_backfilled_v1'")
+                chk_row = await chk_cur.fetchone()
+                if not chk_row:
+                    needs_cur = await db.execute("""
+                        SELECT 1 FROM series
+                        WHERE raw_json IS NULL
+                           OR raw_json NOT LIKE '%"authors"%'
+                           OR raw_json NOT LIKE '%"genres"%'
+                        LIMIT 1
+                    """)
+                    needs_row = await needs_cur.fetchone()
+                    if not needs_row:
+                        await db.execute("INSERT OR REPLACE INTO sync_state (key, value) VALUES ('series_metadata_backfilled_v1', 'true')")
+                    else:
+                        cursor = await db.execute("""
+                            SELECT s.id, s.raw_json, b.raw_json
+                            FROM series s
+                            JOIN books b ON b.series_id = s.id
+                            WHERE b.deleted = 0 AND b.raw_json IS NOT NULL
+                              AND (s.raw_json IS NULL OR s.raw_json NOT LIKE '%"authors"%' OR s.raw_json NOT LIKE '%"genres"%')
+                        """)
                 rows = await cursor.fetchall()
                 if rows:
                     series_books: Dict[str, Tuple[str, List[Dict[str, Any]]]] = {}
@@ -346,6 +382,7 @@ class Database:
                             "INSERT INTO authors (name, role, count) VALUES (?, ?, 1) ON CONFLICT(name) DO UPDATE SET count = count + 1, role = COALESCE(excluded.role, authors.role)",
                             list(backfill_authors),
                         )
+                    await db.execute("INSERT OR REPLACE INTO sync_state (key, value) VALUES ('series_metadata_backfilled_v1', 'true')")
             except Exception as e:
                 logger.debug(f"Series metadata backfill check: {e}")
 
@@ -372,6 +409,11 @@ class Database:
                 logger.debug(f"Unauthorized read progress cleanup migration: {e}")
 
             await db.commit()
+            try:
+                await db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            except Exception:
+                pass
+        release_memory()
         logger.info(f"Database initialized at {self.db_path} (WAL mode enabled, busy_timeout=60s)")
 
     def get_connection(self) -> aiosqlite.Connection:
@@ -1888,9 +1930,21 @@ class Database:
             lib_filter = f"AND b.library_id IN ({placeholders})"
             lib_params = list(library_ids)
 
+        active_series_clause = ""
+        active_series_params: List[Any] = []
         if user_id is not None:
             join_rp_clause = "LEFT JOIN read_progress rp ON (b.id = rp.book_id AND rp.user_id = ?)"
             rp_params = [user_id]
+            # Limit candidate series to those where the user has active progress or finished books
+            active_series_clause = """
+                AND b.series_id IN (
+                    SELECT DISTINCT b2.series_id
+                    FROM read_progress rp2
+                    JOIN books b2 ON rp2.book_id = b2.id
+                    WHERE rp2.user_id = ?
+                )
+            """
+            active_series_params = [user_id]
         else:
             join_rp_clause = "LEFT JOIN read_progress rp ON (1 = 0)"
             rp_params = []
@@ -1903,10 +1957,10 @@ class Database:
                 FROM books b
                 LEFT JOIN series s ON b.series_id = s.id
                 {join_rp_clause}
-                WHERE b.deleted = 0 {lib_filter}
+                WHERE b.deleted = 0 {active_series_clause} {lib_filter}
                 ORDER BY b.series_id, b.number ASC
             """
-            cursor = await db.execute(query, rp_params + lib_params)
+            cursor = await db.execute(query, rp_params + active_series_params + lib_params)
             rows = await cursor.fetchall()
 
         series_books: Dict[str, List[Dict[str, Any]]] = {}
@@ -1985,7 +2039,8 @@ class Database:
 
     async def get_books_missing_pages(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
         query = """
-            SELECT * FROM books
+            SELECT id, series_id, library_id, name, number, book_type, file_path, file_size_kb, page_count, deleted, released, created, last_modified
+            FROM books
             WHERE deleted = 0
               AND (
                 page_count IS NULL
@@ -2003,7 +2058,12 @@ class Database:
             return [dict(r) for r in rows]
 
     async def get_all_books_for_page_calc(self) -> List[Dict[str, Any]]:
-        query = "SELECT * FROM books WHERE deleted = 0 ORDER BY id ASC"
+        query = """
+            SELECT id, series_id, library_id, name, number, book_type, file_path, file_size_kb, page_count, deleted, released, created, last_modified
+            FROM books
+            WHERE deleted = 0
+            ORDER BY id ASC
+        """
         async with self.get_db() as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(query)
@@ -2095,11 +2155,19 @@ class Database:
             last_sync = state_map.get("last_sync_time")
             sync_status = state_map.get("sync_status") or "idle"
 
-            # Check DB file size
+            # Check DB and WAL file sizes
             db_size_bytes = 0
-            if Path(self.db_path).exists():
+            wal_size_bytes = 0
+            db_path_obj = Path(self.db_path)
+            if db_path_obj.exists():
                 try:
-                    db_size_bytes = Path(self.db_path).stat().st_size
+                    db_size_bytes = db_path_obj.stat().st_size
+                except OSError:
+                    pass
+            wal_path_obj = Path(f"{self.db_path}-wal")
+            if wal_path_obj.exists():
+                try:
+                    wal_size_bytes = wal_path_obj.stat().st_size
                 except OSError:
                     pass
 
@@ -2114,6 +2182,8 @@ class Database:
                 "last_sync_time": last_sync,
                 "sync_status": sync_status,
                 "database_size_bytes": db_size_bytes,
+                "wal_size_bytes": wal_size_bytes,
+                "total_storage_bytes": db_size_bytes + wal_size_bytes,
             }
 
     # ---------------- Page Calculation Job Management ----------------

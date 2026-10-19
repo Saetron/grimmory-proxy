@@ -245,6 +245,32 @@ async function clearReadSyncLogs() {
   }
 }
 
+async function optimizeStorage(clickedBtn = null) {
+  const btn = clickedBtn || document.getElementById("btn-optimize-storage");
+  const origHtml = btn ? btn.innerHTML : "";
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = `<span style="display:inline-block;width:12px;height:12px;border:2px solid currentColor;border-top-color:transparent;border-radius:50%;animation:spin 0.8s linear infinite;margin-right:6px;"></span> Optimizing...`;
+  }
+  try {
+    const res = await fetch("/admin/api/optimize-storage", { method: "POST" });
+    const data = await res.json();
+    if (res.ok) {
+      showCalcBanner("Storage optimized: WAL flushed and memory reclaimed.", "success");
+      pollStatus();
+    } else {
+      alert("Error: " + (data.detail || "Failed to optimize storage"));
+    }
+  } catch (err) {
+    alert("Request failed: " + err);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = origHtml;
+    }
+  }
+}
+
 let _isPolling = false;
 async function pollStatus() {
   if (_isPolling) return;
@@ -269,6 +295,14 @@ async function pollStatus() {
     }
     if (document.getElementById("stat-missing-pages")) {
       document.getElementById("stat-missing-pages").innerText = Number(data.stats.books_missing_pages).toLocaleString();
+    }
+
+    // Update DB Storage Info
+    const dbInfo = document.getElementById("db-storage-info");
+    if (dbInfo && data.stats) {
+      const dbMb = (data.stats.database_size_bytes / (1024 * 1024)).toFixed(2);
+      const walMb = data.stats.wal_size_bytes ? (data.stats.wal_size_bytes / (1024 * 1024)).toFixed(2) : null;
+      dbInfo.innerText = walMb && parseFloat(walMb) > 0 ? `${dbMb} MB (WAL: ${walMb} MB)` : `${dbMb} MB`;
     }
 
     // Update completion progress bar
