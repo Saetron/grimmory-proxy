@@ -175,8 +175,68 @@ CREATE INDEX IF NOT EXISTS idx_api_keys_key ON api_keys(key);
 CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id);
 CREATE INDEX IF NOT EXISTS idx_series_library_id ON series(library_id);
 CREATE INDEX IF NOT EXISTS idx_series_name ON series(name);
+CREATE INDEX IF NOT EXISTS idx_series_slug ON series(slug);
+CREATE INDEX IF NOT EXISTS idx_series_sort_title ON series(sort_title);
+CREATE INDEX IF NOT EXISTS idx_books_series_number ON books(series_id, number);
+CREATE INDEX IF NOT EXISTS idx_books_released ON books(released);
 CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
 """
+
+
+def _parse_author_filter(a: Any) -> Tuple[Optional[str], Optional[str]]:
+    auth_name = None
+    auth_role = None
+    if isinstance(a, dict):
+        auth_name = a.get("name")
+        auth_role = a.get("role")
+    elif isinstance(a, str):
+        if "," in a:
+            parts = [p.strip() for p in a.split(",")]
+            if len(parts) == 2 and parts[1].lower() in KNOWN_AUTHOR_ROLES:
+                auth_name = parts[0]
+                auth_role = parts[1].lower()
+            else:
+                auth_name = a.strip()
+        else:
+            auth_name = a.strip()
+    return auth_name, auth_role
+
+
+def _build_book_author_clause(auth_name: str, auth_role: Optional[str]) -> Tuple[str, List[str]]:
+    if auth_role:
+        sql = """(
+            EXISTS (
+                SELECT 1 FROM json_each(b.raw_json, '$.metadata.authors')
+                WHERE LOWER(CASE WHEN type = 'object' THEN json_extract(value, '$.name') ELSE value END) = LOWER(?)
+                  AND (type != 'object' OR json_extract(value, '$.role') IS NULL OR LOWER(json_extract(value, '$.role')) = LOWER(?))
+            )
+            OR EXISTS (
+                SELECT 1 FROM json_each(b.raw_json, '$.authors')
+                WHERE LOWER(CASE WHEN type = 'object' THEN json_extract(value, '$.name') ELSE value END) = LOWER(?)
+                  AND (type != 'object' OR json_extract(value, '$.role') IS NULL OR LOWER(json_extract(value, '$.role')) = LOWER(?))
+            )
+            OR (
+                LOWER(COALESCE(json_extract(b.raw_json, '$.metadata.author.name'), json_extract(b.raw_json, '$.metadata.author'), json_extract(b.raw_json, '$.author.name'), json_extract(b.raw_json, '$.author'))) = LOWER(?)
+                AND (
+                    COALESCE(json_extract(b.raw_json, '$.metadata.author.role'), json_extract(b.raw_json, '$.author.role')) IS NULL
+                    OR LOWER(COALESCE(json_extract(b.raw_json, '$.metadata.author.role'), json_extract(b.raw_json, '$.author.role'))) = LOWER(?)
+                )
+            )
+        )"""
+        return sql, [auth_name, auth_role, auth_name, auth_role, auth_name, auth_role]
+    else:
+        sql = """(
+            EXISTS (
+                SELECT 1 FROM json_each(b.raw_json, '$.metadata.authors')
+                WHERE LOWER(CASE WHEN type = 'object' THEN json_extract(value, '$.name') ELSE value END) = LOWER(?)
+            )
+            OR EXISTS (
+                SELECT 1 FROM json_each(b.raw_json, '$.authors')
+                WHERE LOWER(CASE WHEN type = 'object' THEN json_extract(value, '$.name') ELSE value END) = LOWER(?)
+            )
+            OR LOWER(COALESCE(json_extract(b.raw_json, '$.metadata.author.name'), json_extract(b.raw_json, '$.metadata.author'), json_extract(b.raw_json, '$.author.name'), json_extract(b.raw_json, '$.author'))) = LOWER(?)
+        )"""
+        return sql, [auth_name, auth_name, auth_name]
 
 
 class Database:
@@ -211,6 +271,23 @@ class Database:
         async with self.write_lock:
             async with self.get_db() as db:
                 yield db
+
+    async def _execute_write_with_retry(self, operation, op_name: str = "write") -> Any:
+        for attempt in range(5):
+            try:
+                async with self.write_db() as db:
+                    result = await operation(db)
+                    await db.commit()
+                    return result
+            except sqlite3.OperationalError as e:
+                if "locked" in str(e).lower() and attempt < 4:
+                    wait_time = 0.1 * (2 ** attempt)
+                    logger.warning(
+                        f"Database locked in {op_name}, retrying in {wait_time:.2f}s (attempt {attempt + 1}/5)..."
+                    )
+                    await asyncio.sleep(wait_time)
+                else:
+                    raise
 
     async def checkpoint(self, mode: str = "PASSIVE") -> None:
         """
@@ -293,96 +370,87 @@ class Database:
                             WHERE b.deleted = 0 AND b.raw_json IS NOT NULL
                               AND (s.raw_json IS NULL OR s.raw_json NOT LIKE '%"authors"%' OR s.raw_json NOT LIKE '%"genres"%')
                         """)
-                rows = await cursor.fetchall()
-                if rows:
-                    series_books: Dict[str, Tuple[str, List[Dict[str, Any]]]] = {}
-                    for sid, s_raw_str, b_raw_str in rows:
-                        if sid not in series_books:
-                            series_books[sid] = (s_raw_str, [])
-                        try:
-                            b_data = json.loads(b_raw_str) if isinstance(b_raw_str, str) else b_raw_str
-                            if isinstance(b_data, dict):
-                                series_books[sid][1].append(b_data)
-                        except Exception:
-                            pass
+                        rows = await cursor.fetchall()
+                        if rows:
+                            from app.services.mapper import (
+                                extract_authors_data,
+                                extract_genres,
+                                extract_publisher,
+                                extract_summary,
+                                extract_tags,
+                                parse_raw_json,
+                            )
 
-                    from app.services.mapper import (
-                        extract_authors_data,
-                        extract_genres,
-                        extract_publisher,
-                        extract_summary,
-                        extract_tags,
-                    )
+                            series_books: Dict[str, Tuple[str, List[Dict[str, Any]]]] = {}
+                            for sid, s_raw_str, b_raw_str in rows:
+                                if sid not in series_books:
+                                    series_books[sid] = (s_raw_str, [])
+                                b_data = parse_raw_json(b_raw_str)
+                                if b_data:
+                                    series_books[sid][1].append(b_data)
 
-                    series_updates = []
-                    backfill_authors = set()
-                    for sid, (s_raw_str, b_list) in series_books.items():
-                        s_raw = {}
-                        if s_raw_str:
-                            try:
-                                s_raw = json.loads(s_raw_str) if isinstance(s_raw_str, str) else s_raw_str
-                            except Exception:
-                                pass
-                        if not isinstance(s_raw, dict):
-                            s_raw = {}
+                            series_updates = []
+                            backfill_authors = set()
+                            for sid, (s_raw_str, b_list) in series_books.items():
+                                s_raw = parse_raw_json(s_raw_str)
 
-                        needs_update = not s_raw.get("authors") or not s_raw.get("publisher") or not s_raw.get("genres") or not s_raw.get("tags")
-                        if needs_update:
-                            authors_set = set()
-                            authors_list = list(s_raw.get("authors", []))
-                            for a in authors_list:
-                                if isinstance(a, dict) and "name" in a:
-                                    authors_set.add((a["name"].lower(), a.get("role", "writer").lower()))
-                            genres_set = {g.lower() for g in s_raw.get("genres", [])}
-                            genres_list = list(s_raw.get("genres", []))
-                            tags_set = {t.lower() for t in s_raw.get("tags", [])}
-                            tags_list = list(s_raw.get("tags", []))
-                            pub = s_raw.get("publisher", "")
-                            summary = s_raw.get("summary", "")
-                            release_date = s_raw.get("releaseDate")
+                                needs_update = not s_raw.get("authors") or not s_raw.get("publisher") or not s_raw.get("genres") or not s_raw.get("tags")
+                                if needs_update:
+                                    authors_set = set()
+                                    authors_list = list(s_raw.get("authors", []))
+                                    for a in authors_list:
+                                        if isinstance(a, dict) and "name" in a:
+                                            authors_set.add((a["name"].lower(), a.get("role", "writer").lower()))
+                                    genres_set = {g.lower() for g in s_raw.get("genres", [])}
+                                    genres_list = list(s_raw.get("genres", []))
+                                    tags_set = {t.lower() for t in s_raw.get("tags", [])}
+                                    tags_list = list(s_raw.get("tags", []))
+                                    pub = s_raw.get("publisher", "")
+                                    summary = s_raw.get("summary", "")
+                                    release_date = s_raw.get("releaseDate")
 
-                            for b_data in b_list:
-                                for a in extract_authors_data(b_data):
-                                    backfill_authors.add((a["name"], a["role"]))
-                                    if (a["name"].lower(), a["role"].lower()) not in authors_set:
-                                        authors_set.add((a["name"].lower(), a["role"].lower()))
-                                        authors_list.append(a)
-                                for g in extract_genres(b_data):
-                                    if g.lower() not in genres_set:
-                                        genres_set.add(g.lower())
-                                        genres_list.append(g)
-                                for t in extract_tags(b_data):
-                                    if t.lower() not in tags_set:
-                                        tags_set.add(t.lower())
-                                        tags_list.append(t)
-                                if not pub:
-                                    pub = extract_publisher(b_data)
-                                if not summary:
-                                    summary = extract_summary(b_data)
-                                b_rel = b_data.get("released") or (b_data.get("metadata", {}).get("released") if isinstance(b_data.get("metadata"), dict) else None)
-                                if b_rel and (not release_date or str(b_rel) < str(release_date)):
-                                    release_date = str(b_rel)
+                                    for b_data in b_list:
+                                        for a in extract_authors_data(b_data):
+                                            backfill_authors.add((a["name"], a["role"]))
+                                            if (a["name"].lower(), a["role"].lower()) not in authors_set:
+                                                authors_set.add((a["name"].lower(), a["role"].lower()))
+                                                authors_list.append(a)
+                                        for g in extract_genres(b_data):
+                                            if g.lower() not in genres_set:
+                                                genres_set.add(g.lower())
+                                                genres_list.append(g)
+                                        for t in extract_tags(b_data):
+                                            if t.lower() not in tags_set:
+                                                tags_set.add(t.lower())
+                                                tags_list.append(t)
+                                        if not pub:
+                                            pub = extract_publisher(b_data)
+                                        if not summary:
+                                            summary = extract_summary(b_data)
+                                        b_rel = b_data.get("released") or (b_data.get("metadata", {}).get("released") if isinstance(b_data.get("metadata"), dict) else None)
+                                        if b_rel and (not release_date or str(b_rel) < str(release_date)):
+                                            release_date = str(b_rel)
 
-                            s_raw["authors"] = authors_list
-                            s_raw["genres"] = genres_list
-                            s_raw["tags"] = tags_list
-                            if pub:
-                                s_raw["publisher"] = pub
-                            if summary:
-                                s_raw["summary"] = summary
-                            if release_date:
-                                s_raw["releaseDate"] = release_date
+                                    s_raw["authors"] = authors_list
+                                    s_raw["genres"] = genres_list
+                                    s_raw["tags"] = tags_list
+                                    if pub:
+                                        s_raw["publisher"] = pub
+                                    if summary:
+                                        s_raw["summary"] = summary
+                                    if release_date:
+                                        s_raw["releaseDate"] = release_date
 
-                            series_updates.append((json.dumps(s_raw), sid))
+                                    series_updates.append((json.dumps(s_raw), sid))
 
-                    if series_updates:
-                        await db.executemany("UPDATE series SET raw_json = ? WHERE id = ?", series_updates)
-                    if backfill_authors:
-                        await db.executemany(
-                            "INSERT INTO authors (name, role, count) VALUES (?, ?, 1) ON CONFLICT(name) DO UPDATE SET count = count + 1, role = COALESCE(excluded.role, authors.role)",
-                            list(backfill_authors),
-                        )
-                    await db.execute("INSERT OR REPLACE INTO sync_state (key, value) VALUES ('series_metadata_backfilled_v1', 'true')")
+                            if series_updates:
+                                await db.executemany("UPDATE series SET raw_json = ? WHERE id = ?", series_updates)
+                            if backfill_authors:
+                                await db.executemany(
+                                    "INSERT INTO authors (name, role, count) VALUES (?, ?, 1) ON CONFLICT(name) DO UPDATE SET count = count + 1, role = COALESCE(excluded.role, authors.role)",
+                                    list(backfill_authors),
+                                )
+                            await db.execute("INSERT OR REPLACE INTO sync_state (key, value) VALUES ('series_metadata_backfilled_v1', 'true')")
             except Exception as e:
                 logger.debug(f"Series metadata backfill check: {e}")
 
@@ -422,29 +490,33 @@ class Database:
     # ---------------- Library Operations ----------------
 
     async def upsert_libraries(self, libraries: List[Dict[str, Any]]) -> None:
+        if not libraries:
+            return
+        rows = []
+        for lib in libraries:
+            paths = lib.get("paths", [])
+            root = paths[0].get("path", "") if paths else ""
+            rows.append((
+                lib["id"],
+                lib.get("name", f"Library {lib['id']}"),
+                root,
+                lib.get("organizationMode", "BOOK_PER_FILE"),
+                json.dumps(lib),
+            ))
         async with self.write_db() as db:
-            for lib in libraries:
-                paths = lib.get("paths", [])
-                root = paths[0].get("path", "") if paths else ""
-                await db.execute(
-                    """
-                    INSERT INTO libraries (id, name, root, organization_mode, raw_json, updated_at)
-                    VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                    ON CONFLICT(id) DO UPDATE SET
-                        name = excluded.name,
-                        root = excluded.root,
-                        organization_mode = excluded.organization_mode,
-                        raw_json = excluded.raw_json,
-                        updated_at = CURRENT_TIMESTAMP
-                    """,
-                    (
-                        lib["id"],
-                        lib.get("name", f"Library {lib['id']}"),
-                        root,
-                        lib.get("organizationMode", "BOOK_PER_FILE"),
-                        json.dumps(lib),
-                    ),
-                )
+            await db.executemany(
+                """
+                INSERT INTO libraries (id, name, root, organization_mode, raw_json, updated_at)
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(id) DO UPDATE SET
+                    name = excluded.name,
+                    root = excluded.root,
+                    organization_mode = excluded.organization_mode,
+                    raw_json = excluded.raw_json,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                rows,
+            )
             await db.commit()
 
     async def get_libraries(self) -> List[Dict[str, Any]]:
@@ -469,44 +541,39 @@ class Database:
         chunk_size = 1000
         for i in range(0, len(series_list), chunk_size):
             chunk = series_list[i : i + chunk_size]
-            for attempt in range(5):
-                try:
-                    async with self.write_db() as db:
-                        await db.executemany(
-                            """
-                            INSERT INTO series (id, library_id, name, slug, sort_title, books_count, created, last_modified, raw_json, updated_at)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                            ON CONFLICT(id) DO UPDATE SET
-                                name = excluded.name,
-                                slug = excluded.slug,
-                                sort_title = excluded.sort_title,
-                                books_count = excluded.books_count,
-                                last_modified = excluded.last_modified,
-                                raw_json = excluded.raw_json,
-                                updated_at = CURRENT_TIMESTAMP
-                            """,
-                            [
-                                (
-                                    s["id"],
-                                    s["library_id"],
-                                    s["name"],
-                                    s["slug"],
-                                    s.get("sort_title", s["name"]),
-                                    s.get("books_count", 0),
-                                    s.get("created"),
-                                    s.get("last_modified"),
-                                    s.get("raw_json") if isinstance(s.get("raw_json"), str) else json.dumps(s.get("raw_json", {})),
-                                )
-                                for s in chunk
-                            ],
-                        )
-                        await db.commit()
-                    break
-                except sqlite3.OperationalError as e:
-                    if "locked" in str(e).lower() and attempt < 4:
-                        await asyncio.sleep(0.1 * (2 ** attempt))
-                    else:
-                        raise
+            params = [
+                (
+                    s["id"],
+                    s["library_id"],
+                    s["name"],
+                    s["slug"],
+                    s.get("sort_title", s["name"]),
+                    s.get("books_count", 0),
+                    s.get("created"),
+                    s.get("last_modified"),
+                    s.get("raw_json") if isinstance(s.get("raw_json"), str) else json.dumps(s.get("raw_json", {})),
+                )
+                for s in chunk
+            ]
+
+            async def _op(db, rows=params):
+                await db.executemany(
+                    """
+                    INSERT INTO series (id, library_id, name, slug, sort_title, books_count, created, last_modified, raw_json, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(id) DO UPDATE SET
+                        name = excluded.name,
+                        slug = excluded.slug,
+                        sort_title = excluded.sort_title,
+                        books_count = excluded.books_count,
+                        last_modified = excluded.last_modified,
+                        raw_json = excluded.raw_json,
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    rows,
+                )
+
+            await self._execute_write_with_retry(_op, "upsert_series_batch")
             await asyncio.sleep(0)
 
     async def get_series_list(
@@ -567,27 +634,13 @@ class Database:
         if authors:
             auth_clauses = []
             for a in authors:
-                auth_name = None
-                auth_role = None
-                if isinstance(a, dict):
-                    auth_name = a.get("name")
-                    auth_role = a.get("role")
-                elif isinstance(a, str):
-                    if "," in a:
-                        parts = [p.strip() for p in a.split(",")]
-                        if len(parts) == 2 and parts[1].lower() in KNOWN_AUTHOR_ROLES:
-                            auth_name = parts[0]
-                            auth_role = parts[1].lower()
-                        else:
-                            auth_name = a.strip()
-                    else:
-                        auth_name = a.strip()
-
+                auth_name, auth_role = _parse_author_filter(a)
                 if not auth_name:
                     continue
 
+                book_auth_sql, book_params = _build_book_author_clause(auth_name, auth_role)
                 if auth_role:
-                    series_auth_sql = """(
+                    series_auth_sql = f"""(
                         EXISTS (
                             SELECT 1 FROM json_each(raw_json, '$.authors')
                             WHERE LOWER(CASE WHEN type = 'object' THEN json_extract(value, '$.name') ELSE value END) = LOWER(?)
@@ -596,31 +649,13 @@ class Database:
                         OR series.id IN (
                             SELECT b.series_id FROM books b
                             WHERE b.deleted = 0
-                              AND (
-                                  EXISTS (
-                                      SELECT 1 FROM json_each(b.raw_json, '$.metadata.authors')
-                                      WHERE LOWER(CASE WHEN type = 'object' THEN json_extract(value, '$.name') ELSE value END) = LOWER(?)
-                                        AND (type != 'object' OR json_extract(value, '$.role') IS NULL OR LOWER(json_extract(value, '$.role')) = LOWER(?))
-                                  )
-                                  OR EXISTS (
-                                      SELECT 1 FROM json_each(b.raw_json, '$.authors')
-                                      WHERE LOWER(CASE WHEN type = 'object' THEN json_extract(value, '$.name') ELSE value END) = LOWER(?)
-                                        AND (type != 'object' OR json_extract(value, '$.role') IS NULL OR LOWER(json_extract(value, '$.role')) = LOWER(?))
-                                  )
-                                  OR (
-                                      LOWER(COALESCE(json_extract(b.raw_json, '$.metadata.author.name'), json_extract(b.raw_json, '$.metadata.author'), json_extract(b.raw_json, '$.author.name'), json_extract(b.raw_json, '$.author'))) = LOWER(?)
-                                      AND (
-                                          COALESCE(json_extract(b.raw_json, '$.metadata.author.role'), json_extract(b.raw_json, '$.author.role')) IS NULL
-                                          OR LOWER(COALESCE(json_extract(b.raw_json, '$.metadata.author.role'), json_extract(b.raw_json, '$.author.role'))) = LOWER(?)
-                                      )
-                                  )
-                              )
+                              AND {book_auth_sql}
                         )
                     )"""
                     auth_clauses.append(series_auth_sql)
-                    params.extend([auth_name, auth_role, auth_name, auth_role, auth_name, auth_role, auth_name, auth_role])
+                    params.extend([auth_name, auth_role] + book_params)
                 else:
-                    series_auth_sql = """(
+                    series_auth_sql = f"""(
                         EXISTS (
                             SELECT 1 FROM json_each(raw_json, '$.authors')
                             WHERE LOWER(CASE WHEN type = 'object' THEN json_extract(value, '$.name') ELSE value END) = LOWER(?)
@@ -628,21 +663,11 @@ class Database:
                         OR series.id IN (
                             SELECT b.series_id FROM books b
                             WHERE b.deleted = 0
-                              AND (
-                                  EXISTS (
-                                      SELECT 1 FROM json_each(b.raw_json, '$.metadata.authors')
-                                      WHERE LOWER(CASE WHEN type = 'object' THEN json_extract(value, '$.name') ELSE value END) = LOWER(?)
-                                  )
-                                  OR EXISTS (
-                                      SELECT 1 FROM json_each(b.raw_json, '$.authors')
-                                      WHERE LOWER(CASE WHEN type = 'object' THEN json_extract(value, '$.name') ELSE value END) = LOWER(?)
-                                  )
-                                  OR LOWER(COALESCE(json_extract(b.raw_json, '$.metadata.author.name'), json_extract(b.raw_json, '$.metadata.author'), json_extract(b.raw_json, '$.author.name'), json_extract(b.raw_json, '$.author'))) = LOWER(?)
-                              )
+                              AND {book_auth_sql}
                         )
                     )"""
                     auth_clauses.append(series_auth_sql)
-                    params.extend([auth_name, auth_name, auth_name, auth_name])
+                    params.extend([auth_name] + book_params)
 
             if auth_clauses:
                 conditions.append(f"({' OR '.join(auth_clauses)})")
@@ -711,6 +736,34 @@ class Database:
 
             rows = await cursor.fetchall()
             return [dict(r) for r in rows], total
+
+    async def get_series_alphabetical_groups(
+        self, library_ids: Optional[List[int]] = None
+    ) -> List[Dict[str, Any]]:
+        where_clause = ""
+        params: List[Any] = []
+        if library_ids is not None:
+            if len(library_ids) == 0:
+                return []
+            ph = ",".join("?" for _ in library_ids)
+            where_clause = f"WHERE library_id IN ({ph})"
+            params.extend(library_ids)
+
+        query = f"""
+            SELECT UPPER(SUBSTR(name, 1, 1)) AS first_char, COUNT(*) AS cnt
+            FROM series
+            {where_clause}
+            GROUP BY first_char
+        """
+        async with self.get_db() as db:
+            cursor = await db.execute(query, params)
+            rows = await cursor.fetchall()
+
+        groups: Dict[str, int] = {}
+        for ch, cnt in rows:
+            first_char = ch if (ch and ch.isalpha()) else "#"
+            groups[first_char] = groups.get(first_char, 0) + cnt
+        return [{"group": k, "count": v} for k, v in sorted(groups.items())]
 
     async def get_series_by_id(self, series_id: str, user_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
         async with self.get_db() as db:
@@ -824,13 +877,27 @@ class Database:
             rows = await cursor.fetchall()
             series_ids = [r[0] for r in rows if r[0]]
 
-        if not series_ids:
-            return []
+            if not series_ids:
+                return []
+
+            s_placeholders = ",".join("?" for _ in series_ids)
+            if user_id is not None:
+                s_query = f"""
+                    SELECT s.*,
+                           (SELECT COUNT(*) FROM books b JOIN read_progress rp ON b.id = rp.book_id WHERE b.series_id = s.id AND b.deleted = 0 AND rp.user_id = ? AND rp.completed = 1) as books_read_count,
+                           (SELECT COUNT(*) FROM books b JOIN read_progress rp ON b.id = rp.book_id WHERE b.series_id = s.id AND b.deleted = 0 AND rp.user_id = ? AND rp.completed = 0 AND (rp.page > 0 OR rp.read_date IS NOT NULL)) as books_in_progress_count
+                    FROM series s WHERE s.id IN ({s_placeholders})
+                """
+                s_cursor = await db.execute(s_query, [user_id, user_id] + series_ids)
+            else:
+                s_cursor = await db.execute(f"SELECT * FROM series WHERE id IN ({s_placeholders})", series_ids)
+            s_rows = await s_cursor.fetchall()
+            direct_map = {r["id"]: dict(r) for r in s_rows}
 
         series_list = []
         seen_ids = set()
         for sid in series_ids:
-            s_row = await self.get_series_by_id(sid, user_id=user_id)
+            s_row = direct_map.get(sid)
             if not s_row:
                 s_row = await self.find_series_by_id_or_slug(sid, user_id=user_id)
             if s_row and s_row["id"] not in seen_ids:
@@ -867,126 +934,101 @@ class Database:
     async def upsert_books_batch(self, books: List[Dict[str, Any]]) -> None:
         if not books:
             return
+        from app.services.mapper import extract_authors_data, parse_raw_json
+
         chunk_size = 1000
         for i in range(0, len(books), chunk_size):
             chunk = books[i : i + chunk_size]
-            for attempt in range(5):
-                try:
-                    async with self.write_db() as db:
+            book_rows = []
+            author_records = set()
+
+            for b in chunk:
+                b_raw = b.get("raw_json")
+                raw_str = b_raw if isinstance(b_raw, str) else json.dumps(b_raw or {})
+                book_rows.append((
+                    b["id"],
+                    b["series_id"],
+                    b["library_id"],
+                    b["name"],
+                    b.get("number", 1.0),
+                    b.get("book_type"),
+                    b.get("file_path"),
+                    b.get("file_size_kb", 0),
+                    b.get("page_count", 0),
+                    b.get("deleted", 0),
+                    b.get("released"),
+                    b.get("created"),
+                    b.get("last_modified"),
+                    raw_str,
+                ))
+                b_data = parse_raw_json(b_raw)
+                for a in extract_authors_data(b_data):
+                    if a.get("name"):
+                        author_records.add((a["name"], a.get("role", "writer")))
+
+            async def _op(db, b_rows=book_rows, a_rows=list(author_records)):
+                await db.executemany(
+                    """
+                    INSERT INTO books (id, series_id, library_id, name, number, book_type, file_path, file_size_kb, page_count, deleted, released, created, last_modified, raw_json, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(id) DO UPDATE SET
+                        series_id = excluded.series_id,
+                        library_id = excluded.library_id,
+                        name = excluded.name,
+                        number = excluded.number,
+                        book_type = excluded.book_type,
+                        file_path = excluded.file_path,
+                        file_size_kb = excluded.file_size_kb,
+                        page_count = CASE WHEN excluded.page_count > 0 THEN excluded.page_count ELSE books.page_count END,
+                        deleted = excluded.deleted,
+                        released = excluded.released,
+                        last_modified = excluded.last_modified,
+                        raw_json = excluded.raw_json,
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    b_rows,
+                )
+                if a_rows:
+                    try:
                         await db.executemany(
                             """
-                            INSERT INTO books (id, series_id, library_id, name, number, book_type, file_path, file_size_kb, page_count, deleted, released, created, last_modified, raw_json, updated_at)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                            ON CONFLICT(id) DO UPDATE SET
-                                series_id = excluded.series_id,
-                                library_id = excluded.library_id,
-                                name = excluded.name,
-                                number = excluded.number,
-                                book_type = excluded.book_type,
-                                file_path = excluded.file_path,
-                                file_size_kb = excluded.file_size_kb,
-                                page_count = CASE WHEN excluded.page_count > 0 THEN excluded.page_count ELSE books.page_count END,
-                                deleted = excluded.deleted,
-                                released = excluded.released,
-                                last_modified = excluded.last_modified,
-                                raw_json = excluded.raw_json,
-                                updated_at = CURRENT_TIMESTAMP
+                            INSERT INTO authors (name, role, count) VALUES (?, ?, 1)
+                            ON CONFLICT(name) DO UPDATE SET count = count + 1, role = COALESCE(excluded.role, authors.role)
                             """,
-                            [
-                                (
-                                    b["id"],
-                                    b["series_id"],
-                                    b["library_id"],
-                                    b["name"],
-                                    b.get("number", 1.0),
-                                    b.get("book_type"),
-                                    b.get("file_path"),
-                                    b.get("file_size_kb", 0),
-                                    b.get("page_count", 0),
-                                    b.get("deleted", 0),
-                                    b.get("released"),
-                                    b.get("created"),
-                                    b.get("last_modified"),
-                                    b.get("raw_json") if isinstance(b.get("raw_json"), str) else json.dumps(b.get("raw_json", {})),
-                                )
-                                for b in chunk
-                            ],
+                            a_rows,
                         )
+                    except Exception as auth_err:
+                        logger.debug(f"Authors table sync in upsert_books_batch: {auth_err}")
 
-                        # Maintain authors table from inserted books
-                        try:
-                            from app.services.mapper import extract_authors_data
-                            author_records = set()
-                            for b in chunk:
-                                b_raw = b.get("raw_json")
-                                if isinstance(b_raw, str):
-                                    try:
-                                        b_data = json.loads(b_raw)
-                                    except Exception:
-                                        b_data = {}
-                                elif isinstance(b_raw, dict):
-                                    b_data = b_raw
-                                else:
-                                    b_data = {}
-                                for a in extract_authors_data(b_data):
-                                    if a.get("name"):
-                                        author_records.add((a["name"], a.get("role", "writer")))
-                            if author_records:
-                                await db.executemany(
-                                    """
-                                    INSERT INTO authors (name, role, count) VALUES (?, ?, 1)
-                                    ON CONFLICT(name) DO UPDATE SET count = count + 1, role = COALESCE(excluded.role, authors.role)
-                                    """,
-                                    list(author_records),
-                                )
-                        except Exception as auth_err:
-                            logger.debug(f"Authors table sync in upsert_books_batch: {auth_err}")
-
-                        await db.commit()
-                    break
-                except sqlite3.OperationalError as e:
-                    if "locked" in str(e).lower() and attempt < 4:
-                        await asyncio.sleep(0.1 * (2 ** attempt))
-                    else:
-                        raise
+            await self._execute_write_with_retry(_op, "upsert_books_batch")
             await asyncio.sleep(0)
 
     async def update_book_page_count(self, book_id: int, page_count: int) -> None:
-        for attempt in range(5):
-            try:
-                async with self.write_db() as db:
-                    # Also update pageCount in raw_json
-                    cursor = await db.execute("SELECT raw_json FROM books WHERE id = ?", (book_id,))
-                    row = await cursor.fetchone()
-                    if row and row[0]:
-                        try:
-                            data = json.loads(row[0])
-                            if "metadata" in data and isinstance(data["metadata"], dict):
-                                data["metadata"]["pageCount"] = page_count
-                            updated_json = json.dumps(data)
-                            await db.execute(
-                                "UPDATE books SET page_count = ?, raw_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                                (page_count, updated_json, book_id),
-                            )
-                        except Exception:
-                            await db.execute(
-                                "UPDATE books SET page_count = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                                (page_count, book_id),
-                            )
-                    else:
-                        await db.execute(
-                            "UPDATE books SET page_count = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                            (page_count, book_id),
-                        )
-                    await db.commit()
-                return
-            except sqlite3.OperationalError as e:
-                if "locked" in str(e).lower() and attempt < 4:
-                    wait_time = 0.1 * (2 ** attempt)
-                    logger.warning(f"Database locked in update_book_page_count, retrying in {wait_time:.2f}s (attempt {attempt + 1}/5)...")
-                    await asyncio.sleep(wait_time)
-                else:
-                    raise
+        async def _op(db):
+            cursor = await db.execute("SELECT raw_json FROM books WHERE id = ?", (book_id,))
+            row = await cursor.fetchone()
+            if row and row[0]:
+                try:
+                    data = json.loads(row[0])
+                    if "metadata" in data and isinstance(data["metadata"], dict):
+                        data["metadata"]["pageCount"] = page_count
+                    updated_json = json.dumps(data)
+                    await db.execute(
+                        "UPDATE books SET page_count = ?, raw_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        (page_count, updated_json, book_id),
+                    )
+                except Exception:
+                    await db.execute(
+                        "UPDATE books SET page_count = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        (page_count, book_id),
+                    )
+            else:
+                await db.execute(
+                    "UPDATE books SET page_count = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (page_count, book_id),
+                )
+
+        await self._execute_write_with_retry(_op, "update_book_page_count")
 
     async def get_book_by_id(
         self, book_id: int, include_deleted: bool = False, user_id: Optional[int] = None
@@ -1093,30 +1135,21 @@ class Database:
         completed: bool,
         read_date: str,
     ) -> None:
-        for attempt in range(5):
-            try:
-                async with self.write_db() as db:
-                    await db.execute(
-                        """
-                        INSERT INTO read_progress (user_id, book_id, page, completed, read_date, updated_at)
-                        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                        ON CONFLICT(user_id, book_id) DO UPDATE SET
-                            page = excluded.page,
-                            completed = excluded.completed,
-                            read_date = excluded.read_date,
-                            updated_at = CURRENT_TIMESTAMP
-                        """,
-                        (user_id, book_id, page, 1 if completed else 0, read_date),
-                    )
-                    await db.commit()
-                return
-            except sqlite3.OperationalError as e:
-                if "locked" in str(e).lower() and attempt < 4:
-                    wait_time = 0.1 * (2 ** attempt)
-                    logger.warning(f"Database locked in upsert_read_progress, retrying in {wait_time:.2f}s (attempt {attempt + 1}/5)...")
-                    await asyncio.sleep(wait_time)
-                else:
-                    raise
+        async def _op(db):
+            await db.execute(
+                """
+                INSERT INTO read_progress (user_id, book_id, page, completed, read_date, updated_at)
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(user_id, book_id) DO UPDATE SET
+                    page = excluded.page,
+                    completed = excluded.completed,
+                    read_date = excluded.read_date,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (user_id, book_id, page, 1 if completed else 0, read_date),
+            )
+
+        await self._execute_write_with_retry(_op, "upsert_read_progress")
 
     async def delete_read_progress(self, user_id: int, book_id: int) -> None:
         async with self.write_db() as db:
@@ -1143,37 +1176,32 @@ class Database:
         chunk_size = 1000
         for i in range(0, len(records), chunk_size):
             chunk = records[i : i + chunk_size]
-            for attempt in range(5):
-                try:
-                    async with self.write_db() as db:
-                        await db.executemany(
-                            """
-                            INSERT INTO read_progress (user_id, book_id, page, completed, read_date, updated_at)
-                            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                            ON CONFLICT(user_id, book_id) DO UPDATE SET
-                                page = excluded.page,
-                                completed = excluded.completed,
-                                read_date = excluded.read_date,
-                                updated_at = CURRENT_TIMESTAMP
-                            """,
-                            [
-                                (
-                                    r["user_id"],
-                                    r["book_id"],
-                                    r.get("page", 1),
-                                    1 if r.get("completed") else 0,
-                                    r["read_date"],
-                                )
-                                for r in chunk
-                            ],
-                        )
-                        await db.commit()
-                    break
-                except sqlite3.OperationalError as e:
-                    if "locked" in str(e).lower() and attempt < 4:
-                        await asyncio.sleep(0.1 * (2 ** attempt))
-                    else:
-                        raise
+            params = [
+                (
+                    r["user_id"],
+                    r["book_id"],
+                    r.get("page", 1),
+                    1 if r.get("completed") else 0,
+                    r["read_date"],
+                )
+                for r in chunk
+            ]
+
+            async def _op(db, rows=params):
+                await db.executemany(
+                    """
+                    INSERT INTO read_progress (user_id, book_id, page, completed, read_date, updated_at)
+                    VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(user_id, book_id) DO UPDATE SET
+                        page = excluded.page,
+                        completed = excluded.completed,
+                        read_date = excluded.read_date,
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    rows,
+                )
+
+            await self._execute_write_with_retry(_op, "upsert_read_progress_batch")
             await asyncio.sleep(0)
 
     async def get_book_read_progress(self, user_id: int, book_id: int) -> Optional[Dict[str, Any]]:
@@ -1244,36 +1272,31 @@ class Database:
         is_admin: bool = False,
         assigned_libraries: Optional[List[int]] = None,
     ) -> None:
-        for attempt in range(5):
-            try:
-                async with self.write_db() as db:
-                    await db.execute(
-                        """
-                        INSERT INTO users (id, username, token, is_admin, assigned_libraries, last_connected_at, updated_at)
-                        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                        ON CONFLICT(id) DO UPDATE SET
-                            username = excluded.username,
-                            token = COALESCE(excluded.token, users.token),
-                            is_admin = excluded.is_admin,
-                            assigned_libraries = excluded.assigned_libraries,
-                            last_connected_at = CURRENT_TIMESTAMP,
-                            updated_at = CURRENT_TIMESTAMP
-                        """,
-                        (
-                            user_id,
-                            username,
-                            token,
-                            1 if is_admin else 0,
-                            json.dumps(assigned_libraries or []),
-                        ),
-                    )
-                    await db.commit()
-                break
-            except sqlite3.OperationalError as e:
-                if "locked" in str(e).lower() and attempt < 4:
-                    await asyncio.sleep(0.1 * (2 ** attempt))
-                else:
-                    raise
+        assigned_json = json.dumps(assigned_libraries or [])
+
+        async def _op(db):
+            await db.execute(
+                """
+                INSERT INTO users (id, username, token, is_admin, assigned_libraries, last_connected_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                ON CONFLICT(id) DO UPDATE SET
+                    username = excluded.username,
+                    token = COALESCE(excluded.token, users.token),
+                    is_admin = excluded.is_admin,
+                    assigned_libraries = excluded.assigned_libraries,
+                    last_connected_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    user_id,
+                    username,
+                    token,
+                    1 if is_admin else 0,
+                    assigned_json,
+                ),
+            )
+
+        await self._execute_write_with_retry(_op, "upsert_user")
 
     async def get_user_by_id(self, user_id: int) -> Optional[Dict[str, Any]]:
         async with self.get_db() as db:
@@ -1505,28 +1528,19 @@ class Database:
     async def upsert_r2_progression(
         self, user_id: int, book_id: int, progression_json: str
     ) -> None:
-        for attempt in range(5):
-            try:
-                async with self.write_db() as db:
-                    await db.execute(
-                        """
-                        INSERT INTO r2_progression (user_id, book_id, progression_json, updated_at)
-                        VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-                        ON CONFLICT(user_id, book_id) DO UPDATE SET
-                            progression_json = excluded.progression_json,
-                            updated_at = CURRENT_TIMESTAMP
-                        """,
-                        (user_id, book_id, progression_json),
-                    )
-                    await db.commit()
-                return
-            except sqlite3.OperationalError as e:
-                if "locked" in str(e).lower() and attempt < 4:
-                    wait_time = 0.1 * (2 ** attempt)
-                    logger.warning(f"Database locked in upsert_r2_progression, retrying in {wait_time:.2f}s (attempt {attempt + 1}/5)...")
-                    await asyncio.sleep(wait_time)
-                else:
-                    raise
+        async def _op(db):
+            await db.execute(
+                """
+                INSERT INTO r2_progression (user_id, book_id, progression_json, updated_at)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(user_id, book_id) DO UPDATE SET
+                    progression_json = excluded.progression_json,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (user_id, book_id, progression_json),
+            )
+
+        await self._execute_write_with_retry(_op, "upsert_r2_progression")
 
     async def delete_r2_progression(self, user_id: int, book_id: int) -> None:
         async with self.write_db() as db:
@@ -1685,61 +1699,12 @@ class Database:
         if authors:
             auth_clauses = []
             for a in authors:
-                auth_name = None
-                auth_role = None
-                if isinstance(a, dict):
-                    auth_name = a.get("name")
-                    auth_role = a.get("role")
-                elif isinstance(a, str):
-                    if "," in a:
-                        parts = [p.strip() for p in a.split(",")]
-                        if len(parts) == 2 and parts[1].lower() in KNOWN_AUTHOR_ROLES:
-                            auth_name = parts[0]
-                            auth_role = parts[1].lower()
-                        else:
-                            auth_name = a.strip()
-                    else:
-                        auth_name = a.strip()
-
+                auth_name, auth_role = _parse_author_filter(a)
                 if not auth_name:
                     continue
-
-                if auth_role:
-                    book_auth_sql = """(
-                        EXISTS (
-                            SELECT 1 FROM json_each(b.raw_json, '$.metadata.authors')
-                            WHERE LOWER(CASE WHEN type = 'object' THEN json_extract(value, '$.name') ELSE value END) = LOWER(?)
-                              AND (type != 'object' OR json_extract(value, '$.role') IS NULL OR LOWER(json_extract(value, '$.role')) = LOWER(?))
-                        )
-                        OR EXISTS (
-                            SELECT 1 FROM json_each(b.raw_json, '$.authors')
-                            WHERE LOWER(CASE WHEN type = 'object' THEN json_extract(value, '$.name') ELSE value END) = LOWER(?)
-                              AND (type != 'object' OR json_extract(value, '$.role') IS NULL OR LOWER(json_extract(value, '$.role')) = LOWER(?))
-                        )
-                        OR (
-                            LOWER(COALESCE(json_extract(b.raw_json, '$.metadata.author.name'), json_extract(b.raw_json, '$.metadata.author'), json_extract(b.raw_json, '$.author.name'), json_extract(b.raw_json, '$.author'))) = LOWER(?)
-                            AND (
-                                COALESCE(json_extract(b.raw_json, '$.metadata.author.role'), json_extract(b.raw_json, '$.author.role')) IS NULL
-                                OR LOWER(COALESCE(json_extract(b.raw_json, '$.metadata.author.role'), json_extract(b.raw_json, '$.author.role'))) = LOWER(?)
-                            )
-                        )
-                    )"""
-                    auth_clauses.append(book_auth_sql)
-                    params.extend([auth_name, auth_role, auth_name, auth_role, auth_name, auth_role])
-                else:
-                    book_auth_sql = """(
-                        EXISTS (
-                            SELECT 1 FROM json_each(b.raw_json, '$.metadata.authors')
-                            WHERE LOWER(CASE WHEN type = 'object' THEN json_extract(value, '$.name') ELSE value END) = LOWER(?)
-                        )
-                        OR EXISTS (
-                            SELECT 1 FROM json_each(b.raw_json, '$.authors')
-                            WHERE LOWER(CASE WHEN type = 'object' THEN json_extract(value, '$.name') ELSE value END) = LOWER(?)
-                        )
-                        OR LOWER(COALESCE(json_extract(b.raw_json, '$.metadata.author.name'), json_extract(b.raw_json, '$.metadata.author'), json_extract(b.raw_json, '$.author.name'), json_extract(b.raw_json, '$.author'))) = LOWER(?)
-                    )"""
-                    auth_clauses.append(book_auth_sql)
-                    params.extend([auth_name, auth_name, auth_name])
+                book_auth_sql, book_params = _build_book_author_clause(auth_name, auth_role)
+                auth_clauses.append(book_auth_sql)
+                params.extend(book_params)
 
             if auth_clauses:
                 conditions.append(f"({' OR '.join(auth_clauses)})")
@@ -1969,6 +1934,7 @@ class Database:
             series_books.setdefault(book_dict["series_id"], []).append(book_dict)
 
         ondeck_candidates = []
+        from app.services.mapper import parse_raw_json
 
         for s_id, books in series_books.items():
             books.sort(key=lambda x: x.get("number", 1.0))
@@ -1979,22 +1945,12 @@ class Database:
             latest_activity_date = None
 
             for b in books:
-                raw = {}
-                if b.get("raw_json"):
-                    try:
-                        raw = json.loads(b["raw_json"]) if isinstance(b["raw_json"], str) else b["raw_json"]
-                        if isinstance(raw, str):
-                            raw = json.loads(raw)
-                    except Exception:
-                        pass
-                    if not isinstance(raw, dict):
-                        raw = {}
-
                 if user_id is not None:
                     is_comp = bool(b.get("user_completed"))
                     is_prog = not is_comp and ((b.get("user_page") or 0) > 0 or b.get("user_read_date") is not None)
                     r_date = b.get("user_read_date")
                 else:
+                    raw = parse_raw_json(b.get("raw_json"))
                     is_comp = raw.get("readStatus") == "READ" or raw.get("cbxProgress", {}).get("percentage", 0) >= 95.0 or raw.get("epubProgress", {}).get("percentage", 0) >= 95.0 or raw.get("pdfProgress", {}).get("percentage", 0) >= 95.0
                     cbx_perc = raw.get("cbxProgress", {}).get("percentage", 0)
                     epub_perc = raw.get("epubProgress", {}).get("percentage", 0)
@@ -2073,23 +2029,27 @@ class Database:
     # ---------------- Page Dimension / Detail Cache ----------------
 
     async def upsert_book_pages(self, book_id: int, pages: List[Dict[str, Any]]) -> None:
+        rows = [
+            (
+                book_id,
+                p["number"],
+                p.get("fileName", f"page-{p['number']}"),
+                p.get("mediaType", "image/jpeg"),
+                p.get("width", 0),
+                p.get("height", 0),
+                p.get("sizeBytes", 0),
+            )
+            for p in pages
+        ]
         async with self.write_db() as db:
             await db.execute("DELETE FROM book_pages WHERE book_id = ?", (book_id,))
-            for p in pages:
-                await db.execute(
+            if rows:
+                await db.executemany(
                     """
                     INSERT INTO book_pages (book_id, page_number, file_name, media_type, width, height, size_bytes)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (
-                        book_id,
-                        p["number"],
-                        p.get("fileName", f"page-{p['number']}"),
-                        p.get("mediaType", "image/jpeg"),
-                        p.get("width", 0),
-                        p.get("height", 0),
-                        p.get("sizeBytes", 0),
-                    ),
+                    rows,
                 )
             await db.commit()
 
