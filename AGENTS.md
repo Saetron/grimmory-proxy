@@ -77,6 +77,7 @@ grimmory-proxy/
 │   ├── static/                 # Static assets for Admin WebUI (Grimmory branding).
 │   └── templates/              # Jinja2 templates for Admin WebUI.
 ├── tests/                      # Pytest suite covering auth, API parity, mapper, and filters.
+├── CHANGELOG.md                # Full changelog documenting all versions and changes.
 ├── Dockerfile                  # Production container definition.
 ├── docker-compose.yml          # Local container compose configuration.
 └── pytest.ini                  # Pytest configuration.
@@ -127,6 +128,11 @@ grimmory-proxy/
 - The database uses SQLite in WAL mode with `busy_timeout = 60000` ms and a centralized write lock (`self.write_db()` wrapping `self.write_lock`) to serialize all SQLite write transactions in-memory and prevent `sqlite3.OperationalError: database is locked` errors during concurrent catalog synchronization, read progress updates, and page calculation workers.
 - Always use the provided helper methods (`write_db()` for writes, `get_db()` for read-only queries) in `app/database.py` rather than opening unmanaged connections.
 
+### H. Changelog Maintenance & Version Tracking
+- **Always Update `CHANGELOG.md`**: Whenever implementing new features, fixing bugs, refactoring, modifying security configurations, or updating dependencies, AI agents and developers must update `CHANGELOG.md`.
+- Adhere strictly to the [Keep a Changelog](https://keepachangelog.com/) standard with standard categorization headers (`Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`, `Security`, `Performance`, `Dependencies`).
+- When a new version is created or bumped, ensure a dedicated release section with date and compare/tag link is provided and maintained.
+
 ---
 
 ## 5. Development & Testing Commands
@@ -142,6 +148,7 @@ To run a specific test suite or test:
 ```
 
 When adding new features or fixing bugs:
-1. Ensure all 62+ pytest unit and integration tests pass.
+1. Ensure all 77+ pytest unit and integration tests pass.
 2. Check that upstream contract invariants with Grimmory (`https://grimmory.org/api/`) and Komga (`https://raw.githubusercontent.com/gotson/komga/refs/heads/master/komga/docs/openapi.json`) are respected.
-3. Commit and push changes to the target branch (e.g., `dev`).
+3. **Always update `CHANGELOG.md`** with every notable change, bugfix, security patch, or dependency update under the appropriate version section conforming to Keep a Changelog standards.
+4. Commit and push changes to the target branch (e.g., `dev`).
