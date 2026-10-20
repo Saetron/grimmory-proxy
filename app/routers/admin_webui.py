@@ -165,6 +165,29 @@ def get_admin_router(
             redirect.delete_cookie(cookie_name, path="/")
         return redirect
 
+    async def _resolve_calc_job_status() -> PageCalcStatus:
+        calc_job_status = page_calculator.status.model_copy()
+        calc_job_status.is_running = page_calculator.is_running
+        if not page_calculator.is_running and calc_job_status.job_id is None:
+            try:
+                latest_job = await db.get_latest_page_calc_job()
+                if latest_job:
+                    calc_job_status = PageCalcStatus(
+                        job_id=latest_job["id"],
+                        is_running=False,
+                        total_books=latest_job.get("total_books", 0),
+                        processed_books=latest_job.get("processed_books", 0),
+                        updated_books=latest_job.get("updated_books", 0),
+                        removed_books=latest_job.get("removed_books", 0),
+                        error_count=latest_job.get("error_count", 0),
+                        current_book=latest_job.get("current_book") or ("Completed" if latest_job["status"] == "completed" else "-"),
+                        error_message=latest_job.get("error_message"),
+                        status=latest_job.get("status", "idle"),
+                    )
+            except Exception as e:
+                logger.debug(f"Could not load latest calc job for dashboard: {e}")
+        return calc_job_status
+
     @router.get("/admin", response_class=HTMLResponse)
     @router.get("/dashboard", response_class=HTMLResponse)
     async def dashboard_page(request: Request) -> Response:
@@ -203,26 +226,7 @@ def get_admin_router(
             logger.warning(f"Error fetching users list for dashboard: {e}")
             users_list = []
 
-        calc_job_status = page_calculator.status
-        calc_job_status.is_running = page_calculator.is_running
-        if not page_calculator.is_running and calc_job_status.job_id is None:
-            try:
-                latest_job = await db.get_latest_page_calc_job()
-                if latest_job:
-                    calc_job_status = PageCalcStatus(
-                        job_id=latest_job["id"],
-                        is_running=False,
-                        total_books=latest_job.get("total_books", 0),
-                        processed_books=latest_job.get("processed_books", 0),
-                        updated_books=latest_job.get("updated_books", 0),
-                        removed_books=latest_job.get("removed_books", 0),
-                        error_count=latest_job.get("error_count", 0),
-                        current_book=latest_job.get("current_book") or ("Completed" if latest_job["status"] == "completed" else "-"),
-                        error_message=latest_job.get("error_message"),
-                        status=latest_job.get("status", "idle"),
-                    )
-            except Exception as e:
-                logger.debug(f"Could not load latest calc job for dashboard: {e}")
+        calc_job_status = await _resolve_calc_job_status()
 
         return templates.TemplateResponse(
             request=request,
@@ -270,30 +274,11 @@ def get_admin_router(
             logger.warning(f"Error fetching users list for dashboard API: {e}")
             users_list = []
 
-        calc_dict = page_calculator.status.model_dump()
-        calc_dict["is_running"] = page_calculator.is_running
-        if not page_calculator.is_running and page_calculator.status.job_id is None:
-            try:
-                latest_job = await db.get_latest_page_calc_job()
-                if latest_job:
-                    calc_dict = {
-                        "job_id": latest_job["id"],
-                        "is_running": False,
-                        "total_books": latest_job.get("total_books", 0),
-                        "processed_books": latest_job.get("processed_books", 0),
-                        "updated_books": latest_job.get("updated_books", 0),
-                        "removed_books": latest_job.get("removed_books", 0),
-                        "error_count": latest_job.get("error_count", 0),
-                        "current_book": latest_job.get("current_book") or ("Completed" if latest_job["status"] == "completed" else "-"),
-                        "error_message": latest_job.get("error_message"),
-                        "status": latest_job.get("status", "idle"),
-                    }
-            except Exception as e:
-                logger.debug(f"Could not load latest calc job for status API: {e}")
+        calc_job_status = await _resolve_calc_job_status()
 
         return {
             "stats": stats,
-            "calc_job": calc_dict,
+            "calc_job": calc_job_status.model_dump(),
             "sync_job": sync_service.status.model_dump(),
             "read_sync_job": user_sync.status.model_dump(),
             "thumbnails": {"count": thumb_count, "bytes": thumb_bytes},
