@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Cleanup Packages CI Workflow**: Automated maintenance workflow (`.github/workflows/cleanup-packages.yml`) to clean up untagged or stale container images from GitHub Container Registry (GHCR).
 
 ### Changed & Refactored
+- **Documentation Overhaul**: Updated `README.md` with comprehensive coverage of Komga v1/v2 endpoints, virtual favorites collections, book adjacency, SQLite memory & WAL configuration options, local development guide, and CI package cleanup workflows.
 - **Client Auth Retry & Shelf Book Extraction**: Centralized JWT renewal and error-handling logic in `GrimmoryClient._request_with_token_retry`, and extracted shelf book processing into `get_shelf_books`.
 - **Router Deduplication**: Deduplicated filter condition parsing (`extract_filter_conditions`), progress page resolution, and status queries across `komga_books`, `komga_series`, `komga_authors`, `komga_metadata`, `komga_collections`, and `komga_progress`.
 - **Mapper & Sync Helper Deduplication**: Streamlined helper methods between catalog synchronization, reading progress synchronization, and Komga DTO transformation.
