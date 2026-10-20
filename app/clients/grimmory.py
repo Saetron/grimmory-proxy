@@ -97,36 +97,39 @@ class GrimmoryClient:
             headers["Authorization"] = f"Bearer {token}"
         return headers
 
+    async def _request_with_auth(
+        self,
+        method: str,
+        url: str,
+        token: Optional[str] = None,
+        retry_always: bool = False,
+        **kwargs: Any,
+    ) -> Tuple[httpx.Response, str]:
+        is_sync = self._is_sync_token(token)
+        auth_token = token or await self.get_sync_token()
+        http_fn = getattr(self._http_client, method.lower())
+        resp = await http_fn(url, headers=self._headers(auth_token), **kwargs)
+        if resp.status_code in (401, 403) and (retry_always or is_sync):
+            auth_token = await self.get_sync_token(force=True)
+            resp = await http_fn(url, headers=self._headers(auth_token), **kwargs)
+        return resp, auth_token
+
     # ---------------- Upstream Queries ----------------
 
     async def get_libraries(self, token: Optional[str] = None) -> List[Dict[str, Any]]:
-        is_sync = self._is_sync_token(token)
-        auth_token = token or await self.get_sync_token()
-        resp = await self._http_client.get("/api/v1/libraries", headers=self._headers(auth_token))
-        if resp.status_code in (401, 403) and is_sync:
-            auth_token = await self.get_sync_token(force=True)
-            resp = await self._http_client.get("/api/v1/libraries", headers=self._headers(auth_token))
+        resp, _ = await self._request_with_auth("GET", "/api/v1/libraries", token=token)
         resp.raise_for_status()
         return resp.json()
 
     async def get_library_books(self, library_id: int, token: Optional[str] = None) -> List[Dict[str, Any]]:
-        is_sync = self._is_sync_token(token)
-        auth_token = token or await self.get_sync_token()
-        resp = await self._http_client.get(f"/api/v1/libraries/{library_id}/book", headers=self._headers(auth_token))
-        if resp.status_code in (401, 403) and is_sync:
-            auth_token = await self.get_sync_token(force=True)
-            resp = await self._http_client.get(f"/api/v1/libraries/{library_id}/book", headers=self._headers(auth_token))
+        resp, _ = await self._request_with_auth("GET", f"/api/v1/libraries/{library_id}/book", token=token)
         if resp.status_code == 200:
             return resp.json()
         return []
 
     async def get_all_books(self, token: Optional[str] = None) -> List[Dict[str, Any]]:
         is_sync = self._is_sync_token(token)
-        auth_token = token or await self.get_sync_token()
-        resp = await self._http_client.get("/api/v1/books", headers=self._headers(auth_token))
-        if resp.status_code in (401, 403) and is_sync:
-            auth_token = await self.get_sync_token(force=True)
-            resp = await self._http_client.get("/api/v1/books", headers=self._headers(auth_token))
+        resp, _ = await self._request_with_auth("GET", "/api/v1/books", token=token)
         if resp.status_code == 200:
             return resp.json()
         if not is_sync and resp.status_code in (401, 403):
@@ -135,63 +138,36 @@ class GrimmoryClient:
         return resp.json()
 
     async def get_book(self, book_id: int, token: Optional[str] = None) -> Dict[str, Any]:
-        auth_token = token or await self.get_sync_token()
-        resp = await self._http_client.get(f"/api/v1/books/{book_id}", headers=self._headers(auth_token))
-        if resp.status_code in (401, 403):
-            auth_token = await self.get_sync_token(force=True)
-            resp = await self._http_client.get(f"/api/v1/books/{book_id}", headers=self._headers(auth_token))
+        resp, _ = await self._request_with_auth("GET", f"/api/v1/books/{book_id}", token=token, retry_always=True)
         resp.raise_for_status()
         return resp.json()
 
     async def get_cbx_pages(self, book_id: int, token: Optional[str] = None) -> List[int]:
-        auth_token = token or await self.get_sync_token()
-        resp = await self._http_client.get(f"/api/v1/cbx/{book_id}/pages", headers=self._headers(auth_token))
-        if resp.status_code in (401, 403):
-            auth_token = await self.get_sync_token(force=True)
-            resp = await self._http_client.get(f"/api/v1/cbx/{book_id}/pages", headers=self._headers(auth_token))
+        resp, _ = await self._request_with_auth("GET", f"/api/v1/cbx/{book_id}/pages", token=token, retry_always=True)
         if resp.status_code == 200:
             return resp.json()
         return []
 
     async def get_pdf_pages(self, book_id: int, token: Optional[str] = None) -> List[int]:
-        auth_token = token or await self.get_sync_token()
-        resp = await self._http_client.get(f"/api/v1/pdf/{book_id}/pages", headers=self._headers(auth_token))
-        if resp.status_code in (401, 403):
-            auth_token = await self.get_sync_token(force=True)
-            resp = await self._http_client.get(f"/api/v1/pdf/{book_id}/pages", headers=self._headers(auth_token))
+        resp, _ = await self._request_with_auth("GET", f"/api/v1/pdf/{book_id}/pages", token=token, retry_always=True)
         if resp.status_code == 200:
             return resp.json()
         return []
 
     async def get_magic_shelves(self, token: Optional[str] = None) -> List[Dict[str, Any]]:
-        is_sync = self._is_sync_token(token)
-        auth_token = token or await self.get_sync_token()
-        resp = await self._http_client.get("/api/v1/magic-shelves", headers=self._headers(auth_token))
-        if resp.status_code in (401, 403) and is_sync:
-            auth_token = await self.get_sync_token(force=True)
-            resp = await self._http_client.get("/api/v1/magic-shelves", headers=self._headers(auth_token))
+        resp, _ = await self._request_with_auth("GET", "/api/v1/magic-shelves", token=token)
         if resp.status_code == 200:
             return resp.json()
         return []
 
     async def get_shelves(self, token: Optional[str] = None) -> List[Dict[str, Any]]:
-        is_sync = self._is_sync_token(token)
-        auth_token = token or await self.get_sync_token()
-        resp = await self._http_client.get("/api/v1/shelves", headers=self._headers(auth_token))
-        if resp.status_code in (401, 403) and is_sync:
-            auth_token = await self.get_sync_token(force=True)
-            resp = await self._http_client.get("/api/v1/shelves", headers=self._headers(auth_token))
+        resp, _ = await self._request_with_auth("GET", "/api/v1/shelves", token=token)
         if resp.status_code == 200:
             return resp.json()
         return []
 
     async def get_shelf_books(self, shelf_id: Any, token: Optional[str] = None) -> List[Dict[str, Any]]:
-        is_sync = self._is_sync_token(token)
-        auth_token = token or await self.get_sync_token()
-        resp = await self._http_client.get(f"/api/v1/shelves/{shelf_id}/books", headers=self._headers(auth_token))
-        if resp.status_code in (401, 403) and is_sync:
-            auth_token = await self.get_sync_token(force=True)
-            resp = await self._http_client.get(f"/api/v1/shelves/{shelf_id}/books", headers=self._headers(auth_token))
+        resp, _ = await self._request_with_auth("GET", f"/api/v1/shelves/{shelf_id}/books", token=token)
         if resp.status_code == 200:
             return resp.json()
         return []
@@ -225,22 +201,25 @@ class GrimmoryClient:
                                 pass
             return ids
 
+        async def _find_in_shelves(shelves_list: List[Dict[str, Any]]) -> Tuple[bool, List[int]]:
+            for s in shelves_list:
+                if str(s.get("name", "")).strip().lower() == "favorites":
+                    books = s.get("books") or s.get("items") or s.get("bookIds")
+                    if books:
+                        return True, _extract_ids(books)
+                    if "id" in s:
+                        shelf_books = await self.get_shelf_books(s["id"], token=token)
+                        return True, _extract_ids(shelf_books)
+                    return True, []
+            return False, []
+
         fav_ids: List[int] = []
         found_shelf = False
 
         # 1. Check /api/v1/shelves
         try:
             shelves = await self.get_shelves(token=token)
-            for s in shelves:
-                if str(s.get("name", "")).strip().lower() == "favorites":
-                    found_shelf = True
-                    books = s.get("books") or s.get("items") or s.get("bookIds")
-                    if books:
-                        fav_ids = _extract_ids(books)
-                    elif "id" in s:
-                        shelf_books = await self.get_shelf_books(s["id"], token=token)
-                        fav_ids = _extract_ids(shelf_books)
-                    break
+            found_shelf, fav_ids = await _find_in_shelves(shelves)
         except Exception as e:
             logger.debug(f"Error checking Grimmory shelves for user {user_id}: {e}")
 
@@ -248,31 +227,14 @@ class GrimmoryClient:
         if not found_shelf or not fav_ids:
             try:
                 magic_shelves = await self.get_magic_shelves(token=token)
-                for s in magic_shelves:
-                    if str(s.get("name", "")).strip().lower() == "favorites":
-                        found_shelf = True
-                        books = s.get("books") or s.get("items") or s.get("bookIds")
-                        if books:
-                            extracted = _extract_ids(books)
-                            if extracted:
-                                fav_ids = extracted
-                        elif "id" in s:
-                            shelf_books = await self.get_shelf_books(s["id"], token=token)
-                            extracted = _extract_ids(shelf_books)
-                            if extracted:
-                                fav_ids = extracted
-                        break
+                _, extracted = await _find_in_shelves(magic_shelves)
+                if extracted:
+                    fav_ids = extracted
             except Exception as e:
                 logger.debug(f"Error checking Grimmory magic-shelves for user {user_id}: {e}")
 
         # Deduplicate while preserving order
-        deduped: List[int] = []
-        seen = set()
-        for bid in fav_ids:
-            if bid not in seen:
-                seen.add(bid)
-                deduped.append(bid)
-
+        deduped = list(dict.fromkeys(fav_ids))
         self._user_favorites_cache[user_id] = (now, deduped)
         return deduped
 
@@ -286,13 +248,9 @@ class GrimmoryClient:
 
     async def stream_thumbnail(self, book_id: int, token: Optional[str] = None) -> Optional[bytes]:
         """Fetch thumbnail bytes from Grimmory."""
-        auth_token = token or await self.get_sync_token()
         for path in [f"/api/v1/media/book/{book_id}/thumbnail", f"/api/v1/media/book/{book_id}/cover"]:
             try:
-                resp = await self._http_client.get(path, headers=self._headers(auth_token))
-                if resp.status_code in (401, 403):
-                    auth_token = await self.get_sync_token(force=True)
-                    resp = await self._http_client.get(path, headers=self._headers(auth_token))
+                resp, _ = await self._request_with_auth("GET", path, token=token, retry_always=True)
                 if resp.status_code == 200 and resp.content:
                     return resp.content
             except Exception as e:
@@ -300,12 +258,8 @@ class GrimmoryClient:
         return None
 
     async def stream_page_image(self, book_id: int, page_number: int, token: Optional[str] = None) -> Optional[bytes]:
-        auth_token = token or await self.get_sync_token()
         path = f"/api/v1/media/book/{book_id}/cbx/pages/{page_number}"
-        resp = await self._http_client.get(path, headers=self._headers(auth_token))
-        if resp.status_code in (401, 403):
-            auth_token = await self.get_sync_token(force=True)
-            resp = await self._http_client.get(path, headers=self._headers(auth_token))
+        resp, _ = await self._request_with_auth("GET", path, token=token, retry_always=True)
         if resp.status_code == 200:
             return resp.content
         return None
@@ -323,11 +277,7 @@ class GrimmoryClient:
         return resp
 
     async def download_book_bytes(self, book_id: int, token: Optional[str] = None) -> bytes:
-        auth_token = token or await self.get_sync_token()
-        resp = await self._http_client.get(f"/api/v1/books/{book_id}/download", headers=self._headers(auth_token))
-        if resp.status_code in (401, 403):
-            auth_token = await self.get_sync_token(force=True)
-            resp = await self._http_client.get(f"/api/v1/books/{book_id}/download", headers=self._headers(auth_token))
+        resp, _ = await self._request_with_auth("GET", f"/api/v1/books/{book_id}/download", token=token, retry_always=True)
         resp.raise_for_status()
         return resp.content
 
@@ -335,53 +285,32 @@ class GrimmoryClient:
 
     async def update_book_metadata(self, book_id: int, metadata: Dict[str, Any], token: Optional[str] = None) -> Dict[str, Any]:
         """Write metadata back to Grimmory preserving all other fields."""
-        auth_token = token or await self.get_sync_token()
         url = f"/api/v1/books/{book_id}/metadata?replaceMode=REPLACE_WHEN_PROVIDED"
-        payload = {"metadata": metadata}
-        resp = await self._http_client.put(url, json=payload, headers=self._headers(auth_token))
-        if resp.status_code in (401, 403):
-            auth_token = await self.get_sync_token(force=True)
-            resp = await self._http_client.put(url, json=payload, headers=self._headers(auth_token))
+        resp, _ = await self._request_with_auth("PUT", url, token=token, retry_always=True, json={"metadata": metadata})
         resp.raise_for_status()
         return resp.json()
 
     async def update_read_progress(self, progress_req: GrimmoryReadProgressRequest, token: Optional[str] = None) -> bool:
         """Update read progress for the specific authenticated user."""
-        url = "/api/v1/books/progress"
-        is_sync = self._is_sync_token(token)
-        auth_token = token or await self.get_sync_token()
         payload = progress_req.model_dump(exclude_none=True)
-        resp = await self._http_client.post(url, json=payload, headers=self._headers(auth_token))
-        if resp.status_code in (401, 403) and is_sync:
-            auth_token = await self.get_sync_token(force=True)
-            resp = await self._http_client.post(url, json=payload, headers=self._headers(auth_token))
+        resp, _ = await self._request_with_auth("POST", "/api/v1/books/progress", token=token, json=payload)
         return resp.status_code in [200, 204]
 
     async def update_read_status(self, book_ids: List[int], status: str, token: Optional[str] = None) -> bool:
         """Update read status ('READ', 'READING', 'UNREAD') for one or more books on Grimmory."""
         if not book_ids:
             return True
-        url = "/api/v1/books/status"
-        is_sync = self._is_sync_token(token)
-        auth_token = token or await self.get_sync_token()
         payload = {"bookIds": book_ids, "status": status}
-        resp = await self._http_client.post(url, json=payload, headers=self._headers(auth_token))
-        if resp.status_code in (401, 403) and is_sync:
-            auth_token = await self.get_sync_token(force=True)
-            resp = await self._http_client.post(url, json=payload, headers=self._headers(auth_token))
+        resp, _ = await self._request_with_auth("POST", "/api/v1/books/status", token=token, json=payload)
         return resp.status_code in [200, 204]
 
     async def reset_read_progress(self, book_ids: List[int], token: Optional[str] = None) -> bool:
         """Reset read progress and status for the specific authenticated user."""
         if not book_ids:
             return True
-        url = "/api/v1/books/reset-progress?type=ALL"
-        is_sync = self._is_sync_token(token)
-        auth_token = token or await self.get_sync_token()
-        resp = await self._http_client.post(url, json=book_ids, headers=self._headers(auth_token))
-        if resp.status_code in (401, 403) and is_sync:
-            auth_token = await self.get_sync_token(force=True)
-            resp = await self._http_client.post(url, json=book_ids, headers=self._headers(auth_token))
+        resp, auth_token = await self._request_with_auth(
+            "POST", "/api/v1/books/reset-progress?type=ALL", token=token, json=book_ids
+        )
         # Ensure read status on Grimmory is also set to UNREAD
         try:
             await self.update_read_status(book_ids, "UNREAD", token=auth_token)
