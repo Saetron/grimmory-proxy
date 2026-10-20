@@ -9,27 +9,9 @@ from app.clients.grimmory import grimmory_client
 from app.config import settings
 from app.database import Database
 from app.models.internal import ReadSyncStatus, UserSession
-from app.services.mapper import format_iso_timestamp
+from app.services.mapper import _safe_float, _safe_int, format_iso_timestamp
 
 logger = logging.getLogger("grimmory_proxy.user_sync")
-
-
-def _safe_float(val: Any, default: float = 0.0) -> float:
-    if val is None:
-        return default
-    try:
-        return float(val)
-    except (ValueError, TypeError):
-        return default
-
-
-def _safe_int(val: Any, default: int = 0) -> int:
-    if val is None:
-        return default
-    try:
-        return int(val)
-    except (ValueError, TypeError):
-        return default
 
 
 class UserSyncService:

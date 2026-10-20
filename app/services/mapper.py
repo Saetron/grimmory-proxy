@@ -1,7 +1,7 @@
 import json
 import logging
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote
 
 from app.config import settings
@@ -22,6 +22,66 @@ from app.models.komga import (
 
 logger = logging.getLogger("grimmory_proxy.mapper")
 
+_SPLIT_DELIM_RE = re.compile(r"[,;]")
+
+
+def parse_raw_json(raw_val: Any) -> Dict[str, Any]:
+    """Safely parses a raw_json field (str or dict) into a dictionary."""
+    if not raw_val:
+        return {}
+    raw = raw_val
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+            if isinstance(raw, str):
+                raw = json.loads(raw)
+        except Exception:
+            return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def normalize_release_date(raw_released: Any) -> Optional[str]:
+    """Normalizes various release date strings into YYYY-MM-DD format."""
+    if not raw_released:
+        return None
+    r_str = str(raw_released).strip()
+    if not r_str:
+        return None
+    if len(r_str) >= 10 and r_str[:4].isdigit() and r_str[4] == "-" and r_str[7] == "-":
+        return r_str[:10]
+    if len(r_str) == 4 and r_str.isdigit():
+        return f"{r_str}-01-01"
+    return r_str[:10] if len(r_str) >= 10 else r_str
+
+
+def _extract_string_list(data: Dict[str, Any], field_names: Tuple[str, ...]) -> List[str]:
+    if not isinstance(data, dict):
+        return []
+    meta = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+    candidates = []
+    for key in field_names:
+        for container in (meta, data):
+            source = container.get(key)
+            if isinstance(source, list):
+                candidates.extend(source)
+            elif isinstance(source, str) and source.strip():
+                candidates.extend(p.strip() for p in _SPLIT_DELIM_RE.split(source) if p.strip())
+
+    items: List[str] = []
+    seen = set()
+    for item in candidates:
+        val = ""
+        if isinstance(item, str):
+            val = item.strip()
+        elif isinstance(item, dict) and item.get("name"):
+            val = str(item["name"]).strip()
+        if val:
+            lower_val = val.lower()
+            if lower_val not in seen:
+                seen.add(lower_val)
+                items.append(val)
+    return items
+
 
 def extract_authors_data(data: Dict[str, Any]) -> List[Dict[str, str]]:
     if not isinstance(data, dict):
@@ -30,20 +90,16 @@ def extract_authors_data(data: Dict[str, Any]) -> List[Dict[str, str]]:
     candidates = []
 
     # Check meta.get("authors") and data.get("authors")
-    for source in [meta.get("authors"), data.get("authors")]:
+    for source in (meta.get("authors"), data.get("authors")):
         if isinstance(source, list):
             candidates.extend(source)
         elif isinstance(source, str) and source.strip():
-            for part in source.split(","):
-                if part.strip():
-                    candidates.append(part.strip())
+            candidates.extend(part.strip() for part in source.split(",") if part.strip())
 
     # Check singular meta.get("author") and data.get("author")
-    for source in [meta.get("author"), data.get("author")]:
+    for source in (meta.get("author"), data.get("author")):
         if isinstance(source, str) and source.strip():
-            for part in source.split(","):
-                if part.strip():
-                    candidates.append(part.strip())
+            candidates.extend(part.strip() for part in source.split(",") if part.strip())
         elif isinstance(source, dict):
             candidates.append(source)
         elif isinstance(source, list):
@@ -75,14 +131,14 @@ def extract_publisher(data: Dict[str, Any]) -> str:
     if not isinstance(data, dict):
         return ""
     meta = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
-    for source in [
+    for source in (
         meta.get("publisher"),
         data.get("publisher"),
         meta.get("publishers"),
         data.get("publishers"),
         meta.get("imprint"),
         data.get("imprint"),
-    ]:
+    ):
         if isinstance(source, str) and source.strip():
             return source.strip()
         elif isinstance(source, dict) and source.get("name"):
@@ -97,82 +153,28 @@ def extract_publisher(data: Dict[str, Any]) -> str:
 
 
 def extract_genres(data: Dict[str, Any]) -> List[str]:
-    if not isinstance(data, dict):
-        return []
-    meta = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
-    candidates = []
-    for source in [meta.get("genres"), data.get("genres"), meta.get("genre"), data.get("genre")]:
-        if isinstance(source, list):
-            candidates.extend(source)
-        elif isinstance(source, str) and source.strip():
-            parts = re.split(r"[,;]", source)
-            candidates.extend([p.strip() for p in parts if p.strip()])
-
-    genres: List[str] = []
-    seen = set()
-    for item in candidates:
-        val = ""
-        if isinstance(item, str):
-            val = item.strip()
-        elif isinstance(item, dict) and item.get("name"):
-            val = str(item["name"]).strip()
-        if val and val.lower() not in seen:
-            seen.add(val.lower())
-            genres.append(val)
-    return genres
+    return _extract_string_list(data, ("genres", "genre"))
 
 
 def extract_tags(data: Dict[str, Any]) -> List[str]:
-    if not isinstance(data, dict):
-        return []
-    meta = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
-    candidates = []
-    for source in [
-        meta.get("tags"),
-        data.get("tags"),
-        meta.get("tag"),
-        data.get("tag"),
-        meta.get("keywords"),
-        data.get("keywords"),
-        meta.get("categories"),
-        data.get("categories"),
-    ]:
-        if isinstance(source, list):
-            candidates.extend(source)
-        elif isinstance(source, str) and source.strip():
-            parts = re.split(r"[,;]", source)
-            candidates.extend([p.strip() for p in parts if p.strip()])
-
-    tags: List[str] = []
-    seen = set()
-    for item in candidates:
-        val = ""
-        if isinstance(item, str):
-            val = item.strip()
-        elif isinstance(item, dict) and item.get("name"):
-            val = str(item["name"]).strip()
-        if val and val.lower() not in seen:
-            seen.add(val.lower())
-            tags.append(val)
-    return tags
+    return _extract_string_list(data, ("tags", "tag", "keywords", "categories"))
 
 
 def extract_summary(data: Dict[str, Any]) -> str:
     if not isinstance(data, dict):
         return ""
     meta = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
-    for source in [
+    for source in (
         meta.get("description"),
         meta.get("summary"),
         meta.get("synopsis"),
         data.get("description"),
         data.get("summary"),
         data.get("synopsis"),
-    ]:
+    ):
         if isinstance(source, str) and source.strip():
             return source.strip()
     return ""
-
 
 
 def _safe_float(val: Any, default: float = 0.0) -> float:
@@ -209,11 +211,11 @@ def format_file_size(size_kb: int) -> str:
 
 def get_media_type_and_profile(book_type: str) -> tuple[str, str]:
     btype = (book_type or "EPUB").upper()
-    if btype in ["CBX", "CBZ"]:
+    if btype in ("CBX", "CBZ"):
         return "application/x-cbz", "DIVINA"
     elif btype == "PDF":
         return "application/pdf", "PDF"
-    elif btype in ["MOBI", "AZW3", "AZW"]:
+    elif btype in ("MOBI", "AZW3", "AZW"):
         return "application/x-mobipocket-ebook", "EPUB"
     elif btype == "FB2":
         return "application/fictionbook2+zip", "DIVINA"
@@ -259,17 +261,8 @@ class KomgaMapper:
         file_size_kb = record.get("file_size_kb", 0)
 
         # Parse raw_json if available
-        raw = {}
-        if record.get("raw_json"):
-            try:
-                raw = json.loads(record["raw_json"]) if isinstance(record["raw_json"], str) else record["raw_json"]
-                if isinstance(raw, str):
-                    raw = json.loads(raw)
-            except Exception:
-                pass
-            if not isinstance(raw, dict):
-                raw = {}
-
+        raw = parse_raw_json(record.get("raw_json"))
+        if raw:
             # If raw contains pageCount, ensure page_count reflects it
             raw_meta = raw.get("metadata", {})
             if raw_meta.get("pageCount") and page_count <= 0:
@@ -286,15 +279,7 @@ class KomgaMapper:
             or raw.get("releaseDate")
             or metadata_obj.get("publishedDate")
         )
-        release_date = None
-        if raw_released:
-            r_str = str(raw_released).strip()
-            if len(r_str) >= 10 and r_str[:4].isdigit() and r_str[4] == "-" and r_str[7] == "-":
-                release_date = r_str[:10]
-            elif len(r_str) == 4 and r_str.isdigit():
-                release_date = f"{r_str}-01-01"
-            else:
-                release_date = r_str[:10] if len(r_str) >= 10 else r_str
+        release_date = normalize_release_date(raw_released)
 
         isbn = metadata_obj.get("isbn13") or metadata_obj.get("isbn10") or raw.get("isbn13") or raw.get("isbn10") or raw.get("isbn")
 
@@ -454,14 +439,7 @@ class KomgaMapper:
             })
 
         # Parse raw_json if available
-        raw = {}
-        if record.get("raw_json"):
-            try:
-                raw = json.loads(record["raw_json"]) if isinstance(record["raw_json"], str) else record["raw_json"]
-            except Exception:
-                pass
-        if not isinstance(raw, dict):
-            raw = {}
+        raw = parse_raw_json(record.get("raw_json"))
 
         publisher = record.get("publisher") or raw.get("publisher", "") or extract_publisher(raw)
         genres = raw.get("genres") or extract_genres(raw)
@@ -471,15 +449,7 @@ class KomgaMapper:
         series_summary = raw.get("summary") or record.get("summary") or extract_summary(raw) or ""
         books_summary = series_summary or f"Series {name}"
         raw_rel = raw.get("releaseDate") or record.get("released")
-        release_date = None
-        if raw_rel:
-            r_str = str(raw_rel).strip()
-            if len(r_str) >= 10 and r_str[:4].isdigit() and r_str[4] == "-" and r_str[7] == "-":
-                release_date = r_str[:10]
-            elif len(r_str) == 4 and r_str.isdigit():
-                release_date = f"{r_str}-01-01"
-            else:
-                release_date = r_str[:10] if len(r_str) >= 10 else r_str
+        release_date = normalize_release_date(raw_rel)
 
         language = raw.get("language") or record.get("language") or "en"
         reading_direction = raw.get("readingDirection") or "LEFT_TO_RIGHT"

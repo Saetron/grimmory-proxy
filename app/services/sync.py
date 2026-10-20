@@ -313,25 +313,6 @@ class SyncService:
             # Prune any empty series
             await self.db.cleanup_empty_series()
 
-            # Update authors table
-            if author_records:
-                async with self.db.get_db() as db:
-                    await db.executemany(
-                        """
-                        INSERT INTO authors (name, role, count) VALUES (?, ?, 1)
-                        ON CONFLICT(name) DO UPDATE SET count = count + 1, role = COALESCE(excluded.role, authors.role)
-                        """,
-                        [(name, role) for name, role in author_records],
-                    )
-                    await db.commit()
-            elif author_names:
-                async with self.db.get_db() as db:
-                    await db.executemany(
-                        "INSERT INTO authors (name, role, count) VALUES (?, 'writer', 1) ON CONFLICT(name) DO UPDATE SET count = count + 1",
-                        [(author,) for author in author_names],
-                    )
-                    await db.commit()
-
             # Record sync timestamp
             now_str = datetime.now(timezone.utc).isoformat()
             await self.db.set_state("last_sync_time", now_str)
