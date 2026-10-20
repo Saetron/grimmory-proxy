@@ -19,6 +19,10 @@ logger = logging.getLogger("grimmory_proxy.page_calculator")
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif", ".bmp"}
 
+_SCRIPT_STYLE_RE = re.compile(r"<(script|style)[^>]*>.*?</\1>", re.DOTALL | re.IGNORECASE)
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+_WHITESPACE_RE = re.compile(r"\s+")
+
 
 class PageCalculator:
     def __init__(self, db: Database):
@@ -116,13 +120,13 @@ class PageCalculator:
                         try:
                             raw_content = z.read(name).decode("utf-8", errors="ignore")
                             # Remove script and style tags completely
-                            cleaned = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", raw_content, flags=re.DOTALL | re.IGNORECASE)
+                            cleaned = _SCRIPT_STYLE_RE.sub(" ", raw_content)
                             # Remove remaining HTML tags
-                            text = re.sub(r"<[^>]+>", " ", cleaned)
+                            text = _HTML_TAG_RE.sub(" ", cleaned)
                             # Unescape HTML entities
                             text = unescape(text)
                             # Collapse whitespace
-                            text = re.sub(r"\s+", " ", text).strip()
+                            text = _WHITESPACE_RE.sub(" ", text).strip()
                             total_chars += len(text)
                         except Exception as e:
                             logger.debug(f"Error parsing chapter {name}: {e}")
@@ -163,12 +167,11 @@ class PageCalculator:
                     width, height = 1200, 1600
                     size_bytes = 0
 
-                    # Try reading dimensions for page metadata
+                    # Try reading dimensions lazily from image header without decompressing full image
                     try:
                         info = z.getinfo(entry_name)
                         size_bytes = info.file_size
-                        img_data = z.read(entry_name)
-                        with Image.open(io.BytesIO(img_data)) as img:
+                        with z.open(entry_name) as zf, Image.open(zf) as img:
                             width, height = img.size
                     except Exception:
                         pass

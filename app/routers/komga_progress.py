@@ -52,6 +52,22 @@ async def _sync_series_books_read_to_grimmory(token: str, books: List[Dict[str, 
 def get_progress_router(db: Database) -> APIRouter:
     router = APIRouter(tags=["Komga Reading Progress"])
 
+    async def _resolve_book_page_count(book_id: int, record: Optional[Dict[str, Any]]) -> int:
+        page_count = (record.get("page_count", 0) or 0) if record else 0
+        if page_count <= 0 and record and record.get("raw_json"):
+            try:
+                raw_data = json.loads(record["raw_json"]) if isinstance(record["raw_json"], str) else record["raw_json"]
+                if isinstance(raw_data, dict):
+                    page_count = raw_data.get("metadata", {}).get("pageCount") or raw_data.get("pageCount") or 0
+            except Exception:
+                pass
+        if page_count <= 0:
+            pages = await db.get_book_pages(book_id)
+            if pages:
+                page_count = len(pages)
+                await db.update_book_page_count(book_id, page_count)
+        return page_count if page_count > 0 else 1
+
     # ---------------- Standard Komga Book Read Progress ----------------
 
     @router.get("/api/v1/books/{book_id}/read-progress", response_model=ReadProgressDto)
@@ -92,21 +108,7 @@ def get_progress_router(db: Database) -> APIRouter:
     ) -> Response:
         dto = update_dto if update_dto is not None else ReadProgressUpdateDto(completed=True)
         record = await db.get_book_by_id(book_id)
-        page_count = record.get("page_count", 0) if record else 0
-        if page_count <= 0 and record and record.get("raw_json"):
-            try:
-                raw_data = json.loads(record["raw_json"]) if isinstance(record["raw_json"], str) else record["raw_json"]
-                if isinstance(raw_data, dict):
-                    page_count = raw_data.get("metadata", {}).get("pageCount") or raw_data.get("pageCount") or 0
-            except Exception:
-                pass
-        if page_count <= 0:
-            pages = await db.get_book_pages(book_id)
-            if pages:
-                page_count = len(pages)
-                await db.update_book_page_count(book_id, page_count)
-        if page_count <= 0:
-            page_count = 1
+        page_count = await _resolve_book_page_count(book_id, record)
 
         # Check if marking unread
         if dto.completed is False and (dto.page is None or dto.page <= 0):
@@ -390,21 +392,7 @@ def get_progress_router(db: Database) -> APIRouter:
         if not record:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
 
-        page_count = record.get("page_count", 0) or 0
-        if page_count <= 0 and record and record.get("raw_json"):
-            try:
-                raw_data = json.loads(record["raw_json"]) if isinstance(record["raw_json"], str) else record["raw_json"]
-                if isinstance(raw_data, dict):
-                    page_count = raw_data.get("metadata", {}).get("pageCount") or raw_data.get("pageCount") or 0
-            except Exception:
-                pass
-        if page_count <= 0:
-            pages = await db.get_book_pages(book_id)
-            if pages:
-                page_count = len(pages)
-                await db.update_book_page_count(book_id, page_count)
-        if page_count <= 0:
-            page_count = 1
+        page_count = await _resolve_book_page_count(book_id, record)
 
         now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 

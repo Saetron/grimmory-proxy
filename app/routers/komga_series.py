@@ -236,14 +236,7 @@ def get_series_router(db: Database) -> APIRouter:
         effective_libs = resolve_effective_library_ids(user, filters["library_ids"])
         if effective_libs is not None and len(effective_libs) == 0:
             return []
-        records, _ = await db.get_series_list(library_ids=effective_libs, limit=5000)
-        groups: Dict[str, int] = {}
-        for r in records:
-            first_char = r["name"][:1].upper() if r.get("name") else "#"
-            if not first_char.isalpha():
-                first_char = "#"
-            groups[first_char] = groups.get(first_char, 0) + 1
-        return [{"group": k, "count": v} for k, v in sorted(groups.items())]
+        return await db.get_series_alphabetical_groups(library_ids=effective_libs)
 
     @router.get("/api/v1/series/genres")
     async def get_series_genres(

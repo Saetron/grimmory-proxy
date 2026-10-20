@@ -6,7 +6,11 @@ from app.database import Database
 from app.models.internal import UserSession
 from app.models.komga import PageableDto, build_pageable
 from app.services.auth import AuthService
-from app.services.filter_utils import resolve_effective_library_ids
+from app.services.filter_utils import (
+    is_unpaged_request,
+    parse_library_ids_param,
+    resolve_effective_library_ids,
+)
 
 logger = logging.getLogger("grimmory_proxy.komga_metadata")
 
@@ -23,14 +27,7 @@ def get_metadata_router(db: Database) -> APIRouter:
         collection_id: Optional[str] = Query(None),
         user: UserSession = Depends(AuthService.require_user),
     ) -> List[str]:
-        # Handle repeated query params or comma-separated lists
-        lib_ids = request.query_params.getlist("library_id") or (library_id if library_id is not None else [])
-        parsed_libs: List[int] = []
-        for l in lib_ids:
-            for part in str(l).split(","):
-                if part.strip().isdigit():
-                    parsed_libs.append(int(part.strip()))
-
+        parsed_libs = parse_library_ids_param(request, library_id)
         effective_libs = resolve_effective_library_ids(user, parsed_libs)
         if effective_libs is not None and len(effective_libs) == 0:
             return []
@@ -47,24 +44,15 @@ def get_metadata_router(db: Database) -> APIRouter:
         size: int = Query(20, ge=1),
         user: UserSession = Depends(AuthService.require_user),
     ) -> PageableDto[str]:
-        is_unpaged = unpaged or request.query_params.get("unpaged", "").lower() in ("true", "1")
-        lib_ids = request.query_params.getlist("library_id") or (library_id if library_id is not None else [])
-        parsed_libs: List[int] = []
-        for l in lib_ids:
-            for part in str(l).split(","):
-                if part.strip().isdigit():
-                    parsed_libs.append(int(part.strip()))
-
+        is_unpaged = is_unpaged_request(request, unpaged)
+        parsed_libs = parse_library_ids_param(request, library_id)
         effective_libs = resolve_effective_library_ids(user, parsed_libs)
         if effective_libs is not None and len(effective_libs) == 0:
             return build_pageable([], page, size, 0, unpaged=is_unpaged)
 
         genres = await db.get_all_genres(library_ids=effective_libs, search=search)
         total = len(genres)
-        if is_unpaged:
-            content = genres
-        else:
-            content = genres[page * size : (page + 1) * size]
+        content = genres if is_unpaged else genres[page * size : (page + 1) * size]
         return build_pageable(content, page, size if not is_unpaged else total, total, unpaged=is_unpaged)
 
     # ---------------- Publishers ----------------
@@ -76,13 +64,7 @@ def get_metadata_router(db: Database) -> APIRouter:
         collection_id: Optional[str] = Query(None),
         user: UserSession = Depends(AuthService.require_user),
     ) -> List[str]:
-        lib_ids = request.query_params.getlist("library_id") or (library_id if library_id is not None else [])
-        parsed_libs: List[int] = []
-        for l in lib_ids:
-            for part in str(l).split(","):
-                if part.strip().isdigit():
-                    parsed_libs.append(int(part.strip()))
-
+        parsed_libs = parse_library_ids_param(request, library_id)
         effective_libs = resolve_effective_library_ids(user, parsed_libs)
         if effective_libs is not None and len(effective_libs) == 0:
             return []
@@ -99,24 +81,15 @@ def get_metadata_router(db: Database) -> APIRouter:
         size: int = Query(20, ge=1),
         user: UserSession = Depends(AuthService.require_user),
     ) -> PageableDto[str]:
-        is_unpaged = unpaged or request.query_params.get("unpaged", "").lower() in ("true", "1")
-        lib_ids = request.query_params.getlist("library_id") or (library_id if library_id is not None else [])
-        parsed_libs: List[int] = []
-        for l in lib_ids:
-            for part in str(l).split(","):
-                if part.strip().isdigit():
-                    parsed_libs.append(int(part.strip()))
-
+        is_unpaged = is_unpaged_request(request, unpaged)
+        parsed_libs = parse_library_ids_param(request, library_id)
         effective_libs = resolve_effective_library_ids(user, parsed_libs)
         if effective_libs is not None and len(effective_libs) == 0:
             return build_pageable([], page, size, 0, unpaged=is_unpaged)
 
         publishers = await db.get_all_publishers(library_ids=effective_libs, search=search)
         total = len(publishers)
-        if is_unpaged:
-            content = publishers
-        else:
-            content = publishers[page * size : (page + 1) * size]
+        content = publishers if is_unpaged else publishers[page * size : (page + 1) * size]
         return build_pageable(content, page, size if not is_unpaged else total, total, unpaged=is_unpaged)
 
     # ---------------- Tags ----------------
@@ -128,13 +101,7 @@ def get_metadata_router(db: Database) -> APIRouter:
         collection_id: Optional[str] = Query(None),
         user: UserSession = Depends(AuthService.require_user),
     ) -> List[str]:
-        lib_ids = request.query_params.getlist("library_id") or (library_id if library_id is not None else [])
-        parsed_libs: List[int] = []
-        for l in lib_ids:
-            for part in str(l).split(","):
-                if part.strip().isdigit():
-                    parsed_libs.append(int(part.strip()))
-
+        parsed_libs = parse_library_ids_param(request, library_id)
         effective_libs = resolve_effective_library_ids(user, parsed_libs)
         if effective_libs is not None and len(effective_libs) == 0:
             return []
@@ -154,14 +121,8 @@ def get_metadata_router(db: Database) -> APIRouter:
         size: int = Query(20, ge=1),
         user: UserSession = Depends(AuthService.require_user),
     ) -> PageableDto[str]:
-        is_unpaged = unpaged or request.query_params.get("unpaged", "").lower() in ("true", "1")
-        lib_ids = request.query_params.getlist("library_id") or (library_id if library_id is not None else [])
-        parsed_libs: List[int] = []
-        for l in lib_ids:
-            for part in str(l).split(","):
-                if part.strip().isdigit():
-                    parsed_libs.append(int(part.strip()))
-
+        is_unpaged = is_unpaged_request(request, unpaged)
+        parsed_libs = parse_library_ids_param(request, library_id)
         effective_libs = resolve_effective_library_ids(user, parsed_libs)
         if effective_libs is not None and len(effective_libs) == 0:
             return build_pageable([], page, size, 0, unpaged=is_unpaged)
@@ -175,10 +136,7 @@ def get_metadata_router(db: Database) -> APIRouter:
             tags = await db.get_all_tags(library_ids=effective_libs, search=search)
 
         total = len(tags)
-        if is_unpaged:
-            content = tags
-        else:
-            content = tags[page * size : (page + 1) * size]
+        content = tags if is_unpaged else tags[page * size : (page + 1) * size]
         return build_pageable(content, page, size if not is_unpaged else total, total, unpaged=is_unpaged)
 
     @router.get("/api/v1/tags/book", response_model=List[str])
@@ -189,13 +147,7 @@ def get_metadata_router(db: Database) -> APIRouter:
         library_id: Optional[List[int]] = Query(None),
         user: UserSession = Depends(AuthService.require_user),
     ) -> List[str]:
-        lib_ids = request.query_params.getlist("library_id") or (library_id if library_id is not None else [])
-        parsed_libs: List[int] = []
-        for l in lib_ids:
-            for part in str(l).split(","):
-                if part.strip().isdigit():
-                    parsed_libs.append(int(part.strip()))
-
+        parsed_libs = parse_library_ids_param(request, library_id)
         effective_libs = resolve_effective_library_ids(user, parsed_libs)
         if effective_libs is not None and len(effective_libs) == 0:
             return []
@@ -208,12 +160,7 @@ def get_metadata_router(db: Database) -> APIRouter:
         collection_id: Optional[str] = Query(None),
         user: UserSession = Depends(AuthService.require_user),
     ) -> List[str]:
-        parsed_libs: List[int] = []
-        if library_id:
-            for part in str(library_id).split(","):
-                if part.strip().isdigit():
-                    parsed_libs.append(int(part.strip()))
-
+        parsed_libs = parse_library_ids_param(request, library_id)
         effective_libs = resolve_effective_library_ids(user, parsed_libs)
         if effective_libs is not None and len(effective_libs) == 0:
             return []

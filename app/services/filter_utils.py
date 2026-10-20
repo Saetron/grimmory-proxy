@@ -1,5 +1,7 @@
+import ast
+import json
 import logging
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 from fastapi import Request
 
 from app.models.internal import UserSession
@@ -47,8 +49,6 @@ def _parse_author_items(item: Any) -> List[Dict[str, Optional[str]]]:
 
     # Support stringified dict/JSON representations
     if (s.startswith("{") and s.endswith("}")) or (s.startswith("[") and s.endswith("]")):
-        import ast
-        import json
         try:
             parsed = json.loads(s)
             return _parse_author_items(parsed)
@@ -116,6 +116,75 @@ def _extract_ids_recursive(data: Any, key_names: Set[str]) -> List[Any]:
     return extracted
 
 
+def _extract_string_filter_list(
+    request: Request,
+    body: Optional[Any],
+    keys: Set[str],
+    dict_keys: Tuple[str, ...] = (),
+    uppercase: bool = False,
+) -> List[str]:
+    raw_items: List[Any] = [
+        qv for qk, qv in request.query_params.multi_items() if qk.lower() in keys
+    ]
+    if body:
+        raw_items.extend(_extract_ids_recursive(body, keys))
+
+    results: List[str] = []
+    for item in raw_items:
+        if isinstance(item, dict) and dict_keys:
+            val = next((item.get(dk) for dk in dict_keys if item.get(dk)), None)
+            if val:
+                s_val = str(val).strip()
+                if uppercase:
+                    s_val = s_val.upper()
+                if s_val and s_val not in results:
+                    results.append(s_val)
+            continue
+        for part in str(item).split(","):
+            part = part.strip()
+            if uppercase:
+                part = part.upper()
+            if part and part not in results:
+                results.append(part)
+    return results
+
+
+def parse_library_ids_param(
+    request: Optional[Request] = None,
+    library_id: Any = None,
+) -> List[int]:
+    """
+    Parses library_id query parameters (supporting repeated keys and comma-separated values)
+    into a deduplicated list of integers.
+    """
+    raw_items: List[Any] = []
+    if request is not None:
+        lib_keys = {"library_id", "library_id[]", "library_ids", "library_ids[]"}
+        for qk, qv in request.query_params.multi_items():
+            if qk.lower() in lib_keys:
+                raw_items.append(qv)
+    if library_id is not None:
+        if isinstance(library_id, list):
+            raw_items.extend(library_id)
+        else:
+            raw_items.append(library_id)
+
+    parsed_libs: List[int] = []
+    for item in raw_items:
+        for part in str(item).split(","):
+            part = part.strip()
+            if part.isdigit():
+                val_int = int(part)
+                if val_int not in parsed_libs:
+                    parsed_libs.append(val_int)
+    return parsed_libs
+
+
+def is_unpaged_request(request: Request, unpaged: bool = False) -> bool:
+    """Checks whether a request has unpaged=true via parameter or query string."""
+    return unpaged or request.query_params.get("unpaged", "").lower() in ("true", "1")
+
+
 def extract_filter_params(request: Request, body: Optional[Any] = None) -> Dict[str, Any]:
     """
     Extracts library_ids, series_ids, search terms, read_status, genres, tags, publishers, authors,
@@ -127,12 +196,9 @@ def extract_filter_params(request: Request, body: Optional[Any] = None) -> Dict[
         "library_id", "libraryid", "library_ids", "libraryids",
         "library", "libraries", "library_id[]", "libraryid[]", "libraries[]",
     }
-    raw_lib_ids: List[Any] = []
-
-    for qk, qv in request.query_params.multi_items():
-        if qk.lower() in lib_id_keys:
-            raw_lib_ids.append(qv)
-
+    raw_lib_ids: List[Any] = [
+        qv for qk, qv in request.query_params.multi_items() if qk.lower() in lib_id_keys
+    ]
     if body:
         raw_lib_ids.extend(_extract_ids_recursive(body, lib_id_keys))
 
@@ -150,21 +216,7 @@ def extract_filter_params(request: Request, body: Optional[Any] = None) -> Dict[
         "series_id", "seriesid", "series_ids", "seriesids",
         "series", "series_id[]", "seriesid[]", "seriesids[]",
     }
-    raw_series_ids: List[Any] = []
-
-    for qk, qv in request.query_params.multi_items():
-        if qk.lower() in series_id_keys:
-            raw_series_ids.append(qv)
-
-    if body:
-        raw_series_ids.extend(_extract_ids_recursive(body, series_id_keys))
-
-    series_ids: List[str] = []
-    for item in raw_series_ids:
-        for part in str(item).split(","):
-            part = part.strip()
-            if part and part not in series_ids:
-                series_ids.append(part)
+    series_ids = _extract_string_filter_list(request, body, series_id_keys)
 
     # 3. Extract Search Term
     search_keys = {"search", "searchterm", "q", "fulltextsearch"}
@@ -189,107 +241,29 @@ def extract_filter_params(request: Request, body: Optional[Any] = None) -> Dict[
         "collection", "collections", "collection_id", "collection_ids",
         "collection[]", "collections[]", "collection_id[]", "collection_ids[]",
     }
-    raw_collection_ids: List[Any] = []
-    for qk, qv in request.query_params.multi_items():
-        if qk.lower() in collection_keys:
-            raw_collection_ids.append(qv)
-    if body:
-        raw_collection_ids.extend(_extract_ids_recursive(body, collection_keys))
-    collection_ids: List[str] = []
-    for item in raw_collection_ids:
-        if isinstance(item, dict):
-            val = item.get("id") or item.get("value")
-            if val and str(val).strip() and str(val).strip() not in collection_ids:
-                collection_ids.append(str(val).strip())
-            continue
-        for part in str(item).split(","):
-            part = part.strip()
-            if part and part not in collection_ids:
-                collection_ids.append(part)
+    collection_ids = _extract_string_filter_list(request, body, collection_keys, dict_keys=("id", "value"))
 
     # 4. Extract Read Status
     read_status_keys = {"read_status", "readstatus", "read_status[]", "readstatus[]"}
-    raw_read_status: List[Any] = []
-    for qk, qv in request.query_params.multi_items():
-        if qk.lower() in read_status_keys:
-            raw_read_status.append(qv)
-
-    if body:
-        raw_read_status.extend(_extract_ids_recursive(body, read_status_keys))
-
-    read_status: List[str] = []
-    for item in raw_read_status:
-        for part in str(item).split(","):
-            part = part.strip().upper()
-            if part and part not in read_status:
-                read_status.append(part)
+    read_status = _extract_string_filter_list(request, body, read_status_keys, uppercase=True)
 
     # 5. Extract Genres
     genre_keys = {"genre", "genres", "genre[]", "genres[]"}
-    raw_genres: List[Any] = []
-    for qk, qv in request.query_params.multi_items():
-        if qk.lower() in genre_keys:
-            raw_genres.append(qv)
-    if body:
-        raw_genres.extend(_extract_ids_recursive(body, genre_keys))
-    genres: List[str] = []
-    for item in raw_genres:
-        if isinstance(item, dict):
-            val = item.get("name") or item.get("value")
-            if val and str(val).strip() and str(val).strip() not in genres:
-                genres.append(str(val).strip())
-            continue
-        for part in str(item).split(","):
-            part = part.strip()
-            if part and part not in genres:
-                genres.append(part)
+    genres = _extract_string_filter_list(request, body, genre_keys, dict_keys=("name", "value"))
 
     # 6. Extract Tags
     tag_keys = {"tag", "tags", "tag[]", "tags[]"}
-    raw_tags: List[Any] = []
-    for qk, qv in request.query_params.multi_items():
-        if qk.lower() in tag_keys:
-            raw_tags.append(qv)
-    if body:
-        raw_tags.extend(_extract_ids_recursive(body, tag_keys))
-    tags: List[str] = []
-    for item in raw_tags:
-        if isinstance(item, dict):
-            val = item.get("name") or item.get("value")
-            if val and str(val).strip() and str(val).strip() not in tags:
-                tags.append(str(val).strip())
-            continue
-        for part in str(item).split(","):
-            part = part.strip()
-            if part and part not in tags:
-                tags.append(part)
+    tags = _extract_string_filter_list(request, body, tag_keys, dict_keys=("name", "value"))
 
     # 7. Extract Publishers
     publisher_keys = {"publisher", "publishers", "publisher[]", "publishers[]"}
-    raw_publishers: List[Any] = []
-    for qk, qv in request.query_params.multi_items():
-        if qk.lower() in publisher_keys:
-            raw_publishers.append(qv)
-    if body:
-        raw_publishers.extend(_extract_ids_recursive(body, publisher_keys))
-    publishers: List[str] = []
-    for item in raw_publishers:
-        if isinstance(item, dict):
-            val = item.get("name") or item.get("value")
-            if val and str(val).strip() and str(val).strip() not in publishers:
-                publishers.append(str(val).strip())
-            continue
-        for part in str(item).split(","):
-            part = part.strip()
-            if part and part not in publishers:
-                publishers.append(part)
+    publishers = _extract_string_filter_list(request, body, publisher_keys, dict_keys=("name", "value"))
 
     # 8. Extract Authors
     author_keys = {"author", "authors", "author[]", "authors[]"}
-    raw_authors: List[Any] = []
-    for qk, qv in request.query_params.multi_items():
-        if qk.lower() in author_keys:
-            raw_authors.append(qv)
+    raw_authors: List[Any] = [
+        qv for qk, qv in request.query_params.multi_items() if qk.lower() in author_keys
+    ]
     if body:
         raw_authors.extend(_extract_ids_recursive(body, author_keys))
     authors: List[Dict[str, Optional[str]]] = []

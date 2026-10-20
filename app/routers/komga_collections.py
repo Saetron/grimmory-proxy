@@ -15,7 +15,11 @@ from app.models.komga import (
 )
 from app.services.auth import AuthService
 from app.services.cache import thumbnail_cache
-from app.services.filter_utils import resolve_effective_library_ids
+from app.services.filter_utils import (
+    is_unpaged_request,
+    parse_library_ids_param,
+    resolve_effective_library_ids,
+)
 from app.services.mapper import KomgaMapper
 
 logger = logging.getLogger("grimmory_proxy.komga_collections")
@@ -34,7 +38,7 @@ def get_collections_router(db: Database) -> APIRouter:
         unpaged: bool = Query(False),
         user: UserSession = Depends(AuthService.require_user),
     ) -> PageableDto[CollectionDto]:
-        is_unpaged = unpaged or request.query_params.get("unpaged", "").lower() in ("true", "1")
+        is_unpaged = is_unpaged_request(request, unpaged)
         collections: List[CollectionDto] = []
 
         # 1. Resolve Favorites collection for the authenticated user
@@ -43,17 +47,7 @@ def get_collections_router(db: Database) -> APIRouter:
                 user.user_id, token=user.token
             )
             if fav_book_ids:
-                req_libs: List[int] = []
-                for qk, qv in request.query_params.multi_items():
-                    if qk.lower() in ("library_id", "library_id[]", "library_ids", "library_ids[]"):
-                        for part in str(qv).split(","):
-                            if part.strip().isdigit():
-                                req_libs.append(int(part.strip()))
-                if library_id:
-                    for lid in library_id:
-                        if lid not in req_libs:
-                            req_libs.append(lid)
-
+                req_libs = parse_library_ids_param(request, library_id)
                 effective_libs = resolve_effective_library_ids(user, req_libs)
                 if effective_libs is None or len(effective_libs) > 0:
                     series_list = await db.get_series_for_books(
@@ -155,7 +149,7 @@ def get_collections_router(db: Database) -> APIRouter:
         unpaged: bool = Query(False),
         user: UserSession = Depends(AuthService.require_user),
     ) -> PageableDto[SeriesDto]:
-        is_unpaged = unpaged or request.query_params.get("unpaged", "").lower() in ("true", "1")
+        is_unpaged = is_unpaged_request(request, unpaged)
 
         if collection_id.startswith("favorites-"):
             if collection_id != f"favorites-{user.user_id}":
@@ -167,17 +161,7 @@ def get_collections_router(db: Database) -> APIRouter:
             if not fav_book_ids:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
 
-            req_libs: List[int] = []
-            for qk, qv in request.query_params.multi_items():
-                if qk.lower() in ("library_id", "library_id[]", "library_ids", "library_ids[]"):
-                    for part in str(qv).split(","):
-                        if part.strip().isdigit():
-                            req_libs.append(int(part.strip()))
-            if library_id:
-                for lid in library_id:
-                    if lid not in req_libs:
-                        req_libs.append(lid)
-
+            req_libs = parse_library_ids_param(request, library_id)
             effective_libs = resolve_effective_library_ids(user, req_libs)
             if effective_libs is not None and len(effective_libs) == 0:
                 return build_pageable([], page, size, 0, unpaged=is_unpaged)
@@ -215,7 +199,7 @@ def get_collections_router(db: Database) -> APIRouter:
         unpaged: bool = Query(False),
         user: UserSession = Depends(AuthService.require_user),
     ) -> PageableDto[BookDto]:
-        is_unpaged = unpaged or request.query_params.get("unpaged", "").lower() in ("true", "1")
+        is_unpaged = is_unpaged_request(request, unpaged)
 
         if collection_id.startswith("favorites-"):
             if collection_id != f"favorites-{user.user_id}":
@@ -227,17 +211,7 @@ def get_collections_router(db: Database) -> APIRouter:
             if not fav_book_ids:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
 
-            req_libs: List[int] = []
-            for qk, qv in request.query_params.multi_items():
-                if qk.lower() in ("library_id", "library_id[]", "library_ids", "library_ids[]"):
-                    for part in str(qv).split(","):
-                        if part.strip().isdigit():
-                            req_libs.append(int(part.strip()))
-            if library_id:
-                for lid in library_id:
-                    if lid not in req_libs:
-                        req_libs.append(lid)
-
+            req_libs = parse_library_ids_param(request, library_id)
             effective_libs = resolve_effective_library_ids(user, req_libs)
             if effective_libs is not None and len(effective_libs) == 0:
                 return build_pageable([], page, size, 0, unpaged=is_unpaged)

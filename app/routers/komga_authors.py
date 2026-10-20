@@ -6,7 +6,11 @@ from app.database import Database
 from app.models.internal import UserSession
 from app.models.komga import AuthorDto, PageableDto, build_pageable
 from app.services.auth import AuthService
-from app.services.filter_utils import resolve_effective_library_ids
+from app.services.filter_utils import (
+    is_unpaged_request,
+    parse_library_ids_param,
+    resolve_effective_library_ids,
+)
 
 logger = logging.getLogger("grimmory_proxy.komga_authors")
 
@@ -24,12 +28,7 @@ def get_authors_router(db: Database) -> APIRouter:
         series_id: Optional[str] = Query(None),
         user: UserSession = Depends(AuthService.require_user),
     ) -> List[AuthorDto]:
-        parsed_libs: List[int] = []
-        if library_id:
-            for part in str(library_id).split(","):
-                if part.strip().isdigit():
-                    parsed_libs.append(int(part.strip()))
-
+        parsed_libs = parse_library_ids_param(library_id=library_id)
         effective_libs = resolve_effective_library_ids(user, parsed_libs)
         if effective_libs is not None and len(effective_libs) == 0:
             return []
@@ -57,14 +56,8 @@ def get_authors_router(db: Database) -> APIRouter:
         size: int = Query(20, ge=1, le=500),
         user: UserSession = Depends(AuthService.require_user),
     ) -> PageableDto[AuthorDto]:
-        is_unpaged = unpaged or request.query_params.get("unpaged", "").lower() in ("true", "1")
-        lib_ids = request.query_params.getlist("library_id") or (library_id if library_id is not None else [])
-        parsed_libs: List[int] = []
-        for l in lib_ids:
-            for part in str(l).split(","):
-                if part.strip().isdigit():
-                    parsed_libs.append(int(part.strip()))
-
+        is_unpaged = is_unpaged_request(request, unpaged)
+        parsed_libs = parse_library_ids_param(request, library_id)
         effective_libs = resolve_effective_library_ids(user, parsed_libs)
         if effective_libs is not None and len(effective_libs) == 0:
             return build_pageable([], page, size, 0, unpaged=is_unpaged)
@@ -108,14 +101,8 @@ def get_authors_router(db: Database) -> APIRouter:
         size: int = Query(20, ge=1, le=500),
         user: UserSession = Depends(AuthService.require_user),
     ) -> PageableDto[str]:
-        is_unpaged = unpaged or request.query_params.get("unpaged", "").lower() in ("true", "1")
-        lib_ids = request.query_params.getlist("library_id") or (library_id if library_id is not None else [])
-        parsed_libs: List[int] = []
-        for l in lib_ids:
-            for part in str(l).split(","):
-                if part.strip().isdigit():
-                    parsed_libs.append(int(part.strip()))
-
+        is_unpaged = is_unpaged_request(request, unpaged)
+        parsed_libs = parse_library_ids_param(request, library_id)
         effective_libs = resolve_effective_library_ids(user, parsed_libs)
         if effective_libs is not None and len(effective_libs) == 0:
             return build_pageable([], page, size, 0, unpaged=is_unpaged)
@@ -147,7 +134,7 @@ def get_authors_router(db: Database) -> APIRouter:
         size: int = Query(20, ge=1),
         user: UserSession = Depends(AuthService.require_user),
     ) -> PageableDto[str]:
-        is_unpaged = unpaged or request.query_params.get("unpaged", "").lower() in ("true", "1")
+        is_unpaged = is_unpaged_request(request, unpaged)
         roles = await db.get_author_roles()
         total = len(roles)
         content = roles if is_unpaged else roles[page * size : (page + 1) * size]
