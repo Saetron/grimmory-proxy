@@ -82,9 +82,11 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add VERSION README.md
-          git commit -m "chore(release): bump version to ${{ steps.bump.outputs.version }} [skip ci]"
-          git tag "v${{ steps.bump.outputs.version }}"
-          git push origin HEAD --tags
+          if ! git diff-index --quiet HEAD --; then
+            git commit -m "chore(release): bump version to ${{ steps.bump.outputs.version }} [skip ci]"
+          fi
+          git tag -f "v${{ steps.bump.outputs.version }}"
+          git push origin HEAD --tags -f
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
