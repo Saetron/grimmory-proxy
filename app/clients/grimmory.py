@@ -318,6 +318,47 @@ class GrimmoryClient:
             logger.debug(f"Failed to reset read status to UNREAD for books {book_ids}: {e}")
         return resp.status_code in [200, 204]
 
+    async def update_koreader_progress(
+        self,
+        document_hash: str,
+        progress: str,
+        percentage: float,
+        token: Optional[str] = None,
+        device: str = "grimmory-proxy",
+        device_id: str = "grimmory-proxy",
+    ) -> bool:
+        """Update KOReader progress on Grimmory (best effort)."""
+        payload = {
+            "document": document_hash,
+            "progress": progress,
+            "percentage": percentage,
+            "device": device,
+            "device_id": device_id,
+        }
+        try:
+            resp, _ = await self._request_with_auth(
+                "PUT", "/api/koreader/syncs/progress", token=token, json=payload
+            )
+            return resp.status_code in [200, 204]
+        except Exception as e:
+            logger.debug(f"Failed to update KOReader progress on Grimmory for {document_hash}: {e}")
+            return False
+
+    async def get_koreader_progress(
+        self, document_hash: str, token: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Fetch KOReader progress from Grimmory for a given document hash."""
+        try:
+            resp, _ = await self._request_with_auth(
+                "GET", f"/api/koreader/syncs/progress/{document_hash}", token=token
+            )
+            if resp.status_code == 200:
+                return resp.json()
+            return None
+        except Exception as e:
+            logger.debug(f"Failed to fetch KOReader progress from Grimmory for {document_hash}: {e}")
+            return None
+
 
 # Global Grimmory client instance
 grimmory_client = GrimmoryClient(base_url=settings.grimmory_url)

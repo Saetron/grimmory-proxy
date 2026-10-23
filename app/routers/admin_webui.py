@@ -226,6 +226,13 @@ def get_admin_router(
             logger.warning(f"Error fetching users list for dashboard: {e}")
             users_list = []
 
+        try:
+            user_sync.status.total_synced_records = await asyncio.wait_for(
+                db.get_total_read_progress_count(), timeout=5.0
+            )
+        except Exception as e:
+            logger.debug(f"Error fetching total synced records for dashboard: {e}")
+
         calc_job_status = await _resolve_calc_job_status()
 
         return templates.TemplateResponse(
@@ -273,6 +280,13 @@ def get_admin_router(
         except Exception as e:
             logger.warning(f"Error fetching users list for dashboard API: {e}")
             users_list = []
+
+        try:
+            user_sync.status.total_synced_records = await asyncio.wait_for(
+                db.get_total_read_progress_count(), timeout=5.0
+            )
+        except Exception as e:
+            logger.debug(f"Error fetching total synced records for dashboard API: {e}")
 
         calc_job_status = await _resolve_calc_job_status()
 
@@ -371,6 +385,37 @@ def get_admin_router(
             "stats": stats,
         }
 
+    @router.post("/admin/api/purge-and-refresh")
+    async def purge_and_refresh_endpoint(request: Request) -> Dict[str, Any]:
+        user = await require_admin_session(request)
+
+        # 1. Purge all read progress and R2 progression records from SQLite
+        deleted_counts = await db.purge_all_read_progress()
+
+        # 2. Reset user sync cooldowns and locks
+        user_sync.clear_all_user_caches()
+        user_sync.status.total_synced_records = 0
+
+        # 3. Trigger fresh metadata sync and fresh read status sync (including sync user)
+        async def _run_full_refresh():
+            try:
+                await sync_service.sync_all_metadata()
+            except Exception as e:
+                logger.error(f"Error during metadata sync in purge-and-refresh: {e}")
+            try:
+                await user_sync.sync_all_active_users()
+            except Exception as e:
+                logger.error(f"Error during user read progress sync in purge-and-refresh: {e}")
+
+        asyncio.create_task(_run_full_refresh())
+
+        logger.info(f"Admin '{user.username}' initiated Purge & Refresh from Grimmory: {deleted_counts}")
+        return {
+            "success": True,
+            "message": "Local read progress purged. Fresh synchronization of catalog metadata and read progress from Grimmory (including sync user) has been started.",
+            "deleted": deleted_counts,
+        }
+
     # ---------------- User Management Endpoints ----------------
 
     @router.get("/admin/api/users")
@@ -384,27 +429,34 @@ def get_admin_router(
     async def purge_user_endpoint(user_id: int, request: Request) -> Dict[str, Any]:
         user = await require_admin_session(request)
 
-        if user.user_id == user_id:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="You cannot purge your own active admin user session.",
-            )
-
+        is_self = (user.user_id == user_id)
         target_row = await db.get_user_by_id(user_id)
         if not target_row:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
         username = target_row.get("username", f"user-{user_id}")
-        AuthService.purge_user_sessions(user_id, username=username)
         user_sync.purge_user_cache(user_id)
-        deleted_counts = await db.purge_user(user_id)
 
-        logger.info(f"Admin '{user.username}' purged user '{username}' (id={user_id}): {deleted_counts}")
-        return {
-            "success": True,
-            "message": f"User '{username}' and all associated read progress, settings, and cached sessions have been purged.",
-            "deleted": deleted_counts,
-        }
+        if is_self:
+            # Purge read progress and progression, but preserve the active admin user account and session token
+            deleted_counts = await db.purge_user_read_progress(user_id)
+            user_sync.status.total_synced_records = await db.get_total_read_progress_count()
+            logger.info(f"Admin '{user.username}' purged own read progress (id={user_id}): {deleted_counts}")
+            return {
+                "success": True,
+                "message": f"Read progress for '{username}' has been purged. Click 'Sync' to re-import fresh status from Grimmory.",
+                "deleted": deleted_counts,
+            }
+        else:
+            AuthService.purge_user_sessions(user_id, username=username)
+            deleted_counts = await db.purge_user(user_id)
+            user_sync.status.total_synced_records = await db.get_total_read_progress_count()
+            logger.info(f"Admin '{user.username}' purged user '{username}' (id={user_id}): {deleted_counts}")
+            return {
+                "success": True,
+                "message": f"User '{username}' and all associated read progress, settings, and cached sessions have been purged.",
+                "deleted": deleted_counts,
+            }
 
     @router.post("/admin/api/users/{user_id}/sync")
     async def sync_user_endpoint(user_id: int, request: Request) -> Dict[str, Any]:

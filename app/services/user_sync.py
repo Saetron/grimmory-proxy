@@ -111,6 +111,7 @@ class UserSyncService:
                     self._log(f"Error syncing user '{uname}': {e}")
                     logger.debug(f"Periodic sync failed for user {uname}: {e}")
 
+            self.status.total_synced_records = await self.database.get_total_read_progress_count()
             self.status.last_sync_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
             self._log(f"Completed read status sync cycle.")
         except Exception as e:
@@ -140,6 +141,10 @@ class UserSyncService:
         logger.info(f"Starting periodic user read status sync scheduler every {interval_minutes} minutes")
 
         # Initial delay before the first periodic cycle so startup metadata sync finishes
+        try:
+            self.status.total_synced_records = await self.database.get_total_read_progress_count()
+        except Exception:
+            pass
         await asyncio.sleep(15)
 
         while True:
@@ -177,6 +182,13 @@ class UserSyncService:
         """
         self._last_sync_times.pop(user_id, None)
         self._user_locks.pop(user_id, None)
+
+    def clear_all_user_caches(self) -> None:
+        """
+        Clears local tracking states (locks, cooldown timestamps) for all users.
+        """
+        self._last_sync_times.clear()
+        self._user_locks.clear()
 
     async def capture_and_sync_user(self, user: UserSession, force: bool = False) -> bool:
         """
@@ -423,7 +435,7 @@ class UserSyncService:
         synced_count = 0
         if progress_records:
             await self.database.upsert_read_progress_batch(progress_records)
-            self.status.total_synced_records += len(progress_records)
+            self.status.total_synced_records = await self.database.get_total_read_progress_count()
             self._log(f"Synchronized {len(progress_records)} read states from Grimmory for user '{user.username}'")
             synced_count = len(progress_records)
 

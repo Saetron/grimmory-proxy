@@ -1946,10 +1946,13 @@ async def test_connected_users_and_purge():
         assert target_info["progress_count"] >= 1
         assert "Adj Lib" in target_info["libraries_display"]
 
-        # C. Self-purge prevention
+        # C. Self-purge clears read progress while preserving session
+        await db.upsert_read_progress(user_id=990, book_id=850, page=5, completed=False, read_date=now_iso)
         resp_self = await client.post("/admin/api/users/990/purge", headers=admin_headers)
-        assert resp_self.status_code == 400
-        assert "own active admin user session" in resp_self.json()["detail"]
+        assert resp_self.status_code == 200
+        assert "has been purged" in resp_self.json()["message"]
+        assert await db.get_book_read_progress(990, 850) is None
+        assert await db.get_user_by_id(990) is not None
 
         # D. Non-admin purge attempt fails
         resp_non_admin = await client.post("/admin/api/users/991/purge", headers=reader_headers)
@@ -2722,6 +2725,308 @@ async def test_user_read_stats_isolation_restricted_libraries_and_no_sync_leak(m
     # Verify it called Grimmory only once (did NOT retry with saetron_sync_token)
     assert mock_http.get.call_count == 1
     assert mock_http.get.call_args_list[0][1]["headers"]["Authorization"] == "Bearer testuser_expired_token"
+
+
+@pytest.mark.asyncio
+async def test_total_synced_records_is_real_count_not_accumulated():
+    from app.main import db, app
+    from app.services.user_sync import UserSyncService
+    from app.models.internal import UserSession
+    from app.services.auth import AuthService
+
+    await db.connect()
+    # Purge read progress to start clean
+    await db.purge_all_read_progress()
+
+    # Create two users and progress records
+    await db.upsert_user(user_id=801, username="user_one", token="tok_1", is_admin=True)
+    await db.upsert_user(user_id=802, username="user_two", token="tok_2", is_admin=False)
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.upsert_read_progress(user_id=801, book_id=101, page=10, completed=False, read_date=now_iso)
+    await db.upsert_read_progress(user_id=801, book_id=102, page=20, completed=True, read_date=now_iso)
+    await db.upsert_read_progress(user_id=802, book_id=103, page=5, completed=False, read_date=now_iso)
+
+    # Real count in SQLite must be 3
+    real_count = await db.get_total_read_progress_count()
+    assert real_count == 3
+
+    # Initialize UserSyncService and run multiple cycles
+    sync_svc = UserSyncService(db=db)
+    # Mock _sync_grimmory_read_states to simulate sync runs without hitting upstream
+    async def mock_sync(u):
+        pass
+    sync_svc._sync_grimmory_read_states = mock_sync
+
+    await sync_svc.sync_all_active_users()
+    assert sync_svc.status.total_synced_records == 3
+
+    # Run a second cycle: total_synced_records MUST NOT double or accumulate!
+    await sync_svc.sync_all_active_users()
+    assert sync_svc.status.total_synced_records == 3
+
+    # Check that GET /admin/api/status returns the real count (3)
+    admin_session = UserSession(
+        user_id=801,
+        username="user_one",
+        token="tok_1",
+        is_admin=True,
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    AuthService.cache_session(admin_session)
+    headers = {"Authorization": "Bearer tok_1"}
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        res = await client.get("/admin/api/status", headers=headers)
+        assert res.status_code == 200
+        data = res.json()
+        assert data["read_sync_job"]["total_synced_records"] == 3
+
+
+@pytest.mark.asyncio
+async def test_admin_purge_and_refresh_endpoint():
+    from app.main import db, app
+    from app.models.internal import UserSession
+    from app.services.auth import AuthService
+    from unittest.mock import AsyncMock, patch
+
+    await db.connect()
+    await db.upsert_libraries([{"id": 77, "name": "Purge Lib", "paths": []}])
+    await db.upsert_user(user_id=770, username="purge_admin", token="tok_padmin", is_admin=True)
+    await db.upsert_user(user_id=771, username="purge_reader", token="tok_preader", is_admin=False)
+
+    admin_session = UserSession(
+        user_id=770,
+        username="purge_admin",
+        token="tok_padmin",
+        is_admin=True,
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    reader_session = UserSession(
+        user_id=771,
+        username="purge_reader",
+        token="tok_preader",
+        is_admin=False,
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    AuthService.cache_session(admin_session)
+    AuthService.cache_session(reader_session)
+
+    # Insert some dummy records
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.upsert_read_progress(user_id=770, book_id=901, page=10, completed=True, read_date=now_iso)
+
+    admin_headers = {"Authorization": "Bearer tok_padmin"}
+    reader_headers = {"Authorization": "Bearer tok_preader"}
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # 1. Non-admin cannot call purge-and-refresh
+        res_unauth = await client.post("/admin/api/purge-and-refresh", headers=reader_headers)
+        assert res_unauth.status_code in (401, 403)
+
+        # 2. Admin can call purge-and-refresh
+        with patch("app.main.sync_service.sync_all_metadata", new_callable=AsyncMock) as mock_sync:
+            mock_sync.return_value = {"success": True}
+            res_admin = await client.post("/admin/api/purge-and-refresh", headers=admin_headers)
+            assert res_admin.status_code == 200
+            data = res_admin.json()
+            assert data["success"] is True
+            # Read progress should be 0 now
+            assert await db.get_total_read_progress_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_koreader_endpoints_and_bi_directional_progress():
+    from app.main import db, app
+    from app.models.internal import UserSession
+    from app.services.auth import AuthService, _credential_tokens
+    from app.services.koreader_utils import compute_koreader_hash
+    from unittest.mock import AsyncMock, patch
+    import base64
+    import json
+
+    await db.connect()
+    await db.upsert_libraries([{"id": 99, "name": "KOReader Lib", "paths": []}])
+    await db.upsert_user(user_id=995, username="koreader_user", token="tok_ko", is_admin=False, assigned_libraries=[99])
+
+    ko_session = UserSession(
+        user_id=995,
+        username="koreader_user",
+        token="tok_ko",
+        is_admin=False,
+        assigned_library_ids=[99],
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=2),
+    )
+    AuthService.cache_session(ko_session)
+    _credential_tokens[AuthService._credential_key("koreader_user", "tok_ko")] = "tok_ko"
+
+    # Compute a real KOReader hash for sample content
+    dummy_book_content = b"Mock EPUB file content for testing KOReader hashing " * 500
+    ko_hash = compute_koreader_hash(dummy_book_content)
+    assert len(ko_hash) == 32
+
+    # Upsert a book with this koreader_hash
+    book_raw = json.dumps({"title": "KOReader Book", "primaryFile": {"hash": ko_hash}})
+    await db.upsert_books_batch([
+        {
+            "id": 9901,
+            "series_id": "99-series",
+            "library_id": 99,
+            "name": "KOReader Book",
+            "number": 1.0,
+            "page_count": 100,
+            "raw_json": book_raw,
+        }
+    ])
+    # Set the koreader_hash column
+    async with db.write_db() as conn:
+        await conn.execute("UPDATE books SET koreader_hash = ? WHERE id = 9901", (ko_hash,))
+        await conn.commit()
+
+    # Test HTTP Basic Auth header: "koreader_user:tok_ko"
+    basic_creds = base64.b64encode(b"koreader_user:tok_ko").decode("utf-8")
+    basic_headers = {"Authorization": f"Basic {basic_creds}"}
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # 1. Test KOReader auth endpoint
+        auth_res = await client.get("/koreader/users/auth", headers=basic_headers)
+        assert auth_res.status_code == 200
+        assert auth_res.json()["authorized"] == "OK"
+
+        # 2. Test KOReader syncs/progress PUT (KOReader client pushing reading progress)
+        progress_payload = {
+            "document": ko_hash,
+            "percentage": 0.45,
+            "progress": "45",
+            "device": "Kindle",
+            "device_id": "koreader-123",
+        }
+        with patch("app.routers.koreader.grimmory_client.update_koreader_progress", new_callable=AsyncMock) as mock_ko_grimmory, \
+             patch("app.routers.koreader.grimmory_client.update_read_progress", new_callable=AsyncMock) as mock_prog_grimmory:
+            mock_ko_grimmory.return_value = True
+            mock_prog_grimmory.return_value = True
+
+            put_res = await client.put("/koreader/syncs/progress", json=progress_payload, headers=basic_headers)
+            assert put_res.status_code == 200
+            put_data = put_res.json()
+            assert put_data["document"] == ko_hash
+            assert put_data["percentage"] == 0.45
+
+            # Verify local SQLite progress was updated
+            rec = await db.get_book_read_progress(995, 9901)
+            assert rec is not None
+            assert rec["page"] == 45
+
+        # 3. Test KOReader syncs/progress GET
+        get_res = await client.get(f"/koreader/syncs/progress/{ko_hash}", headers=basic_headers)
+        assert get_res.status_code == 200
+        get_data = get_res.json()
+        assert get_data["document"] == ko_hash
+        assert get_data["percentage"] == 0.45
+
+        # 4. Test Komga client progress PATCH also syncs to Grimmory KOReader endpoint
+        with patch("app.routers.komga_progress.grimmory_client.update_koreader_progress", new_callable=AsyncMock) as mock_ko_patch, \
+             patch("app.routers.komga_progress.grimmory_client.update_read_progress", new_callable=AsyncMock) as mock_bp_patch:
+            mock_ko_patch.return_value = True
+            mock_bp_patch.return_value = True
+
+            bearer_headers = {"Authorization": "Bearer tok_ko"}
+            komga_patch_res = await client.patch(
+                "/api/v1/books/9901/read-progress",
+                json={"page": 75, "completed": False},
+                headers=bearer_headers,
+            )
+            assert komga_patch_res.status_code == 204
+            # Verify update_koreader_progress was called
+            mock_ko_patch.assert_called_once()
+            call_args = mock_ko_patch.call_args[0]
+            assert call_args[0] == ko_hash  # document hash
+            assert "75" in call_args[1]     # progress
+            assert call_args[2] == 0.75     # percentage
+
+
+@pytest.mark.asyncio
+async def test_library_scoped_author_page():
+    import json
+    from app.main import db, app
+    from app.models.internal import UserSession
+    from app.services.auth import AuthService
+
+    await db.connect()
+    # Create two libraries: 201 (Manga) and 202 (Novels)
+    await db.upsert_libraries([
+        {"id": 201, "name": "Manga Library", "paths": []},
+        {"id": 202, "name": "Light Novel Library", "paths": []},
+    ])
+
+    author_name = "Oda Sensei"
+
+    # Series in Library 201
+    s1_json = json.dumps({"title": "Manga Adventure", "authors": [{"name": author_name, "role": "writer"}]})
+    await db.upsert_series_batch([
+        {"id": "201-manga-adv", "library_id": 201, "name": "Manga Adventure", "slug": "manga-adv", "books_count": 1, "raw_json": s1_json}
+    ])
+    # Book in Library 201
+    b1_json = json.dumps({"title": "Manga Vol 1", "authors": [{"name": author_name, "role": "writer"}]})
+    await db.upsert_books_batch([
+        {"id": 20101, "series_id": "201-manga-adv", "library_id": 201, "name": "Manga Vol 1", "number": 1.0, "raw_json": b1_json}
+    ])
+
+    # Series in Library 202
+    s2_json = json.dumps({"title": "Novel Adventure", "authors": [{"name": author_name, "role": "writer"}]})
+    await db.upsert_series_batch([
+        {"id": "202-novel-adv", "library_id": 202, "name": "Novel Adventure", "slug": "novel-adv", "books_count": 1, "raw_json": s2_json}
+    ])
+    # Book in Library 202
+    b2_json = json.dumps({"title": "Novel Vol 1", "authors": [{"name": author_name, "role": "writer"}]})
+    await db.upsert_books_batch([
+        {"id": 20201, "series_id": "202-novel-adv", "library_id": 202, "name": "Novel Vol 1", "number": 1.0, "raw_json": b2_json}
+    ])
+
+    # User with access to both libraries
+    admin_session = UserSession(
+        user_id=2001,
+        username="multi_lib_user",
+        token="tok_multilib",
+        is_admin=True,
+        assigned_library_ids=[],
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    AuthService.cache_session(admin_session)
+    headers = {"Authorization": "Bearer tok_multilib"}
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # A. When querying books by author with library_id=201, ONLY books in Library 201 should be returned!
+        resp_books_lib201 = await client.get(f"/api/v1/books?author={author_name}&library_id=201", headers=headers)
+        assert resp_books_lib201.status_code == 200
+        books_data = resp_books_lib201.json()
+        assert books_data["totalElements"] == 1
+        assert books_data["content"][0]["id"] == "20101"
+        assert books_data["content"][0]["libraryId"] == "201"
+
+        # B. When querying series by author with library_id=201, ONLY series in Library 201 should be returned!
+        resp_series_lib201 = await client.get(f"/api/v1/series?author={author_name}&library_id=201", headers=headers)
+        assert resp_series_lib201.status_code == 200
+        series_data = resp_series_lib201.json()
+        assert series_data["totalElements"] == 1
+        assert series_data["content"][0]["id"] == "201-manga-adv"
+        assert series_data["content"][0]["libraryId"] == "201"
+
+        # C. When opening the series' books: GET /api/v1/series/{series_id}/books, books from other libraries must not leak
+        resp_series_books = await client.get("/api/v1/series/201-manga-adv/books", headers=headers)
+        assert resp_series_books.status_code == 200
+        s_books_data = resp_series_books.json()
+        assert s_books_data["totalElements"] == 1
+        assert s_books_data["content"][0]["id"] == "20101"
+
+        # D. When querying authors with library_id=201, authors query handles library_id cleanly
+        resp_authors_lib = await client.get("/api/v1/authors?library_id=201", headers=headers)
+        assert resp_authors_lib.status_code == 200
+
 
 
 

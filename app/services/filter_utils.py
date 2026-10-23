@@ -204,6 +204,17 @@ def extract_filter_params(request: Request, body: Optional[Any] = None) -> Dict[
 
     library_ids: List[int] = []
     for item in raw_lib_ids:
+        if isinstance(item, int):
+            if item not in library_ids:
+                library_ids.append(item)
+            continue
+        if isinstance(item, dict):
+            d_val = item.get("id") or item.get("value")
+            if d_val is not None and str(d_val).strip().isdigit():
+                val_int = int(str(d_val).strip())
+                if val_int not in library_ids:
+                    library_ids.append(val_int)
+            continue
         for part in str(item).split(","):
             part = part.strip()
             if part.isdigit():

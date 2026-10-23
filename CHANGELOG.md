@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.10] - 2026-10-23
+
+### Added
+- **KOReader Sync Integration**:
+  - Implemented KOReader sync endpoints (`/koreader/users/auth`, `/api/koreader/users/auth`, `/koreader/syncs/progress`, `/api/koreader/syncs/progress/{book_hash}`).
+  - Added partial MD5 hash calculation (`compute_koreader_hash`) sampling 1024-byte chunks across 12 seek positions per KOReader standard, supporting both file paths and binary streams.
+  - Added `koreader_hash` column and index on `books` with automated database schema migration.
+  - Bi-directional sync: Komga client read progress updates (`PATCH /api/v1/books/{id}/read-progress`, `/progression`, and streaming pages) now synchronize downstream to Grimmory's `/api/koreader/syncs/progress` endpoint.
+- **Admin Purge & Refresh from Grimmory**:
+  - Replaced the "Optimize Storage & RAM" button in the Admin WebUI dashboard with a "Purge & Refresh from Grimmory" action.
+  - Added `POST /admin/api/purge-and-refresh` endpoint to clear cached catalog data, authors, and read progress (including the sync user) and trigger an immediate fresh synchronization from Grimmory.
+  - Allowed self-purge for active admin sessions (`POST /admin/api/users/{id}/purge`) to purge personal read progress without invalidating the active session or returning HTTP 400.
+
+### Fixed
+- **Total Synced Records Counter Accumulation**: Fixed an issue in `UserSyncService` where `total_synced_records` continuously accumulated counts across background intervals instead of querying the actual distinct count of read progress records in SQLite, which caused inflated values (e.g. 352,010).
+- **Library Isolation for Author Pages in Komic & Mobile Readers**:
+  - Enforced strict library filtering in `komga_books.py` (`effective_libs` retained even when `canonical_series_ids` is present) and `komga_series.py` (`get_series_books`).
+  - Added library query parameter support in `/api/v1/authors` and `/api/v1/authors/names`.
+  - Scoped series author subqueries in `Database.get_series_list` to require `b.library_id = series.library_id`, ensuring author pages in Komic strictly show books and series belonging to the currently selected library.
+
+---
+
 ## [1.9] - 2026-10-20
 
 ### Added
@@ -235,6 +257,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[1.10]: https://github.com/Saetron/grimmory-proxy/releases/tag/v1.10
 [1.9]: https://github.com/Saetron/grimmory-proxy/releases/tag/v1.9
 [1.8]: https://github.com/Saetron/grimmory-proxy/releases/tag/v1.8
 [1.7]: https://github.com/Saetron/grimmory-proxy/releases/tag/v1.7

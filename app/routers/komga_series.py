@@ -9,7 +9,11 @@ from app.models.internal import UserSession
 from app.models.komga import BookDto, CollectionDto, PageableDto, SeriesDto, build_pageable
 from app.services.auth import AuthService
 from app.services.cache import thumbnail_cache
-from app.services.filter_utils import extract_filter_params, resolve_effective_library_ids
+from app.services.filter_utils import (
+    extract_filter_params,
+    parse_library_ids_param,
+    resolve_effective_library_ids,
+)
 from app.services.mapper import KomgaMapper
 
 logger = logging.getLogger("grimmory_proxy.komga_series")
@@ -379,8 +383,12 @@ def get_series_router(db: Database) -> APIRouter:
                 return build_pageable([], page, size, 0, unpaged=is_unpaged)
             filter_book_ids = fav_book_ids
 
+        req_libs = parse_library_ids_param(request=request)
+        effective_libs = resolve_effective_library_ids(user, req_libs or [series["library_id"]])
+
         records, total = await db.get_books_list(
             series_id=series["id"],
+            library_ids=effective_libs or [series["library_id"]],
             book_ids=filter_book_ids,
             offset=0 if is_unpaged else page * size,
             limit=size,

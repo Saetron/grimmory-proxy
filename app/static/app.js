@@ -245,6 +245,36 @@ async function clearReadSyncLogs() {
   }
 }
 
+async function purgeAndRefreshData(clickedBtn = null) {
+  if (!confirm("Are you sure you want to purge and refresh all data from Grimmory?\n\nThis will purge all cached books, series, libraries, authors, and read progress records (including the sync user), and initiate an immediate fresh sync from Grimmory.")) {
+    return;
+  }
+  const btn = clickedBtn || document.getElementById("btn-purge-refresh");
+  const origHtml = btn ? btn.innerHTML : "";
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = `<span style="display:inline-block;width:12px;height:12px;border:2px solid currentColor;border-top-color:transparent;border-radius:50%;animation:spin 0.8s linear infinite;margin-right:6px;"></span> Purging & Refreshing...`;
+  }
+  try {
+    const res = await fetch("/admin/api/purge-and-refresh", { method: "POST" });
+    const data = await res.json();
+    if (res.ok) {
+      showCalcBanner(data.message || "Catalog and read progress purged. Fresh background sync started.", "success");
+      pollStatus();
+      refreshUsers();
+    } else {
+      alert("Error: " + (data.detail || "Failed to purge and refresh data"));
+    }
+  } catch (err) {
+    alert("Request failed: " + err);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = origHtml;
+    }
+  }
+}
+
 async function optimizeStorage(clickedBtn = null) {
   const btn = clickedBtn || document.getElementById("btn-optimize-storage");
   const origHtml = btn ? btn.innerHTML : "";

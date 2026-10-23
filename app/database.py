@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS books (
     page_count INTEGER DEFAULT 0,
     deleted INTEGER DEFAULT 0,
     released TEXT,
+    koreader_hash TEXT,
     created TEXT,
     last_modified TEXT,
     raw_json TEXT,
@@ -165,6 +166,7 @@ CREATE INDEX IF NOT EXISTS idx_books_library_id ON books(library_id);
 CREATE INDEX IF NOT EXISTS idx_books_page_count ON books(page_count);
 CREATE INDEX IF NOT EXISTS idx_books_created ON books(created);
 CREATE INDEX IF NOT EXISTS idx_books_deleted ON books(deleted);
+CREATE INDEX IF NOT EXISTS idx_books_koreader_hash ON books(koreader_hash);
 CREATE INDEX IF NOT EXISTS idx_read_progress_user ON read_progress(user_id);
 CREATE INDEX IF NOT EXISTS idx_read_progress_book ON read_progress(book_id);
 CREATE INDEX IF NOT EXISTS idx_read_progress_date ON read_progress(read_date);
@@ -329,6 +331,14 @@ class Database:
                 pass
             try:
                 await db.execute("ALTER TABLE page_calc_jobs ADD COLUMN removed_books INTEGER DEFAULT 0")
+            except Exception:
+                pass
+            try:
+                await db.execute("ALTER TABLE books ADD COLUMN koreader_hash TEXT")
+            except Exception:
+                pass
+            try:
+                await db.execute("CREATE INDEX IF NOT EXISTS idx_books_koreader_hash ON books(koreader_hash)")
             except Exception:
                 pass
             # Backfill released column from raw_json if books were previously synced without released column
@@ -649,6 +659,7 @@ class Database:
                         OR series.id IN (
                             SELECT b.series_id FROM books b
                             WHERE b.deleted = 0
+                              AND b.library_id = series.library_id
                               AND {book_auth_sql}
                         )
                     )"""
@@ -663,6 +674,7 @@ class Database:
                         OR series.id IN (
                             SELECT b.series_id FROM books b
                             WHERE b.deleted = 0
+                              AND b.library_id = series.library_id
                               AND {book_auth_sql}
                         )
                     )"""
@@ -1376,6 +1388,79 @@ class Database:
                 "settings_deleted": settings_deleted,
                 "keys_deleted": keys_deleted,
             }
+
+    async def purge_user_read_progress(self, user_id: int) -> Dict[str, int]:
+        """
+        Purges cached read progress and R2 progression for a user,
+        keeping their user record, credentials, and settings intact.
+        """
+        async with self.write_db() as db:
+            c1 = await db.execute("DELETE FROM read_progress WHERE user_id = ?", (user_id,))
+            p_deleted = c1.rowcount
+            c2 = await db.execute("DELETE FROM r2_progression WHERE user_id = ?", (user_id,))
+            r_deleted = c2.rowcount
+            await db.commit()
+            return {"progress_deleted": p_deleted, "r2_deleted": r_deleted}
+
+    async def purge_all_read_progress(self) -> Dict[str, int]:
+        """
+        Purges all read progress and R2 progression records from SQLite for all users.
+        """
+        async with self.write_db() as db:
+            c1 = await db.execute("DELETE FROM read_progress")
+            p_deleted = c1.rowcount
+            c2 = await db.execute("DELETE FROM r2_progression")
+            r_deleted = c2.rowcount
+            await db.commit()
+            return {"progress_deleted": p_deleted, "r2_deleted": r_deleted}
+
+    async def get_total_read_progress_count(self) -> int:
+        """
+        Returns the real count of distinct read progress records currently in SQLite.
+        """
+        async with self.get_db() as db:
+            cursor = await db.execute("SELECT COUNT(*) FROM read_progress")
+            row = await cursor.fetchone()
+            return row[0] if row else 0
+
+    async def find_book_for_koreader(self, document_id_or_hash: str) -> Optional[Dict[str, Any]]:
+        """
+        Locates a book by KOReader hash, book ID, or primary file hash.
+        """
+        async with self.get_db() as db:
+            db.row_factory = aiosqlite.Row
+            if document_id_or_hash.isdigit():
+                cur = await db.execute("SELECT * FROM books WHERE id = ? AND deleted = 0", (int(document_id_or_hash),))
+                row = await cur.fetchone()
+                if row:
+                    return dict(row)
+
+            try:
+                cur = await db.execute("SELECT * FROM books WHERE koreader_hash = ? AND deleted = 0", (document_id_or_hash,))
+                row = await cur.fetchone()
+                if row:
+                    return dict(row)
+            except Exception:
+                pass
+
+            cur = await db.execute(
+                """
+                SELECT * FROM books
+                WHERE deleted = 0
+                  AND (
+                    json_extract(raw_json, '$.hash') = ?
+                    OR json_extract(raw_json, '$.primaryFile.hash') = ?
+                    OR json_extract(raw_json, '$.primaryFile.md5') = ?
+                  )
+                LIMIT 1
+                """,
+                (document_id_or_hash, document_id_or_hash, document_id_or_hash),
+            )
+            row = await cur.fetchone()
+            if row:
+                return dict(row)
+
+            return None
 
     async def get_users_detailed(self) -> List[Dict[str, Any]]:
         """

@@ -22,13 +22,14 @@ def get_authors_router(db: Database) -> APIRouter:
 
     @router.get("/api/v1/authors", response_model=List[AuthorDto])
     async def get_authors_v1(
+        request: Request,
         search: Optional[str] = Query(None),
         library_id: Optional[str] = Query(None),
         collection_id: Optional[str] = Query(None),
         series_id: Optional[str] = Query(None),
         user: UserSession = Depends(AuthService.require_user),
     ) -> List[AuthorDto]:
-        parsed_libs = parse_library_ids_param(library_id=library_id)
+        parsed_libs = parse_library_ids_param(request=request, library_id=library_id)
         effective_libs = resolve_effective_library_ids(user, parsed_libs)
         if effective_libs is not None and len(effective_libs) == 0:
             return []
@@ -78,10 +79,13 @@ def get_authors_router(db: Database) -> APIRouter:
 
     @router.get("/api/v1/authors/names", response_model=List[str])
     async def get_author_names_v1(
+        request: Request,
         search: Optional[str] = Query(None),
+        library_id: Optional[str] = Query(None),
         user: UserSession = Depends(AuthService.require_user),
     ) -> List[str]:
-        effective_libs = resolve_effective_library_ids(user, [])
+        parsed_libs = parse_library_ids_param(request=request, library_id=library_id)
+        effective_libs = resolve_effective_library_ids(user, parsed_libs)
         if effective_libs is not None and len(effective_libs) == 0:
             return []
         names, _ = await db.get_author_names_list(search=search, library_ids=effective_libs, unpaged=True)

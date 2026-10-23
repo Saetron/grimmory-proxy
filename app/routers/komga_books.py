@@ -22,6 +22,7 @@ from app.models.komga import BookDto, PageDto, PageableDto, build_pageable
 from app.services.auth import AuthService
 from app.services.cache import memory_cache, thumbnail_cache
 from app.services.filter_utils import extract_filter_params, resolve_effective_library_ids
+from app.services.koreader_utils import format_koreader_progress, resolve_koreader_doc_hash
 from app.services.mapper import KomgaMapper
 from app.services.page_calculator import PageCalculator
 
@@ -114,7 +115,7 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
             effective_libs = library_ids
 
         records, total = await db.get_books_list(
-            library_ids=effective_libs if not canonical_series_ids else None,
+            library_ids=effective_libs,
             series_ids=canonical_series_ids,
             book_ids=filter_book_ids,
             read_status=read_status,
@@ -432,6 +433,23 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
             )
             await grimmory_client.update_read_progress(req, token=user_session.token)
             await grimmory_client.update_read_status([b_id], "READ" if completed else "READING", token=user_session.token)
+
+            # Forward to KOReader sync on Grimmory
+            try:
+                doc_hash = resolve_koreader_doc_hash(record or {"id": b_id})
+                koreader_prog_str = format_koreader_progress(
+                    record.get("book_type") if record else None, p_num, page_count, perc
+                )
+                asyncio.create_task(
+                    grimmory_client.update_koreader_progress(
+                        doc_hash,
+                        koreader_prog_str,
+                        perc / 100.0,
+                        token=user_session.token,
+                    )
+                )
+            except Exception as e:
+                logger.debug(f"Could not forward KOReader page progress: {e}")
         except Exception as e:
             logger.debug(f"Error recording page progress for book {b_id}: {e}")
 

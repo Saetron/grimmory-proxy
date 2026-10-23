@@ -16,11 +16,12 @@
     </div>
   </div>
   <div style="display: flex; gap: 0.75rem; flex-wrap: wrap;">
-    <button id="btn-optimize-storage" onclick="optimizeStorage(this)" class="btn btn-secondary" title="Flush SQLite WAL pages to disk and release process heap memory back to the operating system">
+    <button id="btn-purge-refresh" onclick="purgeAndRefreshData(this)" class="btn btn-danger-ghost" title="Purge all cached catalog, read progress, and user progress, then re-sync fresh data from Grimmory">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
+        <polyline points="3 6 5 6 21 6"></polyline>
+        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
       </svg>
-      <span>Optimize Storage & RAM</span>
+      <span>Purge & Refresh from Grimmory</span>
     </button>
     <button id="btn-sync" onclick="triggerSync()" class="btn btn-secondary">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -261,19 +262,13 @@
                       <span>Sync</span>
                     </button>
                   {% endif %}
-                  {% if user and user.user_id == u.id %}
-                    <button class="btn btn-ghost btn-sm" disabled title="Cannot purge your own currently active admin session" style="opacity: 0.4; cursor: not-allowed;">
-                      <span>Purge</span>
-                    </button>
-                  {% else %}
-                    <button data-action="purge-user" data-user-id="{{ u.id }}" data-username="{{ u.username }}" class="btn btn-danger-ghost btn-sm" title="Purge user and clear cached read progress for {{ u.username }}">
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <polyline points="3 6 5 6 21 6"></polyline>
-                        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-                      </svg>
-                      <span>Purge</span>
-                    </button>
-                  {% endif %}
+                  <button data-action="purge-user" data-user-id="{{ u.id }}" data-username="{{ u.username }}" class="btn btn-danger-ghost btn-sm" title="Purge cached read progress for {{ u.username }}">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <polyline points="3 6 5 6 21 6"></polyline>
+                      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                    </svg>
+                    <span>Purge</span>
+                  </button>
                 </div>
               </td>
             </tr>

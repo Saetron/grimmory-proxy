@@ -22,6 +22,7 @@ from app.routers.komga_libraries import get_libraries_router
 from app.routers.komga_metadata import get_metadata_router
 from app.routers.komga_progress import get_progress_router
 from app.routers.komga_series import get_series_router
+from app.routers.koreader import get_koreader_router
 from app.services.page_calculator import PageCalculator
 from app.services.sync import SyncService
 from app.services.user_sync import user_sync_service
@@ -107,6 +108,7 @@ app.include_router(get_progress_router(db))
 app.include_router(get_collections_router(db))
 app.include_router(get_authors_router(db))
 app.include_router(get_metadata_router(db))
+app.include_router(get_koreader_router(db))
 app.include_router(get_admin_router(db, page_calculator, sync_service, user_sync_service))
 
 

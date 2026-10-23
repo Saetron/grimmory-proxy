@@ -21,6 +21,7 @@ from app.models.komga import (
     TachiyomiReadProgressUpdateV2Dto,
 )
 from app.services.auth import AuthService
+from app.services.koreader_utils import format_koreader_progress, resolve_koreader_doc_hash
 from app.services.mapper import KomgaMapper
 
 logger = logging.getLogger("grimmory_proxy.komga_progress")
@@ -179,6 +180,23 @@ def get_progress_router(db: Database) -> APIRouter:
                 logger.warning(f"Failed to update progress on Grimmory for book {book_id} and user {user.username}")
         except Exception as e:
             logger.warning(f"Error calling Grimmory update_read_progress for book {book_id}: {e}")
+
+        # Forward reading progress to Grimmory KOReader endpoint as well
+        try:
+            doc_hash = resolve_koreader_doc_hash(record or {"id": book_id})
+            koreader_prog_str = format_koreader_progress(
+                record.get("book_type") if record else None, page_num, page_count, percentage
+            )
+            asyncio.create_task(
+                grimmory_client.update_koreader_progress(
+                    doc_hash,
+                    koreader_prog_str,
+                    percentage / 100.0,
+                    token=user.token,
+                )
+            )
+        except Exception as e:
+            logger.debug(f"Could not forward KOReader progress: {e}")
 
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -480,6 +498,23 @@ def get_progress_router(db: Database) -> APIRouter:
                 logger.warning(f"Failed to update progress on Grimmory for book {book_id} and user {user.username}")
         except Exception as e:
             logger.warning(f"Error calling Grimmory update_read_progress for book {book_id}: {e}")
+
+        # Forward reading progress to Grimmory KOReader endpoint as well
+        try:
+            doc_hash = resolve_koreader_doc_hash(record or {"id": book_id})
+            koreader_prog_str = format_koreader_progress(
+                record.get("book_type") if record else None, page_num, page_count, percentage
+            )
+            asyncio.create_task(
+                grimmory_client.update_koreader_progress(
+                    doc_hash,
+                    koreader_prog_str,
+                    percentage / 100.0,
+                    token=user.token,
+                )
+            )
+        except Exception as e:
+            logger.debug(f"Could not forward KOReader progress: {e}")
 
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
