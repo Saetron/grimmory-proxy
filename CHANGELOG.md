@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Allowed self-purge for active admin sessions (`POST /admin/api/users/{id}/purge`) to purge personal read progress without invalidating the active session or returning HTTP 400.
 
 ### Fixed
+- **Database Startup Migration Crash on Existing Volumes**: Fixed an issue where `SCHEMA_SQL` attempted to create an index on `books(koreader_hash)` before the table migration could add the column on existing v1.9 databases, causing `sqlite3.OperationalError: no such column: koreader_hash`. Moved index creation to the automated schema migration runner.
 - **Total Synced Records Counter Accumulation**: Fixed an issue in `UserSyncService` where `total_synced_records` continuously accumulated counts across background intervals instead of querying the actual distinct count of read progress records in SQLite, which caused inflated values (e.g. 352,010).
 - **Library Isolation for Author Pages in Komic & Mobile Readers**:
   - Enforced strict library filtering in `komga_books.py` (`effective_libs` retained even when `canonical_series_ids` is present) and `komga_series.py` (`get_series_books`).

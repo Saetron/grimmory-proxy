@@ -117,3 +117,45 @@ async def test_wal_checkpoint_and_storage_stats(tmp_path):
     # Test memory release utility without error
     release_memory()
 
+
+@pytest.mark.asyncio
+async def test_legacy_database_migration_without_koreader_hash(tmp_path):
+    import sqlite3
+    db_file = tmp_path / "legacy_v19.db"
+
+    # Create a pre-existing v1.9 database without koreader_hash column
+    conn = sqlite3.connect(str(db_file))
+    conn.execute("""
+    CREATE TABLE books (
+        id INTEGER PRIMARY KEY,
+        series_id TEXT NOT NULL,
+        library_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        number REAL DEFAULT 0.0,
+        page_count INTEGER DEFAULT 0,
+        deleted INTEGER DEFAULT 0,
+        released TEXT,
+        created TEXT,
+        last_modified TEXT,
+        raw_json TEXT,
+        file_path TEXT
+    );
+    """)
+    conn.commit()
+    conn.close()
+
+    # Connecting should execute schema migration without sqlite3.OperationalError
+    db = Database(str(db_file))
+    await db.connect()
+
+    # Verify koreader_hash column and its index now exist
+    conn = sqlite3.connect(str(db_file))
+    cursor = conn.execute("PRAGMA table_info(books)")
+    cols = [r[1] for r in cursor.fetchall()]
+    assert "koreader_hash" in cols
+
+    cursor = conn.execute("PRAGMA index_list(books)")
+    indexes = [r[1] for r in cursor.fetchall()]
+    assert "idx_books_koreader_hash" in indexes
+    conn.close()
+

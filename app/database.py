@@ -166,7 +166,6 @@ CREATE INDEX IF NOT EXISTS idx_books_library_id ON books(library_id);
 CREATE INDEX IF NOT EXISTS idx_books_page_count ON books(page_count);
 CREATE INDEX IF NOT EXISTS idx_books_created ON books(created);
 CREATE INDEX IF NOT EXISTS idx_books_deleted ON books(deleted);
-CREATE INDEX IF NOT EXISTS idx_books_koreader_hash ON books(koreader_hash);
 CREATE INDEX IF NOT EXISTS idx_read_progress_user ON read_progress(user_id);
 CREATE INDEX IF NOT EXISTS idx_read_progress_book ON read_progress(book_id);
 CREATE INDEX IF NOT EXISTS idx_read_progress_date ON read_progress(read_date);
@@ -180,7 +179,6 @@ CREATE INDEX IF NOT EXISTS idx_series_name ON series(name);
 CREATE INDEX IF NOT EXISTS idx_series_slug ON series(slug);
 CREATE INDEX IF NOT EXISTS idx_series_sort_title ON series(sort_title);
 CREATE INDEX IF NOT EXISTS idx_books_series_number ON books(series_id, number);
-CREATE INDEX IF NOT EXISTS idx_books_released ON books(released);
 CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
 """
 
