@@ -159,3 +159,47 @@ async def test_legacy_database_migration_without_koreader_hash(tmp_path):
     assert "idx_books_koreader_hash" in indexes
     conn.close()
 
+
+@pytest.mark.asyncio
+async def test_legacy_database_migration_without_authors_library_id(tmp_path):
+    import sqlite3
+    db_file = tmp_path / "legacy_authors_v110.db"
+
+    # Create a pre-existing database with the old authors schema (no library_id)
+    conn = sqlite3.connect(str(db_file))
+    conn.execute("""
+    CREATE TABLE authors (
+        name TEXT PRIMARY KEY,
+        role TEXT DEFAULT 'writer',
+        count INTEGER DEFAULT 1
+    );
+    """)
+    conn.execute("INSERT INTO authors (name, role, count) VALUES ('Legacy Author', 'writer', 1)")
+    conn.commit()
+    conn.close()
+
+    # Connecting should execute schema migration without sqlite3.OperationalError: no such column: library_id
+    db = Database(str(db_file))
+    await db.connect()
+
+    # Verify authors table now has library_id and idx_authors_lib_name index
+    conn = sqlite3.connect(str(db_file))
+    cursor = conn.execute("PRAGMA table_info(authors)")
+    cols = [r[1] for r in cursor.fetchall()]
+    assert "library_id" in cols
+    assert "name" in cols
+    assert "role" in cols
+
+    cursor = conn.execute("PRAGMA index_list(authors)")
+    indexes = [r[1] for r in cursor.fetchall()]
+    assert "idx_authors_lib_name" in indexes
+
+    # Verify existing data was preserved
+    cursor = conn.execute("SELECT library_id, name, role FROM authors WHERE name = 'Legacy Author'")
+    row = cursor.fetchone()
+    assert row is not None
+    assert row[0] == 1  # defaulted to 1
+    assert row[1] == "Legacy Author"
+    conn.close()
+
+

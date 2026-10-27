@@ -20,6 +20,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - Updated `upsert_books_batch` to populate `(library_id, name, role)` for all synced books.
   - **Role Filtering Support in v1 Author Endpoints**: Added `role` query parameter support in `/api/v1/authors` and `/api/v1/authors/names`.
   - **Restricted Library Boundary Check**: Added boundary check in `komga_series.py` (`get_series_books`) when a restricted user has no access to the requested library.
+- **Database Startup Migration on Existing Volumes**: Fixed an issue where `SCHEMA_SQL` attempted to create index `idx_authors_lib_name ON authors(library_id, name)` before the automated table migration could add the column on existing pre-v1.11 databases, causing `sqlite3.OperationalError: no such column: library_id`. Deferred index creation to the automated schema migration runner.
+
+### Dependencies
+- Bumped `fastapi` from `>=0.143.1` to `>=0.158.1`.
+- Bumped `pydantic-settings` from `>=2.16.0` to `>=2.16.1`.
+- Bumped `pillow` from `>=12.3.0` to `>=13.0.0`.
+- Bumped `pypdf` from `>=6.20.1` to `>=6.21.2`.
 
 ---
 

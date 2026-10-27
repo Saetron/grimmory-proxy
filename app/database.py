@@ -181,7 +181,6 @@ CREATE INDEX IF NOT EXISTS idx_series_name ON series(name);
 CREATE INDEX IF NOT EXISTS idx_series_slug ON series(slug);
 CREATE INDEX IF NOT EXISTS idx_series_sort_title ON series(sort_title);
 CREATE INDEX IF NOT EXISTS idx_books_series_number ON books(series_id, number);
-CREATE INDEX IF NOT EXISTS idx_authors_lib_name ON authors(library_id, name);
 CREATE INDEX IF NOT EXISTS idx_authors_name ON authors(name);
 CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
 """
@@ -356,10 +355,13 @@ class Database:
                     """)
                     await db.execute("DROP TABLE authors")
                     await db.execute("ALTER TABLE authors_new RENAME TO authors")
-                    await db.execute("CREATE INDEX IF NOT EXISTS idx_authors_lib_name ON authors(library_id, name)")
-                    await db.execute("CREATE INDEX IF NOT EXISTS idx_authors_name ON authors(name)")
             except Exception as e:
                 logger.debug(f"Authors table schema migration: {e}")
+
+            try:
+                await db.execute("CREATE INDEX IF NOT EXISTS idx_authors_lib_name ON authors(library_id, name)")
+            except Exception:
+                pass
 
             # Backfill authors per library from books if not already done
             try:
