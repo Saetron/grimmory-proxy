@@ -50,10 +50,12 @@ jobs:
               new_ver = override
           else:
               try:
-                  d = Decimal(current)
-                  new_ver = str((d + Decimal('0.1')).quantize(Decimal('0.1')))
+                  parts = current.split('.')
+                  major = int(parts[0])
+                  minor = int(parts[1]) + 1
+                  new_ver = f"{major}.{minor}"
               except Exception:
-                  new_ver = '0.2'
+                  new_ver = '1.11'
 
           ver_file.write_text(new_ver + '\n', encoding='utf-8')
 
