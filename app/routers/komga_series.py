@@ -385,6 +385,8 @@ def get_series_router(db: Database) -> APIRouter:
 
         req_libs = parse_library_ids_param(request=request)
         effective_libs = resolve_effective_library_ids(user, req_libs or [series["library_id"]])
+        if effective_libs is not None and len(effective_libs) == 0:
+            return build_pageable([], page, size, 0, unpaged=is_unpaged)
 
         records, total = await db.get_books_list(
             series_id=series["id"],

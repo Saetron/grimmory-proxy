@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.11] - 2026-10-27
+
+### Fixed & Performance
+- **Infinite Loading on Author Page in Komic & Mobile Readers**:
+  - **Decoupled Correlated Series Author Subquery**: Replaced correlated subquery (`AND b.library_id = series.library_id`) in `Database.get_series_list` with an uncorrelated subquery leveraging bound library ID parameters (`b.library_id IN (...)`). This eliminates nested full-table book scans for every series in large libraries.
+  - **Short-Circuit String Guard on Author Metadata**: Added `raw_json LIKE ?` substring pre-filtering before running `json_each` in `_build_book_author_clause` and `get_series_list`. Books and series without the author name now skip JSON parsing entirely, reducing query evaluation time from tens of seconds to single-digit milliseconds.
+  - **Library-Scoped Indexed Authors Fast Path**:
+    - Migrated `authors` table schema to composite primary key `(library_id, name, role)` with indices `idx_authors_lib_name` and `idx_authors_name`.
+    - Added automated startup schema migration and backfill from existing books.
+    - Updated `Database.get_authors_list` and `Database.get_author_names_list` to utilize the indexed `authors` table even when filtering by `library_id`, eliminating expensive `WITH extracted_authors` CTE scans across all books.
+    - Updated `upsert_books_batch` to populate `(library_id, name, role)` for all synced books.
+  - **Role Filtering Support in v1 Author Endpoints**: Added `role` query parameter support in `/api/v1/authors` and `/api/v1/authors/names`.
+  - **Restricted Library Boundary Check**: Added boundary check in `komga_series.py` (`get_series_books`) when a restricted user has no access to the requested library.
+
+---
+
 ## [1.10] - 2026-10-23
 
 ### Added
@@ -258,6 +274,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[1.11]: https://github.com/Saetron/grimmory-proxy/releases/tag/v1.11
 [1.10]: https://github.com/Saetron/grimmory-proxy/releases/tag/v1.10
 [1.9]: https://github.com/Saetron/grimmory-proxy/releases/tag/v1.9
 [1.8]: https://github.com/Saetron/grimmory-proxy/releases/tag/v1.8

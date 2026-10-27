@@ -24,6 +24,7 @@ def get_authors_router(db: Database) -> APIRouter:
     async def get_authors_v1(
         request: Request,
         search: Optional[str] = Query(None),
+        role: Optional[str] = Query(None),
         library_id: Optional[str] = Query(None),
         collection_id: Optional[str] = Query(None),
         series_id: Optional[str] = Query(None),
@@ -37,6 +38,7 @@ def get_authors_router(db: Database) -> APIRouter:
         series_ids = [series_id] if series_id else None
         authors, _ = await db.get_authors_list(
             search=search,
+            role=role,
             library_ids=effective_libs,
             series_ids=series_ids,
             unpaged=True,
@@ -81,6 +83,7 @@ def get_authors_router(db: Database) -> APIRouter:
     async def get_author_names_v1(
         request: Request,
         search: Optional[str] = Query(None),
+        role: Optional[str] = Query(None),
         library_id: Optional[str] = Query(None),
         user: UserSession = Depends(AuthService.require_user),
     ) -> List[str]:
@@ -88,7 +91,7 @@ def get_authors_router(db: Database) -> APIRouter:
         effective_libs = resolve_effective_library_ids(user, parsed_libs)
         if effective_libs is not None and len(effective_libs) == 0:
             return []
-        names, _ = await db.get_author_names_list(search=search, library_ids=effective_libs, unpaged=True)
+        names, _ = await db.get_author_names_list(search=search, role=role, library_ids=effective_libs, unpaged=True)
         return names
 
     @router.get("/api/v2/authors/names", response_model=PageableDto[str])

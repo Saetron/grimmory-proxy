@@ -126,9 +126,11 @@ CREATE TABLE IF NOT EXISTS book_pages (
 );
 
 CREATE TABLE IF NOT EXISTS authors (
-    name TEXT PRIMARY KEY,
-    role TEXT DEFAULT 'writer',
-    count INTEGER DEFAULT 1
+    library_id INTEGER NOT NULL DEFAULT 1,
+    name TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'writer',
+    count INTEGER DEFAULT 1,
+    PRIMARY KEY (library_id, name, role)
 );
 
 CREATE TABLE IF NOT EXISTS sync_state (
@@ -179,6 +181,8 @@ CREATE INDEX IF NOT EXISTS idx_series_name ON series(name);
 CREATE INDEX IF NOT EXISTS idx_series_slug ON series(slug);
 CREATE INDEX IF NOT EXISTS idx_series_sort_title ON series(sort_title);
 CREATE INDEX IF NOT EXISTS idx_books_series_number ON books(series_id, number);
+CREATE INDEX IF NOT EXISTS idx_authors_lib_name ON authors(library_id, name);
+CREATE INDEX IF NOT EXISTS idx_authors_name ON authors(name);
 CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
 """
 
@@ -203,40 +207,45 @@ def _parse_author_filter(a: Any) -> Tuple[Optional[str], Optional[str]]:
 
 
 def _build_book_author_clause(auth_name: str, auth_role: Optional[str]) -> Tuple[str, List[str]]:
+    like_param = f"%{auth_name}%"
     if auth_role:
         sql = """(
-            EXISTS (
-                SELECT 1 FROM json_each(b.raw_json, '$.metadata.authors')
-                WHERE LOWER(CASE WHEN type = 'object' THEN json_extract(value, '$.name') ELSE value END) = LOWER(?)
-                  AND (type != 'object' OR json_extract(value, '$.role') IS NULL OR LOWER(json_extract(value, '$.role')) = LOWER(?))
-            )
-            OR EXISTS (
-                SELECT 1 FROM json_each(b.raw_json, '$.authors')
-                WHERE LOWER(CASE WHEN type = 'object' THEN json_extract(value, '$.name') ELSE value END) = LOWER(?)
-                  AND (type != 'object' OR json_extract(value, '$.role') IS NULL OR LOWER(json_extract(value, '$.role')) = LOWER(?))
-            )
-            OR (
-                LOWER(COALESCE(json_extract(b.raw_json, '$.metadata.author.name'), json_extract(b.raw_json, '$.metadata.author'), json_extract(b.raw_json, '$.author.name'), json_extract(b.raw_json, '$.author'))) = LOWER(?)
-                AND (
-                    COALESCE(json_extract(b.raw_json, '$.metadata.author.role'), json_extract(b.raw_json, '$.author.role')) IS NULL
-                    OR LOWER(COALESCE(json_extract(b.raw_json, '$.metadata.author.role'), json_extract(b.raw_json, '$.author.role'))) = LOWER(?)
+            b.raw_json LIKE ? AND (
+                EXISTS (
+                    SELECT 1 FROM json_each(b.raw_json, '$.metadata.authors')
+                    WHERE LOWER(CASE WHEN type = 'object' THEN json_extract(value, '$.name') ELSE value END) = LOWER(?)
+                      AND (type != 'object' OR json_extract(value, '$.role') IS NULL OR LOWER(json_extract(value, '$.role')) = LOWER(?))
+                )
+                OR EXISTS (
+                    SELECT 1 FROM json_each(b.raw_json, '$.authors')
+                    WHERE LOWER(CASE WHEN type = 'object' THEN json_extract(value, '$.name') ELSE value END) = LOWER(?)
+                      AND (type != 'object' OR json_extract(value, '$.role') IS NULL OR LOWER(json_extract(value, '$.role')) = LOWER(?))
+                )
+                OR (
+                    LOWER(COALESCE(json_extract(b.raw_json, '$.metadata.author.name'), json_extract(b.raw_json, '$.metadata.author'), json_extract(b.raw_json, '$.author.name'), json_extract(b.raw_json, '$.author'))) = LOWER(?)
+                    AND (
+                        COALESCE(json_extract(b.raw_json, '$.metadata.author.role'), json_extract(b.raw_json, '$.author.role')) IS NULL
+                        OR LOWER(COALESCE(json_extract(b.raw_json, '$.metadata.author.role'), json_extract(b.raw_json, '$.author.role'))) = LOWER(?)
+                    )
                 )
             )
         )"""
-        return sql, [auth_name, auth_role, auth_name, auth_role, auth_name, auth_role]
+        return sql, [like_param, auth_name, auth_role, auth_name, auth_role, auth_name, auth_role]
     else:
         sql = """(
-            EXISTS (
-                SELECT 1 FROM json_each(b.raw_json, '$.metadata.authors')
-                WHERE LOWER(CASE WHEN type = 'object' THEN json_extract(value, '$.name') ELSE value END) = LOWER(?)
+            b.raw_json LIKE ? AND (
+                EXISTS (
+                    SELECT 1 FROM json_each(b.raw_json, '$.metadata.authors')
+                    WHERE LOWER(CASE WHEN type = 'object' THEN json_extract(value, '$.name') ELSE value END) = LOWER(?)
+                )
+                OR EXISTS (
+                    SELECT 1 FROM json_each(b.raw_json, '$.authors')
+                    WHERE LOWER(CASE WHEN type = 'object' THEN json_extract(value, '$.name') ELSE value END) = LOWER(?)
+                )
+                OR LOWER(COALESCE(json_extract(b.raw_json, '$.metadata.author.name'), json_extract(b.raw_json, '$.metadata.author'), json_extract(b.raw_json, '$.author.name'), json_extract(b.raw_json, '$.author'))) = LOWER(?)
             )
-            OR EXISTS (
-                SELECT 1 FROM json_each(b.raw_json, '$.authors')
-                WHERE LOWER(CASE WHEN type = 'object' THEN json_extract(value, '$.name') ELSE value END) = LOWER(?)
-            )
-            OR LOWER(COALESCE(json_extract(b.raw_json, '$.metadata.author.name'), json_extract(b.raw_json, '$.metadata.author'), json_extract(b.raw_json, '$.author.name'), json_extract(b.raw_json, '$.author'))) = LOWER(?)
         )"""
-        return sql, [auth_name, auth_name, auth_name]
+        return sql, [like_param, auth_name, auth_name, auth_name]
 
 
 class Database:
@@ -327,6 +336,57 @@ class Database:
                 await db.execute("ALTER TABLE authors ADD COLUMN role TEXT DEFAULT 'writer'")
             except Exception:
                 pass
+            # Migrate authors table to composite primary key (library_id, name, role)
+            try:
+                cur = await db.execute("PRAGMA table_info(authors)")
+                cols = [r[1] for r in await cur.fetchall()]
+                if cols and "library_id" not in cols:
+                    await db.execute("""
+                        CREATE TABLE IF NOT EXISTS authors_new (
+                            library_id INTEGER NOT NULL DEFAULT 1,
+                            name TEXT NOT NULL,
+                            role TEXT NOT NULL DEFAULT 'writer',
+                            count INTEGER DEFAULT 1,
+                            PRIMARY KEY (library_id, name, role)
+                        )
+                    """)
+                    await db.execute("""
+                        INSERT OR IGNORE INTO authors_new (library_id, name, role, count)
+                        SELECT 1, name, COALESCE(role, 'writer'), COALESCE(count, 1) FROM authors
+                    """)
+                    await db.execute("DROP TABLE authors")
+                    await db.execute("ALTER TABLE authors_new RENAME TO authors")
+                    await db.execute("CREATE INDEX IF NOT EXISTS idx_authors_lib_name ON authors(library_id, name)")
+                    await db.execute("CREATE INDEX IF NOT EXISTS idx_authors_name ON authors(name)")
+            except Exception as e:
+                logger.debug(f"Authors table schema migration: {e}")
+
+            # Backfill authors per library from books if not already done
+            try:
+                chk_cur = await db.execute("SELECT value FROM sync_state WHERE key = 'authors_library_migrated_v2'")
+                chk_row = await chk_cur.fetchone()
+                if not chk_row:
+                    await db.execute("""
+                        INSERT OR IGNORE INTO authors (library_id, name, role, count)
+                        SELECT DISTINCT
+                            b.library_id,
+                            CASE WHEN a.type = 'object' THEN json_extract(a.value, '$.name') ELSE a.value END as name,
+                            CASE WHEN a.type = 'object' THEN COALESCE(json_extract(a.value, '$.role'), 'writer') ELSE 'writer' END as role,
+                            1
+                        FROM books b, json_each(b.raw_json, '$.metadata.authors') as a
+                        WHERE b.deleted = 0 AND name IS NOT NULL AND TRIM(name) != ''
+                        UNION
+                        SELECT DISTINCT
+                            b.library_id,
+                            CASE WHEN a.type = 'object' THEN json_extract(a.value, '$.name') ELSE a.value END as name,
+                            CASE WHEN a.type = 'object' THEN COALESCE(json_extract(a.value, '$.role'), 'writer') ELSE 'writer' END as role,
+                            1
+                        FROM books b, json_each(b.raw_json, '$.authors') as a
+                        WHERE b.deleted = 0 AND name IS NOT NULL AND TRIM(name) != ''
+                    """)
+                    await db.execute("INSERT OR REPLACE INTO sync_state (key, value) VALUES ('authors_library_migrated_v2', 'true')")
+            except Exception as e:
+                logger.debug(f"Authors library backfill: {e}")
             try:
                 await db.execute("ALTER TABLE page_calc_jobs ADD COLUMN removed_books INTEGER DEFAULT 0")
             except Exception:
@@ -647,37 +707,38 @@ class Database:
                     continue
 
                 book_auth_sql, book_params = _build_book_author_clause(auth_name, auth_role)
+                like_param = f"%{auth_name}%"
+
+                # Build uncorrelated subquery with constant library parameters if filtered
+                if target_libs:
+                    lib_ph = ",".join("?" for _ in target_libs)
+                    book_subquery = f"SELECT b.series_id FROM books b WHERE b.deleted = 0 AND b.library_id IN ({lib_ph}) AND {book_auth_sql}"
+                    subquery_params = list(target_libs) + book_params
+                else:
+                    book_subquery = f"SELECT b.series_id FROM books b WHERE b.deleted = 0 AND {book_auth_sql}"
+                    subquery_params = book_params
+
                 if auth_role:
                     series_auth_sql = f"""(
-                        EXISTS (
+                        (raw_json LIKE ? AND EXISTS (
                             SELECT 1 FROM json_each(raw_json, '$.authors')
                             WHERE LOWER(CASE WHEN type = 'object' THEN json_extract(value, '$.name') ELSE value END) = LOWER(?)
                               AND (type != 'object' OR json_extract(value, '$.role') IS NULL OR LOWER(json_extract(value, '$.role')) = LOWER(?))
-                        )
-                        OR series.id IN (
-                            SELECT b.series_id FROM books b
-                            WHERE b.deleted = 0
-                              AND b.library_id = series.library_id
-                              AND {book_auth_sql}
-                        )
+                        ))
+                        OR series.id IN ({book_subquery})
                     )"""
                     auth_clauses.append(series_auth_sql)
-                    params.extend([auth_name, auth_role] + book_params)
+                    params.extend([like_param, auth_name, auth_role] + subquery_params)
                 else:
                     series_auth_sql = f"""(
-                        EXISTS (
+                        (raw_json LIKE ? AND EXISTS (
                             SELECT 1 FROM json_each(raw_json, '$.authors')
                             WHERE LOWER(CASE WHEN type = 'object' THEN json_extract(value, '$.name') ELSE value END) = LOWER(?)
-                        )
-                        OR series.id IN (
-                            SELECT b.series_id FROM books b
-                            WHERE b.deleted = 0
-                              AND b.library_id = series.library_id
-                              AND {book_auth_sql}
-                        )
+                        ))
+                        OR series.id IN ({book_subquery})
                     )"""
                     auth_clauses.append(series_auth_sql)
-                    params.extend([auth_name] + book_params)
+                    params.extend([like_param, auth_name] + subquery_params)
 
             if auth_clauses:
                 conditions.append(f"({' OR '.join(auth_clauses)})")
@@ -974,7 +1035,7 @@ class Database:
                 b_data = parse_raw_json(b_raw)
                 for a in extract_authors_data(b_data):
                     if a.get("name"):
-                        author_records.add((a["name"], a.get("role", "writer")))
+                        author_records.add((b.get("library_id", 1), a["name"], a.get("role", "writer")))
 
             async def _op(db, b_rows=book_rows, a_rows=list(author_records)):
                 await db.executemany(
@@ -1002,8 +1063,8 @@ class Database:
                     try:
                         await db.executemany(
                             """
-                            INSERT INTO authors (name, role, count) VALUES (?, ?, 1)
-                            ON CONFLICT(name) DO UPDATE SET count = count + 1, role = COALESCE(excluded.role, authors.role)
+                            INSERT INTO authors (library_id, name, role, count) VALUES (?, ?, ?, 1)
+                            ON CONFLICT(library_id, name, role) DO UPDATE SET count = count + 1
                             """,
                             a_rows,
                         )
@@ -2556,22 +2617,33 @@ class Database:
             outer_params.append(role)
         where_outer = f"WHERE {' AND '.join(outer_clauses)}"
 
-        if library_ids is None and not series_ids:
+        if not series_ids:
+            lib_clauses = list(outer_clauses)
+            lib_params = list(outer_params)
+            if library_ids is not None:
+                if len(library_ids) == 0:
+                    return [], 0
+                ph = ",".join("?" for _ in library_ids)
+                lib_clauses.append(f"library_id IN ({ph})")
+                lib_params.extend(library_ids)
+
+            where_lib = f"WHERE {' AND '.join(lib_clauses)}"
+
             # Fast path: query directly from indexed authors table if populated
             async with self.get_db() as db:
                 db.row_factory = aiosqlite.Row
-                count_q = f"SELECT COUNT(*) as total FROM authors {where_outer}"
-                cur = await db.execute(count_q, outer_params)
+                count_q = f"SELECT COUNT(*) as total FROM (SELECT name, role FROM authors {where_lib} GROUP BY name, role)"
+                cur = await db.execute(count_q, lib_params)
                 row = await cur.fetchone()
                 total = row["total"] if row else 0
 
-                if total > 0:
+                if total > 0 or library_ids is not None:
                     if unpaged:
-                        data_q = f"SELECT name, COALESCE(role, 'writer') as role FROM authors {where_outer} ORDER BY name COLLATE NOCASE ASC"
-                        data_params = outer_params
+                        data_q = f"SELECT name, role FROM authors {where_lib} GROUP BY name, role ORDER BY name COLLATE NOCASE ASC"
+                        data_params = lib_params
                     else:
-                        data_q = f"SELECT name, COALESCE(role, 'writer') as role FROM authors {where_outer} ORDER BY name COLLATE NOCASE ASC LIMIT ? OFFSET ?"
-                        data_params = outer_params + [limit, offset]
+                        data_q = f"SELECT name, role FROM authors {where_lib} GROUP BY name, role ORDER BY name COLLATE NOCASE ASC LIMIT ? OFFSET ?"
+                        data_params = lib_params + [limit, offset]
 
                     cur_data = await db.execute(data_q, data_params)
                     rows = await cur_data.fetchall()
@@ -2636,6 +2708,45 @@ class Database:
         limit: int = 20,
         unpaged: bool = False,
     ) -> Tuple[List[str], int]:
+        outer_clauses = ["name IS NOT NULL AND TRIM(name) != ''"]
+        outer_params: List[Any] = []
+        if search:
+            outer_clauses.append("name LIKE ?")
+            outer_params.append(f"%{search}%")
+        if role:
+            outer_clauses.append("LOWER(role) = LOWER(?)")
+            outer_params.append(role)
+
+        if not series_ids:
+            lib_clauses = list(outer_clauses)
+            lib_params = list(outer_params)
+            if library_ids is not None:
+                if len(library_ids) == 0:
+                    return [], 0
+                ph = ",".join("?" for _ in library_ids)
+                lib_clauses.append(f"library_id IN ({ph})")
+                lib_params.extend(library_ids)
+
+            where_lib = f"WHERE {' AND '.join(lib_clauses)}"
+            async with self.get_db() as db:
+                db.row_factory = aiosqlite.Row
+                count_q = f"SELECT COUNT(DISTINCT name) as total FROM authors {where_lib}"
+                cur = await db.execute(count_q, lib_params)
+                row = await cur.fetchone()
+                total = row["total"] if row else 0
+
+                if total > 0 or library_ids is not None:
+                    if unpaged:
+                        data_q = f"SELECT name FROM authors {where_lib} GROUP BY name ORDER BY name COLLATE NOCASE ASC"
+                        data_params = lib_params
+                    else:
+                        data_q = f"SELECT name FROM authors {where_lib} GROUP BY name ORDER BY name COLLATE NOCASE ASC LIMIT ? OFFSET ?"
+                        data_params = lib_params + [limit, offset]
+
+                    cur_data = await db.execute(data_q, data_params)
+                    rows = await cur_data.fetchall()
+                    return [r["name"] for r in rows], total
+
         authors, total = await self.get_authors_list(
             search=search,
             role=role,

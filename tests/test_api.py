@@ -2976,12 +2976,13 @@ async def test_library_scoped_author_page():
     ])
 
     # Series in Library 202
-    s2_json = json.dumps({"title": "Novel Adventure", "authors": [{"name": author_name, "role": "writer"}]})
+    novel_author = "Novel Author"
+    s2_json = json.dumps({"title": "Novel Adventure", "authors": [{"name": novel_author, "role": "writer"}]})
     await db.upsert_series_batch([
         {"id": "202-novel-adv", "library_id": 202, "name": "Novel Adventure", "slug": "novel-adv", "books_count": 1, "raw_json": s2_json}
     ])
     # Book in Library 202
-    b2_json = json.dumps({"title": "Novel Vol 1", "authors": [{"name": author_name, "role": "writer"}]})
+    b2_json = json.dumps({"title": "Novel Vol 1", "authors": [{"name": novel_author, "role": "writer"}]})
     await db.upsert_books_batch([
         {"id": 20201, "series_id": "202-novel-adv", "library_id": 202, "name": "Novel Vol 1", "number": 1.0, "raw_json": b2_json}
     ])
@@ -3023,9 +3024,108 @@ async def test_library_scoped_author_page():
         assert s_books_data["totalElements"] == 1
         assert s_books_data["content"][0]["id"] == "20101"
 
-        # D. When querying authors with library_id=201, authors query handles library_id cleanly
-        resp_authors_lib = await client.get("/api/v1/authors?library_id=201", headers=headers)
-        assert resp_authors_lib.status_code == 200
+        # D. When querying authors with library_id=201, authors query strictly isolates by library
+        resp_authors_lib201 = await client.get("/api/v1/authors?library_id=201", headers=headers)
+        assert resp_authors_lib201.status_code == 200
+        auths_201 = resp_authors_lib201.json()
+        assert any(a["name"] == author_name for a in auths_201)
+        assert not any(a["name"] == novel_author for a in auths_201)
+
+        resp_authors_lib202 = await client.get("/api/v1/authors?library_id=202", headers=headers)
+        assert resp_authors_lib202.status_code == 200
+        auths_202 = resp_authors_lib202.json()
+        assert any(a["name"] == novel_author for a in auths_202)
+        assert not any(a["name"] == author_name for a in auths_202)
+
+        # E. Verify v2 and names endpoints respect library_id
+        resp_v2_lib201 = await client.get("/api/v2/authors?library_id=201", headers=headers)
+        assert resp_v2_lib201.status_code == 200
+        assert any(a["name"] == author_name for a in resp_v2_lib201.json()["content"])
+        assert not any(a["name"] == novel_author for a in resp_v2_lib201.json()["content"])
+
+        resp_names_lib201 = await client.get("/api/v1/authors/names?library_id=201", headers=headers)
+        assert resp_names_lib201.status_code == 200
+        assert author_name in resp_names_lib201.json()
+        assert novel_author not in resp_names_lib201.json()
+
+        resp_v2_names_lib201 = await client.get("/api/v2/authors/names?library_id=201", headers=headers)
+        assert resp_v2_names_lib201.status_code == 200
+        assert author_name in resp_v2_names_lib201.json()["content"]
+        assert novel_author not in resp_v2_names_lib201.json()["content"]
+
+
+@pytest.mark.asyncio
+async def test_author_queries_role_and_fast_path():
+    import json
+    from app.main import db, app
+    from app.models.internal import UserSession
+    from app.services.auth import AuthService
+
+    await db.connect()
+    lib_id = 301
+    await db.upsert_libraries([{"id": lib_id, "name": "Artist Library", "paths": []}])
+
+    # Insert a book with both writer and penciller
+    b_json = json.dumps({
+        "title": "Graphic Novel",
+        "authors": [
+            {"name": "Story Writer", "role": "writer"},
+            {"name": "Visual Artist", "role": "penciller"},
+        ]
+    })
+    s_json = json.dumps({
+        "title": "Graphic Novel Series",
+        "authors": [
+            {"name": "Story Writer", "role": "writer"},
+            {"name": "Visual Artist", "role": "penciller"},
+        ]
+    })
+    await db.upsert_series_batch([
+        {"id": "301-gn", "library_id": lib_id, "name": "Graphic Novel Series", "slug": "gn", "books_count": 1, "raw_json": s_json}
+    ])
+    await db.upsert_books_batch([
+        {"id": 30101, "series_id": "301-gn", "library_id": lib_id, "name": "Graphic Novel", "number": 1.0, "raw_json": b_json}
+    ])
+
+    admin_session = UserSession(
+        user_id=3001,
+        username="artist_user",
+        token="tok_art",
+        is_admin=True,
+        assigned_library_ids=[],
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    AuthService.cache_session(admin_session)
+    headers = {"Authorization": "Bearer tok_art"}
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # Test GET /api/v1/authors?role=penciller&library_id=301
+        res = await client.get(f"/api/v1/authors?role=penciller&library_id={lib_id}", headers=headers)
+        assert res.status_code == 200
+        data = res.json()
+        assert any(a["name"] == "Visual Artist" for a in data)
+        assert not any(a["name"] == "Story Writer" for a in data)
+
+        # Test GET /api/v1/authors?role=writer&library_id=301
+        res_w = await client.get(f"/api/v1/authors?role=writer&library_id={lib_id}", headers=headers)
+        assert res_w.status_code == 200
+        data_w = res_w.json()
+        assert any(a["name"] == "Story Writer" for a in data_w)
+        assert not any(a["name"] == "Visual Artist" for a in data_w)
+
+        # Test GET /api/v1/series?author=Visual Artist,penciller&library_id=301
+        res_s = await client.get(f"/api/v1/series?author=Visual Artist,penciller&library_id={lib_id}", headers=headers)
+        assert res_s.status_code == 200
+        assert res_s.json()["totalElements"] == 1
+        assert res_s.json()["content"][0]["id"] == "301-gn"
+
+        # Test GET /api/v1/books?author=Visual Artist,penciller&library_id=301
+        res_b = await client.get(f"/api/v1/books?author=Visual Artist,penciller&library_id={lib_id}", headers=headers)
+        assert res_b.status_code == 200
+        assert res_b.json()["totalElements"] == 1
+        assert res_b.json()["content"][0]["id"] == "30101"
+
 
 
 
