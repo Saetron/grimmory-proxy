@@ -3,7 +3,7 @@
 [![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688.svg)](https://fastapi.tiangolo.com/)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED.svg)](https://www.docker.com/)
-[![Version](https://img.shields.io/badge/Version-v1.12-orange.svg)](VERSION)
+[![Version](https://img.shields.io/badge/Version-v1.12.1-orange.svg)](VERSION)
 [![Komga API](https://img.shields.io/badge/Komga%20API-v1.12.0-orange.svg)](https://komga.org/)
 [![Grimmory](https://img.shields.io/badge/Grimmory-3.6.0%2FNightly-f97316.svg)](https://grimmory.org/)
 [![Documentation](https://img.shields.io/badge/Docs-Zensical-0ea5e9.svg)](https://saetron.github.io/grimmory-proxy/)

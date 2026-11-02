@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.12.1] - 2026-11-02
+
 ### Added
 - **Dependabot Documentation Tracking**: Created `docs/requirements.txt` and configured `.github/dependabot.yml` to automatically monitor and update Zensical and documentation dependencies.
 - **Interactive OpenAPI Reference & Static Export**: Added `docs/openapi.json` (exporting all 129+ Komga and Admin WebUI endpoints), `docs/scalar.html` (interactive search and exploration via Scalar API Reference), and `docs/api-reference.md` integrated directly into the Zensical documentation site.
@@ -389,6 +391,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[1.12.1]: https://github.com/Saetron/grimmory-proxy/releases/tag/v1.12.1
 [1.12]: https://github.com/Saetron/grimmory-proxy/releases/tag/v1.12
 [1.11]: https://github.com/Saetron/grimmory-proxy/releases/tag/v1.11
 [1.10]: https://github.com/Saetron/grimmory-proxy/releases/tag/v1.10
