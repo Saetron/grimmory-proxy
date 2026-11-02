@@ -834,14 +834,25 @@ async def test_client_settings_endpoints():
         # 4. User saves and retrieves user settings
         user_patch = await client.patch(
             "/api/v1/client-settings/user",
-            json={"reader.mode": {"value": "continuous"}},
+            json={
+                "reader.mode": {"value": "continuous"},
+                "mangabox.ui.accentcolor": {"value": 0},
+                "mangabox.ui.themeprefs": {"value": 1},
+                "mangabox.ui.darkmode": {"value": False},
+                "mangabox.ui.libraryfilters": {"value": {"lib1": True}},
+            },
             headers=user_headers,
         )
         assert user_patch.status_code == 204
 
         user_get = await client.get("/api/v1/client-settings/user/list", headers=user_headers)
         assert user_get.status_code == 200
-        assert user_get.json().get("reader.mode") == {"value": "continuous", "allowUnauthorized": False}
+        settings_res = user_get.json()
+        assert settings_res.get("reader.mode") == {"value": "continuous", "allowUnauthorized": False}
+        assert settings_res.get("mangabox.ui.accentcolor") == {"value": "0", "allowUnauthorized": False}
+        assert settings_res.get("mangabox.ui.themeprefs") == {"value": "1", "allowUnauthorized": False}
+        assert settings_res.get("mangabox.ui.darkmode") == {"value": "false", "allowUnauthorized": False}
+        assert settings_res.get("mangabox.ui.libraryfilters") == {"value": '{"lib1": true}', "allowUnauthorized": False}
 
         # 5. User deletes user setting
         user_del = await client.request(

@@ -1,6 +1,7 @@
 from __future__ import annotations
+import json
 from typing import Any, Dict, Generic, List, Optional, TypeVar
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 T = TypeVar("T")
 
@@ -299,14 +300,94 @@ class ClientSettingDto(BaseModel):
     value: str
     allowUnauthorized: bool = False
 
+    @model_validator(mode="before")
+    @classmethod
+    def pre_validate(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            res = dict(data)
+            if "value" in res and not isinstance(res["value"], str):
+                v = res["value"]
+                if isinstance(v, bool):
+                    res["value"] = "true" if v else "false"
+                elif isinstance(v, (int, float)):
+                    res["value"] = str(v)
+                elif isinstance(v, (dict, list)):
+                    res["value"] = json.dumps(v)
+                elif v is None:
+                    res["value"] = ""
+                else:
+                    res["value"] = str(v)
+            return res
+        return data
+
 
 class ClientSettingGlobalUpdateDto(BaseModel):
     value: str
     allowUnauthorized: bool = False
 
+    @model_validator(mode="before")
+    @classmethod
+    def pre_validate(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            res = dict(data)
+            if "value" in res:
+                v = res["value"]
+                if isinstance(v, bool):
+                    res["value"] = "true" if v else "false"
+                elif isinstance(v, (int, float)):
+                    res["value"] = str(v)
+                elif isinstance(v, (dict, list)):
+                    res["value"] = json.dumps(v)
+                elif v is None:
+                    res["value"] = ""
+                else:
+                    res["value"] = str(v)
+            return res
+        elif not isinstance(data, dict):
+            if isinstance(data, bool):
+                v_str = "true" if data else "false"
+            elif isinstance(data, (int, float)):
+                v_str = str(data)
+            elif isinstance(data, (dict, list)):
+                v_str = json.dumps(data)
+            elif data is None:
+                v_str = ""
+            else:
+                v_str = str(data)
+            return {"value": v_str, "allowUnauthorized": False}
+        return data
+
 
 class ClientSettingUserUpdateDto(BaseModel):
     value: str
+
+    @model_validator(mode="before")
+    @classmethod
+    def pre_validate(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "value" in data:
+            v = data["value"]
+            if isinstance(v, bool):
+                return {"value": "true" if v else "false"}
+            elif isinstance(v, (int, float)):
+                return {"value": str(v)}
+            elif isinstance(v, (dict, list)):
+                return {"value": json.dumps(v)}
+            elif v is None:
+                return {"value": ""}
+            else:
+                return {"value": str(v)}
+        elif not isinstance(data, dict):
+            if isinstance(data, bool):
+                return {"value": "true" if data else "false"}
+            elif isinstance(data, (int, float)):
+                return {"value": str(data)}
+            elif isinstance(data, (dict, list)):
+                return {"value": json.dumps(data)}
+            elif data is None:
+                return {"value": ""}
+            else:
+                return {"value": str(data)}
+        return data
 
 
 class OAuth2ClientDto(BaseModel):
