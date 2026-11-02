@@ -6,6 +6,7 @@
 [![Version](https://img.shields.io/badge/Version-v1.12-orange.svg)](VERSION)
 [![Komga API](https://img.shields.io/badge/Komga%20API-v1.12.0-orange.svg)](https://komga.org/)
 [![Grimmory](https://img.shields.io/badge/Grimmory-3.6.0%2FNightly-f97316.svg)](https://grimmory.org/)
+[![Documentation](https://img.shields.io/badge/Docs-Zensical-0ea5e9.svg)](https://saetron.github.io/grimmory-proxy/)
 
 A high-performance Python and Docker proxy that translates the **[Grimmory API](https://grimmory.org/api/)** into the complete **[Komga API v1.12.0 specification](https://raw.githubusercontent.com/gotson/komga/refs/heads/master/komga/docs/openapi.json)**. It seamlessly restores compatibility for Komga-compatible reader applications—including **Mihon / Tachiyomi**, **Panels**, **Komic**, **Paperback**, and **Kuro Reader**—following Grimmory's deprecation of its native Komga endpoint.
 
@@ -72,6 +73,7 @@ Connect **Mihon**, **Panels**, **Komic**, **Paperback**, or **Kuro Reader** usin
 
 For in-depth guides, technical details, and contributing guidelines:
 
+- 🌐 **[Live Web Documentation](https://saetron.github.io/grimmory-proxy/)**: Interactive documentation with instant search.
 - ⚙️ **[Configuration Guide](docs/configuration.md)**: Full environment variables reference, config.json precedence rules, and caching tuning.
 - 🔌 **[Supported API Endpoints](docs/endpoints.md)**: Exhaustive breakdown of Komga routes, Admin API endpoints, and Grimmory browser redirects.
 - 🏛️ **[Architecture & Development](docs/development.md)**: Architecture diagram, Calibre ADE calculation engine, local development, and test suite guide.
