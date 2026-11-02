@@ -67,6 +67,15 @@ jobs:
               txt = re.sub(r'badge/Version-v[0-9.]+-orange\.svg', f'badge/Version-v{new_ver}-orange.svg', txt)
               readme_file.write_text(txt, encoding='utf-8')
 
+          # Also update SECURITY.md supported version table
+          sec_file = Path('SECURITY.md')
+          if sec_file.exists():
+              import re
+              sec_txt = sec_file.read_text(encoding='utf-8')
+              sec_txt = re.sub(r'\| [0-9.]+\.x\s*\| :white_check_mark:', f'| {new_ver}.x  | :white_check_mark:', sec_txt)
+              sec_txt = re.sub(r'\| < [0-9.]+\s*\| :x:', f'| < {new_ver}  | :x:', sec_txt)
+              sec_file.write_text(sec_txt, encoding='utf-8')
+
           print(new_ver)
           ")
           echo "version=$NEW_VER" >> $GITHUB_OUTPUT
@@ -83,7 +92,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add VERSION README.md
+          git add VERSION README.md SECURITY.md
           if ! git diff-index --quiet HEAD --; then
             git commit -m "chore(release): bump version to ${{ steps.bump.outputs.version }} [skip ci]"
           fi
