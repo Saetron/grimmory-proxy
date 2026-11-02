@@ -1,8 +1,7 @@
 # grimmory-proxy: Komga API Emulation for Grimmory
 
-> [!IMPORTANT]
-> **Looking for Grimmory's Komga API Emulation?**
-> In Grimmory 3.x, Grimmory deprecated its native Komga endpoint. `grimmory-proxy` is a high-performance Docker API bridge that restores full **Komga v1.12.0 API emulation**, allowing Komga-compatible reader applications—including **Mihon / Tachiyomi**, **Panels**, **Komic**, **Paperback**, and **Kuro Reader**—to connect transparently to modern Grimmory servers.
+!!! info "Looking for Grimmory's Komga API Emulation?"
+    In Grimmory 3.x, Grimmory deprecated its native Komga endpoint. `grimmory-proxy` is a high-performance Docker API bridge that restores full **Komga v1.12.0 API emulation**, allowing Komga-compatible reader applications—including **Mihon / Tachiyomi**, **Panels**, **Komic**, **Paperback**, and **Kuro Reader**—to connect transparently to modern Grimmory servers.
 
 ---
 

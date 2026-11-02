@@ -97,8 +97,8 @@ grimmory.example.com {
 }
 ```
 
-> [!TIP]
-> When running behind HTTPS in Caddy, set `COOKIE_SECURE=true` in your proxy environment so session cookies carry the `Secure` attribute.
+!!! tip
+    When running behind HTTPS in Caddy, set `COOKIE_SECURE=true` in your proxy environment so session cookies carry the `Secure` attribute.
 
 ---
 

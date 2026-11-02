@@ -15,8 +15,8 @@ Across all reader clients, use the following connection parameters:
 | **Username** | Your Grimmory username |
 | **Password** | Your Grimmory password |
 
-> [!NOTE]
-> Each user authenticates with their own Grimmory credentials. Reading progress, read badges (`READ`, `READING`, `UNREAD`), and personal shelves are strictly isolated per user and kept in sync with Grimmory.
+!!! note
+    Each user authenticates with their own Grimmory credentials. Reading progress, read badges (`READ`, `READING`, `UNREAD`), and personal shelves are strictly isolated per user and kept in sync with Grimmory.
 
 ---
 
@@ -36,8 +36,8 @@ Across all reader clients, use the following connection parameters:
 5. Tap **Restart app** or back out to refresh the source.
 6. Open **Komga** in the Sources list to view your Grimmory libraries, series, and volumes.
 
-> [!TIP]
-> **Automatic Read Tracking**: Mihon streams page images directly. `grimmory-proxy` detects page streaming in real time, updating your Grimmory reading progress and badges (`READING` / `READ`) even though Mihon does not send separate progress sync requests.
+!!! tip
+    **Automatic Read Tracking**: Mihon streams page images directly. `grimmory-proxy` detects page streaming in real time, updating your Grimmory reading progress and badges (`READING` / `READ`) even though Mihon does not send separate progress sync requests.
 
 ---
 
@@ -72,8 +72,8 @@ Across all reader clients, use the following connection parameters:
    - **Password**: Grimmory password
 4. Tap **Login**.
 
-> [!NOTE]
-> `grimmory-proxy` supports Komic's advanced POST condition filters (`/api/v1/series/list`, `/api/v1/books/list`) and role-aware author queries (e.g. `writer`, `penciller`, `cover artist`).
+!!! note
+    `grimmory-proxy` supports Komic's advanced POST condition filters (`/api/v1/series/list`, `/api/v1/books/list`) and role-aware author queries (e.g. `writer`, `penciller`, `cover artist`).
 
 ---
 
