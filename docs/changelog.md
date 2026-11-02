@@ -19,6 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - **FastAPI Duplicate Operation IDs**: Explicitly defined distinct `operation_id` values and dedicated handlers for dual-method GET/POST endpoints (`/api/logout`, `/api/v1/books/ondeck`, `/api/v1/books/latest`, `/api/v1/books/released`), resolving duplicate OpenAPI operation warnings.
 
+### Dependencies
+- Bumped `pydantic` from `>=2.14.1` to `>=2.14.2` addressing security advisories GHSA-qpmf-fgh3-ff25 and GHSA-3r8g-cqwr-jr29.
+- Bumped `actions/upload-pages-artifact` from `4` to `5` in `.github/workflows/docs.yml`.
+- Bumped `actions/deploy-pages` from `4` to `5` in `.github/workflows/docs.yml`.
+
 ## [1.12] - 2026-11-02
 
 ### Added
