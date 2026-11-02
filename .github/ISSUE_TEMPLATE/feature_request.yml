@@ -1,0 +1,41 @@
+name: "✨ Feature Request"
+description: "Suggest a new feature, enhancement, or reader client integration"
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Have an idea to improve grimmory-proxy? Let us know!
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: "Is your feature request related to a problem?"
+      description: "A clear description of what the problem or limitation is (e.g., 'I'm always frustrated when...')."
+    validations:
+      required: false
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: "Describe the Solution You'd Like"
+      description: "A clear and concise description of what you want to happen."
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: "Describe Alternatives You've Considered"
+      description: "Any alternative solutions, workarounds, or features you've evaluated."
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: "Additional Context"
+      description: "Any other context, screenshots, or API references (e.g. Komga OpenAPI or Grimmory API docs)."
+    validations:
+      required: false
