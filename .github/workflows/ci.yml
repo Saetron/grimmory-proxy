@@ -55,7 +55,7 @@ jobs:
                   minor = int(parts[1]) + 1
                   new_ver = str(major) + '.' + str(minor)
               except Exception:
-                  new_ver = '1.11'
+                  new_ver = '1.12'
 
           ver_file.write_text(new_ver + '\n', encoding='utf-8')
 
