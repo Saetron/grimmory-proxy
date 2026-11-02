@@ -71,6 +71,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - Hooked cache eviction into `release_memory()` to free RAM during storage optimization.
 
 ### Changed
+- **Repository Documentation Restructure**:
+  - Streamlined root README.md into a focused overview and quickstart guide.
+  - Extracted exhaustive documentation into dedicated files under docs/: docs/configuration.md (environment variables and tuning), docs/endpoints.md (Komga, Admin WebUI, and browser redirect routes), and docs/development.md (architecture, page calculation engine, testing, and CI/CD workflows).
 - **Book Query Explorer Streamlining**:
   - Removed redundant "Read" button from book cards in the WebUI Book Query Explorer.
   - Completely removed user reading progress badges (`Read`, `p. X`, `Unread`) from the admin dashboard to keep the interface focused strictly on catalog management and administrative operations.
