@@ -53,6 +53,10 @@
       <span>Proxy Server & API</span>
       <span id="proxy-log-badge" class="brand-badge" style="font-size: 0.68rem; padding: 0.1rem 0.4rem;">{{ proxy_logs|length }}/200</span>
     </button>
+    <button id="tab-btn-page-calc" onclick="selectLogTab('page-calc')" class="btn btn-ghost btn-sm">
+      <span>Page Calculation & Errors</span>
+      <span id="page-calc-log-badge" class="brand-badge" style="font-size: 0.68rem; padding: 0.1rem 0.4rem;">{{ page_calc_logs|length }}/200</span>
+    </button>
   </div>
 
   <!-- Terminal Window Container -->
@@ -87,7 +91,8 @@ let currentLogTab = "sync";
 let cachedLogs = {
   sync: {{ sync_logs | tojson }},
   "read-sync": {{ read_sync_logs | tojson }},
-  proxy: {{ proxy_logs | tojson }}
+  proxy: {{ proxy_logs | tojson }},
+  "page-calc": {{ page_calc_logs | tojson }}
 };
 
 function selectLogTab(tabName) {
@@ -95,10 +100,16 @@ function selectLogTab(tabName) {
   document.getElementById("tab-btn-sync").className = "btn btn-ghost btn-sm" + (tabName === "sync" ? " active" : "");
   document.getElementById("tab-btn-read-sync").className = "btn btn-ghost btn-sm" + (tabName === "read-sync" ? " active" : "");
   document.getElementById("tab-btn-proxy").className = "btn btn-ghost btn-sm" + (tabName === "proxy" ? " active" : "");
+  const pageCalcBtn = document.getElementById("tab-btn-page-calc");
+  if (pageCalcBtn) pageCalcBtn.className = "btn btn-ghost btn-sm" + (tabName === "page-calc" ? " active" : "");
 
   const titleEl = document.getElementById("terminal-tab-title");
   if (titleEl) {
-    titleEl.innerText = "stream: " + (tabName === "sync" ? "metadata_sync.log" : (tabName === "read-sync" ? "user_read_sync.log" : "proxy_server.log"));
+    let streamName = "metadata_sync.log";
+    if (tabName === "read-sync") streamName = "user_read_sync.log";
+    else if (tabName === "proxy") streamName = "proxy_server.log";
+    else if (tabName === "page-calc") streamName = "page_calculator.log";
+    titleEl.innerText = "stream: " + streamName;
   }
 
   renderLogs();
@@ -141,6 +152,8 @@ function renderLogs() {
   if (bRead) bRead.innerText = `${(cachedLogs['read-sync'] || []).length}/200`;
   const bProxy = document.getElementById("proxy-log-badge");
   if (bProxy) bProxy.innerText = `${(cachedLogs.proxy || []).length}/200`;
+  const bPageCalc = document.getElementById("page-calc-log-badge");
+  if (bPageCalc) bPageCalc.innerText = `${(cachedLogs['page-calc'] || []).length}/200`;
 }
 
 async function pollLogsNow() {
@@ -151,6 +164,7 @@ async function pollLogsNow() {
     cachedLogs.sync = data.sync_logs || [];
     cachedLogs["read-sync"] = data.read_sync_logs || [];
     cachedLogs.proxy = data.proxy_logs || [];
+    cachedLogs["page-calc"] = data.page_calc_logs || [];
     renderLogs();
   } catch (err) {
     console.debug("Error polling logs:", err);

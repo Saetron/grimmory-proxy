@@ -10,6 +10,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Page Calculation Error Tracking & Book File Validation**:
+  - **Persistent Problematic Files Table (`page_calc_errors`)**:
+    - Automatically records calculation and inspection failures (e.g., corrupt CBZ/EPUB archives, unreadable PDFs, zero-byte downloads, or timeouts) with book ID, title, series name, library ID, format, exact file path on disk, and specific error reason.
+    - Prevents false-positive page counts (no longer defaults corrupted archives or zero-byte files to 1 page).
+    - Automatically deletes resolved error records when a book is successfully recalculated and enriched.
+  - **WebUI Problematic Book Files Inspection Panel (`/stats`)**:
+    - Added dedicated "Problematic Files & Calculation Errors" panel in the Statistics & Page Engine page with instant issue badges.
+    - Displays detailed table including direct link to book, series name, format, disk file path in `<code>` block, failure reason, and occurrence timestamp.
+    - Added "Retry Failed Files" action to run targeted page calculation exclusively on books with recorded errors (`POST /admin/api/calculate-pages` with `retry_failed_only: true`).
+    - Added "Clear Error History" action (`POST /admin/api/page-calc/errors/clear`) to reset error history.
+  - **Live Page Calculation Streaming Logs (`/logs`)**:
+    - Added dedicated "Page Calculation & Errors" tab in the live logs viewer, backed by an in-memory ring buffer capped at 200 lines.
+    - Streams inspection events, calculation successes, timeouts, and highlighted error messages in real time.
+    - Exposed programmatic endpoints `GET /admin/api/page-calc/errors` and `POST /admin/api/logs/clear` for page calculation logs.
 - **Full WebUI Rework & Modular Page Architecture**:
   - **Clean Status & Book Query Explorer Dashboard (`/admin`, `/dashboard`)**:
     - Redesigned the primary landing dashboard to focus on overall health/sync status and an interactive book search explorer.

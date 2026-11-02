@@ -37,10 +37,11 @@ A high-performance Python and Docker proxy/bridge that translates the **[Grimmor
   - Automatically derives series titles for standalone books without upstream series names.
   - Appends ` - {author}` *only* when two or more standalone books in the library share an identical title by different authors, keeping library views clean and uncluttered while preventing accidental series mergers.
 
-- **Automated Book Page Calculation Engine**:
+- **Automated Book Page Calculation Engine & Error Validation**:
   - **Novels (EPUB, MOBI, AZW, FB2)**: Computes accurate page counts using Calibre's **Adobe Digital Editions (ADE)** heuristic (1,024 uncompressed characters per page, configurable via `NOVEL_CHARS_PER_PAGE`).
   - **Comics & Manga (CBZ / CBR / CBX)**: Fast 1:1 image file counting.
   - **PDF Documents**: Direct page count extraction via `pypdf`.
+  - **Error Logging & Problematic Files Validation**: Corrupted archives, zero-byte downloads, and unreadable files are logged with exact storage paths, recorded in SQLite (`page_calc_errors`), and highlighted in the WebUI (`/stats`) with instant retry and error clearing controls.
   - **Upstream Write-Back**: Automatically syncs calculated page counts back to Grimmory metadata (`pageCount`) via `PUT /api/v1/books/{id}/metadata?replaceMode=REPLACE_WHEN_PROVIDED`, preserving all existing tags, authors, and genres.
   - Fully asynchronous worker pool with concurrency control (`SYNC_CONCURRENCY`), graceful cancellation (`/admin/api/stop-calculation`), and automatic cleanup of stale locks on startup.
 
@@ -244,13 +245,15 @@ A high-performance Python and Docker proxy/bridge that translates the **[Grimmor
 - `GET /logs` - Multi-stream terminal logs (metadata sync, user read sync, server logs) capped at 200 lines.
 - `GET /settings` - Persistent configuration manager for live editing and raw JSON inspection.
 - `GET /admin/api/books/search` - Search and inspect books available in the proxy cache.
-- `GET /admin/api/logs` - Fetch the last 200 lines across log streams.
-- `POST /admin/api/logs/clear` - Clear selected log buffer (`metadata`, `read_sync`, or `server`).
+- `GET /admin/api/logs` - Fetch the last 200 lines across log streams (`metadata`, `read_sync`, `proxy`, `page_calc`).
+- `POST /admin/api/logs/clear` - Clear selected log buffer (`metadata`, `read_sync`, `proxy`, or `page_calc`).
+- `GET /admin/api/page-calc/errors` - List recorded book calculation errors and problematic file paths.
+- `POST /admin/api/page-calc/errors/clear` - Clear recorded page calculation errors history.
 - `GET /admin/api/settings`, `POST /admin/api/settings` - Retrieve or update runtime persistent configuration.
 - `GET /admin/api/users` - List connected reader users with library access, reading progress statistics, and online indicators.
 - `POST /admin/api/users/{id}/purge` - Permanently purge a user and delete all their cached read progress, settings, and sessions.
 - `POST /admin/api/users/{id}/sync` - Force an immediate on-demand Grimmory read progress sync for a specific user.
-- `POST /admin/api/calculate-pages` - Trigger page calculation (missing only or full recalculation).
+- `POST /admin/api/calculate-pages` - Trigger page calculation (missing only, full recalculation, or retry failed only).
 - `POST /admin/api/stop-calculation` - Gracefully abort active calculation job.
 - `POST /admin/api/sync` - Trigger on-demand metadata sync.
 - `POST /admin/api/sync/clear-logs` - Clear metadata sync log history.

@@ -26,6 +26,8 @@ class PageCalcStatus(BaseModel):
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
     error_message: Optional[str] = None
+    logs: List[str] = Field(default_factory=list)
+    recent_errors: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class SyncStatus(BaseModel):

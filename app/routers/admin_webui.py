@@ -33,6 +33,7 @@ templates.env.globals["grimmory_public_url"] = settings.public_grimmory_url
 
 class CalcPagesRequest(BaseModel):
     missing_only: bool = True
+    retry_failed_only: bool = False
 
 
 class ImageCompressionConfigRequest(BaseModel):
@@ -180,6 +181,12 @@ def get_admin_router(
     async def _resolve_calc_job_status() -> PageCalcStatus:
         calc_job_status = page_calculator.status.model_copy()
         calc_job_status.is_running = page_calculator.is_running
+        calc_job_status.logs = list(page_calculator.logs)
+        try:
+            calc_job_status.recent_errors = await db.get_page_calc_errors(limit=50)
+        except Exception:
+            calc_job_status.recent_errors = []
+
         if not page_calculator.is_running and calc_job_status.job_id is None:
             try:
                 latest_job = await db.get_latest_page_calc_job()
@@ -195,6 +202,8 @@ def get_admin_router(
                         current_book=latest_job.get("current_book") or ("Completed" if latest_job["status"] == "completed" else "-"),
                         error_message=latest_job.get("error_message"),
                         status=latest_job.get("status", "idle"),
+                        logs=list(page_calculator.logs),
+                        recent_errors=calc_job_status.recent_errors,
                     )
             except Exception as e:
                 logger.debug(f"Could not load latest calc job for dashboard: {e}")
@@ -308,6 +317,11 @@ def get_admin_router(
             thumb_count, thumb_bytes = 0, 0
 
         calc_job_status = await _resolve_calc_job_status()
+        try:
+            page_calc_errors = await db.get_page_calc_errors(limit=100)
+        except Exception as e:
+            logger.debug(f"Error loading page_calc_errors for stats page: {e}")
+            page_calc_errors = []
 
         return templates.TemplateResponse(
             request=request,
@@ -317,6 +331,7 @@ def get_admin_router(
                 "active_page": "stats",
                 "stats": stats,
                 "calc_job": calc_job_status,
+                "page_calc_errors": page_calc_errors,
                 "thumbnail_count": thumb_count,
                 "thumbnail_bytes": thumb_bytes,
                 "app_version": settings.app_version,
@@ -367,6 +382,7 @@ def get_admin_router(
                 "sync_logs": sync_service.status.logs[-200:],
                 "read_sync_logs": user_sync.status.logs[-200:],
                 "proxy_logs": proxy_log_handler.get_logs()[-200:],
+                "page_calc_logs": page_calculator.logs[-200:],
                 "app_version": settings.app_version,
                 "grimmory_url": settings.grimmory_url,
                 "grimmory_public_url": settings.public_grimmory_url,
@@ -408,9 +424,17 @@ def get_admin_router(
 
         calc_job_status = await _resolve_calc_job_status()
 
+        page_calc_errors = []
+        try:
+            page_calc_errors = await db.get_page_calc_errors(limit=50)
+        except Exception as e:
+            logger.debug(f"Error fetching page_calc_errors for status API: {e}")
+
         return {
             "stats": stats,
             "calc_job": calc_job_status.model_dump(),
+            "page_calc_errors": page_calc_errors,
+            "page_calc_logs": page_calculator.logs[-200:],
             "sync_job": sync_service.status.model_dump(),
             "read_sync_job": user_sync.status.model_dump(),
             "thumbnails": {"count": thumb_count, "bytes": thumb_bytes},
@@ -439,6 +463,18 @@ def get_admin_router(
         if page_calculator.is_running:
             return {"status": "already_running", "message": "A calculation job is already running"}
 
+        if payload.retry_failed_only:
+            failed_books = await db.get_books_with_page_calc_errors()
+            if not failed_books:
+                return {
+                    "status": "no_work",
+                    "message": "No problematic books with errors found to retry!",
+                    "retry_failed_only": True,
+                    "books_to_process": 0,
+                }
+            page_calculator.start_calculation_job(missing_only=False, retry_failed_only=True)
+            return {"status": "started", "retry_failed_only": True, "books_to_process": len(failed_books)}
+
         if payload.missing_only:
             missing_books = await db.get_books_missing_pages()
             if not missing_books:
@@ -449,8 +485,21 @@ def get_admin_router(
                     "books_to_process": 0,
                 }
 
-        page_calculator.start_calculation_job(missing_only=payload.missing_only)
+        page_calculator.start_calculation_job(missing_only=payload.missing_only, retry_failed_only=False)
         return {"status": "started", "missing_only": payload.missing_only}
+
+    @router.get("/admin/api/page-calc/errors")
+    async def get_page_calc_errors_endpoint(request: Request) -> Dict[str, Any]:
+        user = await require_admin_session(request)
+        errors = await db.get_page_calc_errors(limit=200)
+        return {"errors": errors, "total": len(errors)}
+
+    @router.post("/admin/api/page-calc/errors/clear")
+    async def clear_page_calc_errors_endpoint(request: Request) -> Dict[str, Any]:
+        user = await require_admin_session(request)
+        await db.clear_page_calc_errors()
+        page_calculator.status.recent_errors = []
+        return {"status": "cleared", "message": "Page calculation error history has been cleared."}
 
     @router.post("/admin/api/stop-calculation")
     async def stop_calculate_pages(request: Request) -> Dict[str, Any]:
@@ -797,6 +846,7 @@ def get_admin_router(
             "sync_logs": sync_service.status.logs[-200:],
             "read_sync_logs": user_sync.status.logs[-200:],
             "proxy_logs": proxy_log_handler.get_logs()[-200:],
+            "page_calc_logs": page_calculator.logs[-200:],
         }
 
     @router.post("/admin/api/logs/clear")
@@ -815,6 +865,8 @@ def get_admin_router(
             user_sync.status.logs.clear()
         if log_type in ("proxy", "all"):
             proxy_log_handler.clear()
+        if log_type in ("page-calc", "page_calc", "all"):
+            page_calculator.clear_logs()
 
         logger.info(f"Admin '{user.username}' cleared log buffer ({log_type})")
         return {"success": True, "message": f"Logs cleared ({log_type})."}
