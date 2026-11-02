@@ -67,6 +67,7 @@ async def test_ui_rework_pages_and_book_search():
         assert "Query Books on Proxy" in resp_dash.text
         assert "book-search-input" in resp_dash.text
         assert "Stream page 1 in browser" not in resp_dash.text
+        assert "book-status" not in resp_dash.text
         assert "calculateSingleBookPages" in resp_dash.text
         assert "syncBookProgress" in resp_dash.text
         assert "Calc Pages" in resp_dash.text

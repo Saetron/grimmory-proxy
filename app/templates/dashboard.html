@@ -247,12 +247,6 @@ async function performBookSearch() {
         const pageBadgeBg = b.page_count > 0 ? 'var(--color-success-bg)' : 'var(--color-danger-bg)';
         const bookType = escapeHtml(b.book_type || "EPUB");
 
-        let statusBadge = '';
-        if (b.user_completed) {
-          statusBadge = '<span class="brand-badge" style="background: var(--color-success-bg); color: var(--color-success); font-size: 0.68rem;">Read</span>';
-        } else if (b.user_page && b.user_page > 0) {
-          statusBadge = `<span class="brand-badge" style="background: rgba(59,130,246,0.15); color: #60a5fa; font-size: 0.68rem;">p. ${b.user_page}</span>`;
-        }
 
         return `
           <div class="panel-card" style="padding: 0.85rem; margin-bottom: 0; display: flex; flex-direction: column; background: var(--color-card-inner); border: 1px solid var(--color-border); border-radius: var(--radius-md); transition: transform 0.15s ease, border-color 0.15s ease;">
@@ -282,7 +276,6 @@ async function performBookSearch() {
                 <span id="book-pages-${b.id}" style="font-size: 0.72rem; color: ${pageBadgeColor}; background: ${pageBadgeBg}; padding: 0.1rem 0.4rem; border-radius: 4px; font-weight: 600;">
                   ${pages}
                 </span>
-                <span id="book-status-${b.id}">${statusBadge}</span>
               </div>
 
               <div style="display: flex; gap: 0.35rem; margin-top: 0.65rem; flex-wrap: wrap;">
@@ -346,16 +339,6 @@ async function syncBookProgress(bookId, action, btn) {
     if (!res.ok) {
       alert(`Error during progress ${action}: ` + (data.detail || data.message || "Failed"));
       return;
-    }
-    const statusEl = document.getElementById(`book-status-${bookId}`);
-    if (statusEl) {
-      if (data.completed) {
-        statusEl.innerHTML = '<span class="brand-badge" style="background: var(--color-success-bg); color: var(--color-success); font-size: 0.68rem;">Read</span>';
-      } else if (data.page && data.page > 0) {
-        statusEl.innerHTML = `<span class="brand-badge" style="background: rgba(59,130,246,0.15); color: #60a5fa; font-size: 0.68rem;">p. ${data.page}</span>`;
-      } else {
-        statusEl.innerHTML = '';
-      }
     }
     alert(data.message || `Read progress ${action} completed successfully.`);
   } catch (err) {

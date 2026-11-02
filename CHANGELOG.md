@@ -73,7 +73,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - **Book Query Explorer Streamlining**:
   - Removed redundant "Read" button from book cards in the WebUI Book Query Explorer.
-  - Removed "Unread" badges from book cards to reduce admin clutter, displaying progress badges only for books actively in progress or completed.
+  - Completely removed user reading progress badges (`Read`, `p. X`, `Unread`) from the admin dashboard to keep the interface focused strictly on catalog management and administrative operations.
 - **Refactored Read Progress & KOReader Synchronization**:
   - Consolidated `GrimmoryReadProgressRequest` payload construction (`build_grimmory_progress_request`) and asynchronous KOReader progress forwarding (`schedule_koreader_progress_sync`) in `app/services/koreader_utils.py`, eliminating duplicated synchronization logic across `komga_progress.py`, `komga_books.py`, and `koreader.py`.
   - Extracted shared `_resolve_series_or_404` and `_clear_book_progress` helpers in `app/routers/komga_progress.py`.
