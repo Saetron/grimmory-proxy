@@ -11,14 +11,10 @@ import uuid
 import aiosqlite
 
 from app.config import settings
+from app.services.filter_utils import KNOWN_AUTHOR_ROLES
 from app.services.memory import release_memory
 
 logger = logging.getLogger("grimmory_proxy.database")
-
-KNOWN_AUTHOR_ROLES = {
-    "writer", "penciller", "inker", "colorist", "letterer",
-    "cover", "editor", "translator", "assistant",
-}
 
 SCHEMA_SQL = """
 PRAGMA journal_mode = WAL;
@@ -469,7 +465,7 @@ class Database:
                         await db.execute("INSERT OR REPLACE INTO sync_state (key, value) VALUES ('series_metadata_backfilled_v1', 'true')")
                     else:
                         cursor = await db.execute("""
-                            SELECT s.id, s.raw_json, b.raw_json
+                            SELECT s.id, s.library_id, s.raw_json, b.raw_json
                             FROM series s
                             JOIN books b ON b.series_id = s.id
                             WHERE b.deleted = 0 AND b.raw_json IS NOT NULL
@@ -486,17 +482,17 @@ class Database:
                                 parse_raw_json,
                             )
 
-                            series_books: Dict[str, Tuple[str, List[Dict[str, Any]]]] = {}
-                            for sid, s_raw_str, b_raw_str in rows:
+                            series_books: Dict[str, Tuple[int, str, List[Dict[str, Any]]]] = {}
+                            for sid, s_lib_id, s_raw_str, b_raw_str in rows:
                                 if sid not in series_books:
-                                    series_books[sid] = (s_raw_str, [])
+                                    series_books[sid] = (s_lib_id or 1, s_raw_str, [])
                                 b_data = parse_raw_json(b_raw_str)
                                 if b_data:
-                                    series_books[sid][1].append(b_data)
+                                    series_books[sid][2].append(b_data)
 
                             series_updates = []
                             backfill_authors = set()
-                            for sid, (s_raw_str, b_list) in series_books.items():
+                            for sid, (s_lib_id, s_raw_str, b_list) in series_books.items():
                                 s_raw = parse_raw_json(s_raw_str)
 
                                 needs_update = not s_raw.get("authors") or not s_raw.get("publisher") or not s_raw.get("genres") or not s_raw.get("tags")
@@ -516,7 +512,7 @@ class Database:
 
                                     for b_data in b_list:
                                         for a in extract_authors_data(b_data):
-                                            backfill_authors.add((a["name"], a["role"]))
+                                            backfill_authors.add((s_lib_id, a["name"], a["role"]))
                                             if (a["name"].lower(), a["role"].lower()) not in authors_set:
                                                 authors_set.add((a["name"].lower(), a["role"].lower()))
                                                 authors_list.append(a)
@@ -552,7 +548,7 @@ class Database:
                                 await db.executemany("UPDATE series SET raw_json = ? WHERE id = ?", series_updates)
                             if backfill_authors:
                                 await db.executemany(
-                                    "INSERT INTO authors (name, role, count) VALUES (?, ?, 1) ON CONFLICT(name) DO UPDATE SET count = count + 1, role = COALESCE(excluded.role, authors.role)",
+                                    "INSERT INTO authors (library_id, name, role, count) VALUES (?, ?, ?, 1) ON CONFLICT(library_id, name, role) DO UPDATE SET count = count + 1",
                                     list(backfill_authors),
                                 )
                             await db.execute("INSERT OR REPLACE INTO sync_state (key, value) VALUES ('series_metadata_backfilled_v1', 'true')")

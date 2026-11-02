@@ -11,19 +11,16 @@ from PIL import Image
 
 from app.clients.grimmory import grimmory_client
 from app.database import Database
-from app.models.grimmory import (
-    GrimmoryCbxProgress,
-    GrimmoryEpubProgress,
-    GrimmoryPdfProgress,
-    GrimmoryReadProgressRequest,
-)
 from app.models.internal import UserSession
 from app.models.komga import BookDto, PageDto, PageableDto, build_pageable
 from app.services.auth import AuthService
 from app.services.cache import memory_cache, thumbnail_cache
 from app.services.filter_utils import extract_filter_params, resolve_effective_library_ids
 from app.services.image_compressor import image_compressor
-from app.services.koreader_utils import format_koreader_progress, resolve_koreader_doc_hash
+from app.services.koreader_utils import (
+    build_grimmory_progress_request,
+    schedule_koreader_progress_sync,
+)
 from app.services.mapper import KomgaMapper
 from app.services.page_calculator import PageCalculator
 
@@ -422,35 +419,17 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
             )
 
             perc = 100.0 if completed else (min(100.0, max(0.0, (p_num / page_count) * 100.0)) if page_count > 1 else 0.0)
-            req = GrimmoryReadProgressRequest(
-                bookId=b_id,
-                cbxProgress=GrimmoryCbxProgress(page=p_num, percentage=perc, lastRead=now_str),
-                pdfProgress=GrimmoryPdfProgress(page=p_num, percentage=perc, lastRead=now_str),
-                epubProgress=GrimmoryEpubProgress(percentage=perc, lastRead=now_str),
-                dateFinished=now_str if completed else None,
-                readStatus="READ" if completed else "READING",
-                lastRead=now_str,
-                progressValid=True,
+            req = build_grimmory_progress_request(
+                book_id=b_id,
+                page=p_num,
+                percentage=perc,
+                completed=completed,
+                timestamp=now_str,
             )
             await grimmory_client.update_read_progress(req, token=user_session.token)
             await grimmory_client.update_read_status([b_id], "READ" if completed else "READING", token=user_session.token)
 
-            # Forward to KOReader sync on Grimmory
-            try:
-                doc_hash = resolve_koreader_doc_hash(record or {"id": b_id})
-                koreader_prog_str = format_koreader_progress(
-                    record.get("book_type") if record else None, p_num, page_count, perc
-                )
-                asyncio.create_task(
-                    grimmory_client.update_koreader_progress(
-                        doc_hash,
-                        koreader_prog_str,
-                        perc / 100.0,
-                        token=user_session.token,
-                    )
-                )
-            except Exception as e:
-                logger.debug(f"Could not forward KOReader page progress: {e}")
+            schedule_koreader_progress_sync(record, b_id, p_num, page_count, perc, user_session.token)
         except Exception as e:
             logger.debug(f"Error recording page progress for book {b_id}: {e}")
 
