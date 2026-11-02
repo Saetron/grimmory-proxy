@@ -139,6 +139,7 @@ A high-performance Python and Docker proxy/bridge that translates the **[Grimmor
 | `CORS_ALLOW_ORIGINS` | `*` | Comma-separated browser origins allowed by CORS. With `*` credentialed (cookie) cross-origin requests are disabled; list explicit origins to enable them. |
 | `COOKIE_SECURE` | `false` | Set the `Secure` flag on the admin session cookie (enable when served over HTTPS). |
 | `DATABASE_PATH` | `/app/data/bridge.db` | Path to persistent SQLite cache database. |
+| `CONFIG_PATH` | `/app/data/config.json` | Path to persistent configuration file (created automatically on first launch and managed via the `/settings` WebUI menu). Takes precedence over environment variables after creation. |
 | `THUMBNAILS_DIR` | `/app/data/thumbnails` | Path to disk cache for cover thumbnails. |
 | `PORT` | `8080` | Port the proxy listens on inside the container. |
 | `HOST` | `0.0.0.0` | Bind host address. |

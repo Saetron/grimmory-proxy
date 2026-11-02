@@ -10,6 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Persistent Configuration File (`config.json`) with WebUI Settings Management**:
+  - **First Startup Initialization**: On first launch, the proxy automatically generates a persistent `config.json` populated from environment variables and defaults.
+  - **File Precedence**: On all subsequent startups, `config.json` takes precedence over environment variables, allowing persistent in-app configuration.
+  - **New WebUI Settings Menu (`/settings`)**:
+    - Added dedicated `/settings` page in the admin interface accessible from the header navigation.
+    - Categorized configuration controls for Grimmory upstream connection, sync intervals, reader image compression, and storage.
+    - Live raw JSON viewer and editor for `config.json` with syntax validation.
+    - Exposed `GET /admin/api/settings` and `POST /admin/api/settings` for programmatic configuration management.
+    - Dynamic runtime updates for sync loops, Grimmory URL, and reader caches without restarting the container.
 - **On-The-Fly Reader Image Compression & Optimization**:
   - Added async `ImageCompressor` service utilizing Pillow with non-blocking execution via `asyncio.to_thread`.
   - Transcodes large comic/book page images to WebP or JPEG on demand, reducing transfer bandwidth and page loading latency for reader clients (Komic, Panels, Mihon, Tachiyomi, Kuro Reader).

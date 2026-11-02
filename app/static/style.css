@@ -265,6 +265,11 @@ body {
   background: rgba(255, 255, 255, 0.05);
   color: var(--color-text);
 }
+.btn-ghost.active {
+  background: var(--color-primary-light);
+  color: var(--color-primary);
+  border-color: rgba(249, 115, 22, 0.4);
+}
 
 .btn-danger {
   background-color: rgba(239, 68, 68, 0.12);

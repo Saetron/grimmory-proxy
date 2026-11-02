@@ -1,0 +1,394 @@
+{% extends "base.html" %}
+
+{% block title %}Settings - Grimmory Proxy Admin{% endblock %}
+
+{% block content %}
+<div style="max-width: 960px; margin: 0 auto;">
+  <!-- Settings Header -->
+  <div style="margin-bottom: 1.5rem; display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 1rem;">
+    <div>
+      <h1 style="font-size: 1.5rem; font-weight: 800; color: var(--color-text-strong); display: flex; align-items: center; gap: 0.6rem;">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--color-primary)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3"></circle>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+        </svg>
+        <span>Configuration & Bridge Settings</span>
+      </h1>
+      <p style="color: var(--color-text-muted); font-size: 0.875rem; margin-top: 0.25rem;">
+        Settings saved here are stored in your persistent configuration file and take precedence over environment variables.
+      </p>
+    </div>
+    <div style="display: flex; align-items: center; gap: 0.5rem;">
+      <span class="brand-badge" style="font-size: 0.72rem; padding: 0.25rem 0.65rem;">
+        File: <code id="active-config-path" style="font-size: 0.72rem;">{{ config_path }}</code>
+      </span>
+    </div>
+  </div>
+
+  <!-- Feedback Banner -->
+  <div id="settings-banner" style="display: none; margin-bottom: 1.5rem; padding: 0.85rem 1.15rem; border-radius: var(--radius-md); font-size: 0.875rem; font-weight: 500;"></div>
+
+  <form id="settings-form" onsubmit="event.preventDefault(); saveSettings();">
+    <!-- Section 1: Grimmory Upstream -->
+    <div class="panel-card" style="margin-bottom: 1.5rem;">
+      <div class="panel-header">
+        <div class="panel-title">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--color-primary)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
+            <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
+          </svg>
+          <span>Grimmory Upstream Connection</span>
+        </div>
+      </div>
+
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem;">
+        <div class="form-group" style="margin-bottom: 0;">
+          <label for="grimmory_url">Grimmory URL <span style="color: var(--color-primary);">*</span></label>
+          <input type="url" id="grimmory_url" name="grimmory_url" class="form-control" value="{{ settings.grimmory_url }}" required placeholder="http://grimmory:8080">
+          <span style="font-size: 0.75rem; color: var(--color-text-muted);">Internal server address used by the proxy container.</span>
+        </div>
+
+        <div class="form-group" style="margin-bottom: 0;">
+          <label for="grimmory_public_url">Grimmory Public Browser URL</label>
+          <input type="url" id="grimmory_public_url" name="grimmory_public_url" class="form-control" value="{{ settings.grimmory_public_url }}" placeholder="https://books.example.com">
+          <span style="font-size: 0.75rem; color: var(--color-text-muted);">External URL used for browser redirects and dashboard links.</span>
+        </div>
+
+        <div class="form-group" style="margin-bottom: 0;">
+          <label for="sync_username">Background Sync Username</label>
+          <input type="text" id="sync_username" name="sync_username" class="form-control" value="{{ settings.sync_username }}" placeholder="admin">
+          <span style="font-size: 0.75rem; color: var(--color-text-muted);">Account used for global catalog inspection (isolated from client sessions).</span>
+        </div>
+
+        <div class="form-group" style="margin-bottom: 0;">
+          <label for="sync_password">Background Sync Password</label>
+          <input type="password" id="sync_password" name="sync_password" class="form-control" placeholder="Leave empty to keep existing password">
+          <span style="font-size: 0.75rem; color: var(--color-text-muted);">Password for the sync user account above.</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Section 2: Reader Image Compression -->
+    <div class="panel-card" style="margin-bottom: 1.5rem;">
+      <div class="panel-header">
+        <div class="panel-title">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--color-primary)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+            <circle cx="8.5" cy="8.5" r="1.5"></circle>
+            <polyline points="21 15 16 10 5 21"></polyline>
+          </svg>
+          <span>Reader Image Optimization (Speed Up Big Books)</span>
+        </div>
+      </div>
+
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem;">
+        <div class="form-group" style="margin-bottom: 0;">
+          <label for="image_compression_enabled">On-The-Fly Reader Compression</label>
+          <select id="image_compression_enabled" name="image_compression_enabled" class="form-control">
+            <option value="true" {% if settings.image_compression_enabled %}selected{% endif %}>Enabled (Compress pages for readers)</option>
+            <option value="false" {% if not settings.image_compression_enabled %}selected{% endif %}>Disabled (Serve original uncompressed images)</option>
+          </select>
+          <span style="font-size: 0.75rem; color: var(--color-text-muted);">Compresses large comic/book scans on demand to reduce mobile transfer bandwidth.</span>
+        </div>
+
+        <div class="form-group" style="margin-bottom: 0;">
+          <label for="image_compression_format">Target Format</label>
+          <select id="image_compression_format" name="image_compression_format" class="form-control">
+            <option value="webp" {% if settings.image_compression_format == 'webp' %}selected{% endif %}>WebP (Recommended - 60-85% size reduction)</option>
+            <option value="jpeg" {% if settings.image_compression_format == 'jpeg' %}selected{% endif %}>JPEG (Universal client compatibility)</option>
+            <option value="original" {% if settings.image_compression_format == 'original' %}selected{% endif %}>Original Format (Resize only)</option>
+          </select>
+          <span style="font-size: 0.75rem; color: var(--color-text-muted);">Format delivered to reader clients.</span>
+        </div>
+
+        <div class="form-group" style="margin-bottom: 0;">
+          <label for="image_compression_quality">Quality (1 - 100)</label>
+          <input type="number" id="image_compression_quality" name="image_compression_quality" class="form-control" value="{{ settings.image_compression_quality }}" min="1" max="100">
+          <span style="font-size: 0.75rem; color: var(--color-text-muted);">Higher quality preserves more detail (80 is optimal for comics & manga).</span>
+        </div>
+
+        <div class="form-group" style="margin-bottom: 0;">
+          <label for="image_compression_max_dimension">Max Dimension (px)</label>
+          <input type="number" id="image_compression_max_dimension" name="image_compression_max_dimension" class="form-control" value="{{ settings.image_compression_max_dimension }}" min="0">
+          <span style="font-size: 0.75rem; color: var(--color-text-muted);">Downscales 4K+ scans to this max width/height preserving aspect ratio (0 = no resize).</span>
+        </div>
+
+        <div class="form-group" style="margin-bottom: 0;">
+          <label for="image_compression_min_size_kb">Minimum File Size Threshold (KB)</label>
+          <input type="number" id="image_compression_min_size_kb" name="image_compression_min_size_kb" class="form-control" value="{{ settings.image_compression_min_size_kb }}" min="0">
+          <span style="font-size: 0.75rem; color: var(--color-text-muted);">Pages already under this size are served as-is to save CPU.</span>
+        </div>
+
+        <div class="form-group" style="margin-bottom: 0;">
+          <label for="image_cache_type">Page Cache Backend</label>
+          <select id="image_cache_type" name="image_cache_type" class="form-control">
+            <option value="memory" {% if settings.image_cache_type == 'memory' %}selected{% endif %}>In-Memory RAM (0 SSD writes - Recommended)</option>
+            <option value="none" {% if settings.image_cache_type == 'none' %}selected{% endif %}>None (Pure on-the-fly streaming, minimal RAM)</option>
+            <option value="disk" {% if settings.image_cache_type == 'disk' %}selected{% endif %}>Disk Cache (Persistent on disk / tmpfs)</option>
+          </select>
+          <span style="font-size: 0.75rem; color: var(--color-text-muted);">In-Memory cache keeps recently read pages in RAM without touching your drive.</span>
+        </div>
+
+        <div class="form-group" style="margin-bottom: 0;">
+          <label for="image_cache_memory_max_items">Max RAM Cache Pages</label>
+          <input type="number" id="image_cache_memory_max_items" name="image_cache_memory_max_items" class="form-control" value="{{ settings.image_cache_memory_max_items }}" min="10" max="1000">
+          <span style="font-size: 0.75rem; color: var(--color-text-muted);">Max compressed pages retained in RAM (~30-50 MB RAM for 150 pages).</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Section 3: Background Synchronization -->
+    <div class="panel-card" style="margin-bottom: 1.5rem;">
+      <div class="panel-header">
+        <div class="panel-title">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--color-primary)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+          </svg>
+          <span>Synchronization Intervals & Concurrency</span>
+        </div>
+      </div>
+
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem;">
+        <div class="form-group" style="margin-bottom: 0;">
+          <label for="sync_interval_minutes">Metadata Sync Interval (Minutes)</label>
+          <input type="number" id="sync_interval_minutes" name="sync_interval_minutes" class="form-control" value="{{ settings.sync_interval_minutes }}" min="0">
+          <span style="font-size: 0.75rem; color: var(--color-text-muted);">Interval between catalog library/series/book syncs (0 to disable).</span>
+        </div>
+
+        <div class="form-group" style="margin-bottom: 0;">
+          <label for="user_sync_interval_minutes">User Read Progress Sync (Minutes)</label>
+          <input type="number" id="user_sync_interval_minutes" name="user_sync_interval_minutes" class="form-control" value="{{ settings.user_sync_interval_minutes }}" min="0">
+          <span style="font-size: 0.75rem; color: var(--color-text-muted);">Interval between syncing reading badges and progress from Grimmory.</span>
+        </div>
+
+        <div class="form-group" style="margin-bottom: 0;">
+          <label for="sync_concurrency">Page Inspection Concurrency</label>
+          <input type="number" id="sync_concurrency" name="sync_concurrency" class="form-control" value="{{ settings.sync_concurrency }}" min="1" max="32">
+          <span style="font-size: 0.75rem; color: var(--color-text-muted);">Concurrent worker limit for page inspection and calculation.</span>
+        </div>
+
+        <div class="form-group" style="margin-bottom: 0;">
+          <label for="sync_on_startup">Sync On Startup</label>
+          <select id="sync_on_startup" name="sync_on_startup" class="form-control">
+            <option value="true" {% if settings.sync_on_startup %}selected{% endif %}>Yes (Trigger sync immediately when proxy starts)</option>
+            <option value="false" {% if not settings.sync_on_startup %}selected{% endif %}>No (Wait for first scheduled interval)</option>
+          </select>
+          <span style="font-size: 0.75rem; color: var(--color-text-muted);">Whether to automatically sync the catalog upon application boot.</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Section 4: Performance, Storage & Logs -->
+    <div class="panel-card" style="margin-bottom: 1.5rem;">
+      <div class="panel-header">
+        <div class="panel-title">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--color-primary)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect>
+            <rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
+            <line x1="6" y1="6" x2="6.01" y2="6"></line>
+            <line x1="6" y1="18" x2="6.01" y2="18"></line>
+          </svg>
+          <span>Storage, Engine & Log Verbosity</span>
+        </div>
+      </div>
+
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem;">
+        <div class="form-group" style="margin-bottom: 0;">
+          <label for="novel_chars_per_page">Novel Chars / Page (Calibre ADE)</label>
+          <input type="number" id="novel_chars_per_page" name="novel_chars_per_page" class="form-control" value="{{ settings.novel_chars_per_page }}" min="100">
+          <span style="font-size: 0.75rem; color: var(--color-text-muted);">Characters per calculated page for EPUB novels (Calibre ADE standard: 1024).</span>
+        </div>
+
+        <div class="form-group" style="margin-bottom: 0;">
+          <label for="log_level">Log Verbosity</label>
+          <select id="log_level" name="log_level" class="form-control">
+            <option value="debug" {% if settings.log_level == 'debug' %}selected{% endif %}>DEBUG (Detailed troubleshooting logs)</option>
+            <option value="info" {% if settings.log_level == 'info' %}selected{% endif %}>INFO (Standard operational events)</option>
+            <option value="warning" {% if settings.log_level == 'warning' %}selected{% endif %}>WARNING (Warnings and errors only)</option>
+            <option value="error" {% if settings.log_level == 'error' %}selected{% endif %}>ERROR (Critical errors only)</option>
+          </select>
+          <span style="font-size: 0.75rem; color: var(--color-text-muted);">Application logging level.</span>
+        </div>
+
+        <div class="form-group" style="margin-bottom: 0;">
+          <label for="cors_allow_origins">CORS Allowed Origins</label>
+          <input type="text" id="cors_allow_origins" name="cors_allow_origins" class="form-control" value="{{ settings.cors_allow_origins }}">
+          <span style="font-size: 0.75rem; color: var(--color-text-muted);">'*' allows any web reader; specify origins for credentialed access.</span>
+        </div>
+
+        <div class="form-group" style="margin-bottom: 0;">
+          <label for="cookie_secure">Secure Cookies (HTTPS)</label>
+          <select id="cookie_secure" name="cookie_secure" class="form-control">
+            <option value="true" {% if settings.cookie_secure %}selected{% endif %}>True (Enable Secure flag for HTTPS)</option>
+            <option value="false" {% if not settings.cookie_secure %}selected{% endif %}>False (Standard HTTP)</option>
+          </select>
+          <span style="font-size: 0.75rem; color: var(--color-text-muted);">Set to True when running proxy behind an HTTPS reverse proxy.</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Section 5: Raw JSON Editor (Collapsible) -->
+    <div class="panel-card" style="margin-bottom: 1.5rem;">
+      <div class="panel-header" style="cursor: pointer;" onclick="toggleRawJson()">
+        <div class="panel-title">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--color-primary)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="16 18 22 12 16 6"></polyline>
+            <polyline points="8 6 2 12 8 18"></polyline>
+          </svg>
+          <span>Raw Config File Editor (<code style="font-size: 0.8rem;">config.json</code>)</span>
+        </div>
+        <button type="button" class="btn btn-ghost btn-sm" id="btn-toggle-raw-json">Show Raw JSON</button>
+      </div>
+
+      <div id="raw-json-panel" style="display: none; margin-top: 1rem;">
+        <p style="color: var(--color-text-muted); font-size: 0.8rem; margin-bottom: 0.5rem;">
+          You can inspect or directly edit the full raw JSON content of <code style="color: var(--color-primary);">{{ config_path }}</code> below.
+        </p>
+        <textarea id="raw_json_textarea" class="form-control" style="font-family: monospace; font-size: 0.8rem; min-height: 280px; resize: vertical; line-height: 1.4;">{{ raw_json }}</textarea>
+        <div style="display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 0.75rem;">
+          <button type="button" onclick="formatRawJson()" class="btn btn-ghost btn-sm">Format JSON</button>
+          <button type="button" onclick="saveRawJson()" class="btn btn-secondary btn-sm">Apply Raw JSON</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Floating / Sticky Action Bar -->
+    <div style="display: flex; gap: 1rem; justify-content: flex-end; align-items: center; margin-bottom: 3rem;">
+      <a href="/admin" class="btn btn-ghost">Cancel</a>
+      <button id="btn-save-settings" type="submit" class="btn btn-primary" style="padding: 0.7rem 1.75rem; font-size: 0.95rem;">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
+          <polyline points="17 21 17 13 7 13 7 21"></polyline>
+          <polyline points="7 3 7 8 15 8"></polyline>
+        </svg>
+        <span>Save Configuration</span>
+      </button>
+    </div>
+  </form>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function showSettingsBanner(msg, type = "success") {
+  const banner = document.getElementById("settings-banner");
+  if (!banner) return;
+  banner.style.display = "block";
+  if (type === "success") {
+    banner.style.background = "var(--color-success-bg)";
+    banner.style.border = "1px solid var(--color-success-border)";
+    banner.style.color = "#4ade80";
+  } else {
+    banner.style.background = "var(--color-danger-bg)";
+    banner.style.border = "1px solid var(--color-danger-border)";
+    banner.style.color = "#f87171";
+  }
+  banner.innerText = msg;
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+function toggleRawJson() {
+  const panel = document.getElementById("raw-json-panel");
+  const btn = document.getElementById("btn-toggle-raw-json");
+  if (!panel) return;
+  if (panel.style.display === "none") {
+    panel.style.display = "block";
+    if (btn) btn.innerText = "Hide Raw JSON";
+  } else {
+    panel.style.display = "none";
+    if (btn) btn.innerText = "Show Raw JSON";
+  }
+}
+
+function formatRawJson() {
+  const ta = document.getElementById("raw_json_textarea");
+  if (!ta) return;
+  try {
+    const parsed = JSON.parse(ta.value);
+    ta.value = JSON.stringify(parsed, null, 2);
+  } catch (err) {
+    alert("Invalid JSON: " + err.message);
+  }
+}
+
+async function saveRawJson() {
+  const ta = document.getElementById("raw_json_textarea");
+  if (!ta) return;
+  let parsed;
+  try {
+    parsed = JSON.parse(ta.value);
+  } catch (err) {
+    showSettingsBanner("Invalid JSON format: " + err.message, "danger");
+    return;
+  }
+
+  const btn = document.getElementById("btn-save-settings");
+  if (btn) btn.disabled = true;
+
+  try {
+    const res = await fetch("/admin/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ settings: parsed }),
+    });
+    const data = await res.json();
+    if (res.ok && data.success) {
+      showSettingsBanner(data.message || "Settings updated and saved to config file successfully.", "success");
+      ta.value = JSON.stringify(data.settings, null, 2);
+    } else {
+      showSettingsBanner(data.detail || data.message || "Failed to save settings.", "danger");
+    }
+  } catch (err) {
+    showSettingsBanner("Error connecting to server: " + err.message, "danger");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function saveSettings() {
+  const form = document.getElementById("settings-form");
+  if (!form) return;
+  const formData = new FormData(form);
+  const payload = {};
+
+  for (const [key, val] of formData.entries()) {
+    if (key === "sync_password" && val.trim() === "") {
+      continue;
+    }
+    payload[key] = val;
+  }
+
+  const btn = document.getElementById("btn-save-settings");
+  const origHtml = btn ? btn.innerHTML : "";
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = `<span style="display:inline-block;width:12px;height:12px;border:2px solid currentColor;border-top-color:transparent;border-radius:50%;animation:spin 0.8s linear infinite;margin-right:6px;"></span> Saving...`;
+  }
+
+  try {
+    const res = await fetch("/admin/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ settings: payload }),
+    });
+    const data = await res.json();
+    if (res.ok && data.success) {
+      showSettingsBanner(data.message || "Settings saved to config file and active in proxy.", "success");
+      const ta = document.getElementById("raw_json_textarea");
+      if (ta && data.settings) {
+        ta.value = JSON.stringify(data.settings, null, 2);
+      }
+    } else {
+      showSettingsBanner(data.detail || data.message || "Failed to save configuration.", "danger");
+    }
+  } catch (err) {
+    showSettingsBanner("Network error while saving settings: " + err.message, "danger");
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = origHtml;
+    }
+  }
+}
+</script>
+{% endblock %}

@@ -10,6 +10,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
+from app.clients.grimmory import grimmory_client
 from app.config import settings
 from app.database import Database
 from app.models.internal import PageCalcStatus, UserSession
@@ -250,6 +251,7 @@ def get_admin_router(
             name="dashboard.html",
             context={
                 "user": user,
+                "active_page": "dashboard",
                 "users": users_list,
                 "stats": stats,
                 "calc_job": calc_job_status,
@@ -573,6 +575,82 @@ def get_admin_router(
             "success": True,
             "message": "In-memory reader image cache cleared successfully.",
             "cache_stats": image_compressor.get_cache_stats(),
+        }
+
+    # ---------------- Configuration File & Settings Endpoints ----------------
+
+    @router.get("/settings", response_class=HTMLResponse)
+    @router.get("/admin/settings", response_class=HTMLResponse)
+    async def settings_page(request: Request) -> Response:
+        user = await AuthService.get_current_user_optional(request)
+        if not user or not user.is_admin:
+            return RedirectResponse(url="/admin/login", status_code=status.HTTP_302_FOUND)
+
+        cfg_dict = settings.to_config_dict()
+        cfg_path = str(settings.resolve_config_path())
+        raw_json_str = json.dumps(cfg_dict, indent=2)
+
+        return templates.TemplateResponse(
+            request=request,
+            name="settings.html",
+            context={
+                "user": user,
+                "active_page": "settings",
+                "settings": cfg_dict,
+                "config_path": cfg_path,
+                "raw_json": raw_json_str,
+                "app_version": settings.app_version,
+                "grimmory_url": settings.grimmory_url,
+                "grimmory_public_url": settings.public_grimmory_url,
+            },
+        )
+
+    @router.get("/admin/api/settings")
+    async def get_settings_endpoint(request: Request) -> Dict[str, Any]:
+        user = await require_admin_session(request)
+        cfg_dict = settings.to_config_dict()
+        cfg_path = str(settings.resolve_config_path())
+        return {
+            "success": True,
+            "settings": cfg_dict,
+            "config_path": cfg_path,
+            "raw_json": json.dumps(cfg_dict, indent=2),
+        }
+
+    @router.post("/admin/api/settings")
+    async def save_settings_endpoint(request: Request) -> Dict[str, Any]:
+        user = await require_admin_session(request)
+        try:
+            body = await request.json()
+        except Exception:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid JSON payload")
+
+        updates = body.get("settings", body)
+        if not isinstance(updates, dict):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Settings payload must be a JSON object")
+
+        old_grimmory_url = settings.grimmory_url
+        old_sync_interval = settings.sync_interval_minutes
+        old_user_sync_interval = settings.user_sync_interval_minutes
+
+        updated_dict = settings.save_config_file(updates)
+
+        # Propagate dynamic changes to live singletons
+        if settings.grimmory_url != old_grimmory_url:
+            grimmory_client.base_url = settings.grimmory_url
+            grimmory_client._cached_token = None
+        if settings.sync_interval_minutes != old_sync_interval:
+            sync_service.interval = settings.sync_interval_minutes
+        if settings.user_sync_interval_minutes != old_user_sync_interval:
+            user_sync.interval = settings.user_sync_interval_minutes
+        image_compressor.clear_cache()
+
+        logger.info(f"Admin '{user.username}' saved configuration to {settings.resolve_config_path()}")
+        return {
+            "success": True,
+            "message": f"Configuration saved successfully to {settings.resolve_config_path()}.",
+            "settings": updated_dict,
+            "config_path": str(settings.resolve_config_path()),
         }
 
     return router
