@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Automated GitHub Release Publishing**: Added step in `.github/workflows/ci.yml` to automatically create or update GitHub Releases with notes extracted from `CHANGELOG.md` whenever a release build workflow finishes.
+
 ## [1.12] - 2026-11-02
 
 ### Added
