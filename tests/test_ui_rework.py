@@ -66,6 +66,12 @@ async def test_ui_rework_pages_and_book_search():
         assert resp_dash.status_code == 200
         assert "Query Books on Proxy" in resp_dash.text
         assert "book-search-input" in resp_dash.text
+        assert "Stream page 1 in browser" not in resp_dash.text
+        assert "calculateSingleBookPages" in resp_dash.text
+        assert "syncBookProgress" in resp_dash.text
+        assert "Calc Pages" in resp_dash.text
+        assert "Pull" in resp_dash.text
+        assert "Push" in resp_dash.text
 
         # 2. Stats Page (/stats & /admin/stats)
         resp_stats = await client.get("/stats")
@@ -116,3 +122,48 @@ async def test_ui_rework_pages_and_book_search():
         resp_clear_logs = await client.post("/admin/api/logs/clear", json={"type": "all"}, headers=headers)
         assert resp_clear_logs.status_code == 200
         assert resp_clear_logs.json()["success"] is True
+        # 7. Single Book Page Calculation & Progress Sync Endpoints
+        from unittest.mock import AsyncMock, patch
+
+        with patch("app.main.page_calculator.calculate_and_save_book", new=AsyncMock(return_value="updated")):
+            resp_calc = await client.post("/admin/api/books/90101/calculate-pages", headers=headers)
+            assert resp_calc.status_code == 200
+            assert resp_calc.json()["status"] == "success"
+            assert resp_calc.json()["book_id"] == 90101
+
+            # Via /admin/api/calculate-pages with book_id
+            resp_calc_via_body = await client.post("/admin/api/calculate-pages", json={"book_id": 90101}, headers=headers)
+            assert resp_calc_via_body.status_code == 200
+            assert resp_calc_via_body.json()["status"] == "success"
+
+        resp_calc_404 = await client.post("/admin/api/books/999999/calculate-pages", headers=headers)
+        assert resp_calc_404.status_code == 404
+
+        # Read Progress Push
+        with patch("app.clients.grimmory.grimmory_client.update_read_progress", new=AsyncMock(return_value=True)), \
+             patch("app.clients.grimmory.grimmory_client.update_read_status", new=AsyncMock(return_value=True)), \
+             patch("app.clients.grimmory.grimmory_client.update_koreader_progress", new=AsyncMock(return_value=True)):
+            resp_push = await client.post(
+                "/admin/api/books/90101/progress/push",
+                json={"completed": True, "page": 210},
+                headers=headers,
+            )
+            assert resp_push.status_code == 200
+            assert resp_push.json()["status"] == "success"
+            assert resp_push.json()["completed"] is True
+            assert resp_push.json()["action"] == "push"
+
+        # Read Progress Pull
+        mock_grimmory_book = {
+            "id": 90101,
+            "readStatus": "READING",
+            "cbxProgress": {"page": 55, "percentage": 25.0, "lastRead": "2026-11-02T10:00:00Z"},
+        }
+        with patch("app.clients.grimmory.grimmory_client.get_book", new=AsyncMock(return_value=mock_grimmory_book)):
+            resp_pull = await client.post("/admin/api/books/90101/progress/pull", headers=headers)
+            assert resp_pull.status_code == 200
+            assert resp_pull.json()["status"] == "success"
+            assert resp_pull.json()["completed"] is False
+            assert resp_pull.json()["page"] == 55
+            assert resp_pull.json()["action"] == "pull"
+

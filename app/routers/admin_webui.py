@@ -21,6 +21,8 @@ from app.services.log_buffer import proxy_log_handler
 from app.services.page_calculator import PageCalculator
 from app.services.sync import SyncService
 from app.services.user_sync import UserSyncService
+from app.services.mapper import _safe_float, _safe_int, format_iso_timestamp
+from app.services.koreader_utils import build_grimmory_progress_request, schedule_koreader_progress_sync
 
 logger = logging.getLogger("grimmory_proxy.admin_webui")
 
@@ -34,6 +36,12 @@ templates.env.globals["grimmory_public_url"] = settings.public_grimmory_url
 class CalcPagesRequest(BaseModel):
     missing_only: bool = True
     retry_failed_only: bool = False
+    book_id: Optional[int] = None
+
+
+class BookProgressPushRequest(BaseModel):
+    completed: Optional[bool] = None
+    page: Optional[int] = None
 
 
 class ImageCompressionConfigRequest(BaseModel):
@@ -460,6 +468,21 @@ def get_admin_router(
     ) -> Dict[str, Any]:
         user = await require_admin_session(request)
 
+        if payload.book_id is not None:
+            book = await db.get_book_by_id(payload.book_id, include_deleted=True)
+            if not book:
+                raise HTTPException(status_code=404, detail=f"Book {payload.book_id} not found")
+            result = await page_calculator.calculate_and_save_book(book)
+            updated = await db.get_book_by_id(payload.book_id, include_deleted=True)
+            p_count = updated.get("page_count", 0) if updated else 0
+            return {
+                "status": "success" if result == "updated" else ("removed" if result == "removed" else "error"),
+                "result": result,
+                "book_id": payload.book_id,
+                "page_count": p_count,
+                "message": f"Successfully calculated {p_count} pages for book {payload.book_id}." if result == "updated" else f"Calculation result: {result}",
+            }
+
         if page_calculator.is_running:
             return {"status": "already_running", "message": "A calculation job is already running"}
 
@@ -846,6 +869,268 @@ def get_admin_router(
             })
 
         return {"books": formatted_books, "total": total, "limit": limit, "offset": offset}
+
+    @router.post("/admin/api/books/{book_id}/calculate-pages")
+    async def trigger_calculate_single_book_pages(
+        book_id: int,
+        request: Request,
+    ) -> Dict[str, Any]:
+        user = await require_admin_session(request)
+
+        book = await db.get_book_by_id(book_id, include_deleted=True)
+        if not book:
+            raise HTTPException(status_code=404, detail=f"Book {book_id} not found")
+
+        result = await page_calculator.calculate_and_save_book(book)
+        updated = await db.get_book_by_id(book_id, include_deleted=True)
+        p_count = updated.get("page_count", 0) if updated else 0
+
+        if result == "updated":
+            return {
+                "status": "success",
+                "result": result,
+                "book_id": book_id,
+                "page_count": p_count,
+                "message": f"Successfully calculated {p_count} pages for book {book_id}.",
+            }
+        elif result == "removed":
+            return {
+                "status": "removed",
+                "result": result,
+                "book_id": book_id,
+                "page_count": 0,
+                "message": f"Book {book_id} was removed from Grimmory and marked as deleted.",
+            }
+        else:
+            return {
+                "status": "error",
+                "result": result,
+                "book_id": book_id,
+                "page_count": p_count,
+                "message": f"Failed to calculate pages for book {book_id}. See problematic files list for details.",
+            }
+
+    @router.post("/admin/api/books/{book_id}/progress/pull")
+    async def pull_book_progress(
+        book_id: int,
+        request: Request,
+    ) -> Dict[str, Any]:
+        user = await require_admin_session(request)
+
+        book = await db.get_book_by_id(book_id, include_deleted=False)
+        if not book:
+            raise HTTPException(status_code=404, detail=f"Book {book_id} not found")
+
+        token = user.token
+        if not token or (settings.sync_username and user.username == settings.sync_username):
+            try:
+                token = await grimmory_client.get_sync_token()
+            except Exception:
+                token = user.token
+
+        try:
+            b = await grimmory_client.get_book(book_id, token=token)
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                raise HTTPException(status_code=404, detail=f"Book {book_id} not found in Grimmory")
+            raise HTTPException(status_code=e.response.status_code, detail=f"Grimmory returned HTTP {e.response.status_code}")
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Could not connect to Grimmory: {e}")
+
+        meta = b.get("metadata") or {}
+        page_count = _safe_int(meta.get("pageCount") or b.get("page_count") or book.get("page_count"), 0)
+
+        read_status = b.get("readStatus")
+        date_finished = b.get("dateFinished")
+        cbx = b.get("cbxProgress") if isinstance(b.get("cbxProgress"), dict) else None
+        pdf = b.get("pdfProgress") if isinstance(b.get("pdfProgress"), dict) else None
+        epub = b.get("epubProgress") if isinstance(b.get("epubProgress"), dict) else None
+        rp = b.get("readProgress") if isinstance(b.get("readProgress"), dict) else None
+
+        cbx_perc = _safe_float(cbx.get("percentage")) if cbx else 0.0
+        cbx_page = _safe_int(cbx.get("page")) if cbx else 0
+        pdf_perc = _safe_float(pdf.get("percentage")) if pdf else 0.0
+        pdf_page = _safe_int(pdf.get("page")) if pdf else 0
+        epub_perc = _safe_float(epub.get("percentage")) if epub else 0.0
+
+        is_completed = False
+        is_in_prog = False
+        page = 1
+        read_date = None
+
+        if read_status == "READ" or date_finished:
+            is_completed = True
+            read_date = date_finished
+        elif cbx and (cbx_perc >= 95.0 or (page_count > 0 and cbx_page >= page_count)):
+            is_completed = True
+            read_date = cbx.get("lastRead")
+        elif pdf and (pdf_perc >= 95.0 or (page_count > 0 and pdf_page >= page_count)):
+            is_completed = True
+            read_date = pdf.get("lastRead")
+        elif epub and epub_perc >= 95.0:
+            is_completed = True
+            read_date = epub.get("lastRead")
+        elif rp and (rp.get("completed") or (page_count > 0 and _safe_int(rp.get("page")) >= page_count)):
+            is_completed = True
+            read_date = rp.get("readDate")
+
+        if not is_completed:
+            epub_page = max(1, round((epub_perc / 100.0) * page_count)) if epub_perc > 0 and page_count > 0 else 1
+            if read_status in ("READING", "IN_PROGRESS"):
+                is_in_prog = True
+                read_date = (
+                    (cbx.get("lastRead") if cbx else None)
+                    or (pdf.get("lastRead") if pdf else None)
+                    or (epub.get("lastRead") if epub else None)
+                    or (rp.get("readDate") if rp else None)
+                )
+                page = cbx_page or pdf_page or (epub_page if epub_perc > 0 else 1)
+            elif cbx_perc > 0 or cbx_page > 0:
+                is_in_prog = True
+                page = cbx_page or 1
+                read_date = cbx.get("lastRead")
+            elif pdf_perc > 0 or pdf_page > 0:
+                is_in_prog = True
+                page = pdf_page or 1
+                read_date = pdf.get("lastRead")
+            elif epub_perc > 0:
+                is_in_prog = True
+                page = epub_page
+                read_date = epub.get("lastRead")
+            elif rp:
+                rp_page = _safe_int(rp.get("page"))
+                if rp_page > 1 or (rp.get("completed") is False and rp.get("readDate")):
+                    is_in_prog = True
+                    page = rp_page or 1
+                    read_date = rp.get("readDate")
+
+        if is_completed:
+            final_page = (
+                page_count
+                or (cbx_page if cbx_page > 0 else None)
+                or (pdf_page if pdf_page > 0 else None)
+                or (epub_page if epub_perc > 0 else None)
+                or 1
+            )
+            iso_ts = format_iso_timestamp(read_date or b.get("last_modified") or b.get("addedOn"))
+            await db.upsert_read_progress(
+                user_id=user.user_id,
+                book_id=book_id,
+                page=final_page,
+                completed=True,
+                read_date=iso_ts,
+            )
+            return {
+                "status": "success",
+                "action": "pull",
+                "book_id": book_id,
+                "completed": True,
+                "page": final_page,
+                "message": f"Pulled read status (Completed, page {final_page}) from Grimmory.",
+            }
+        elif is_in_prog:
+            iso_ts = format_iso_timestamp(read_date or b.get("last_modified") or b.get("addedOn"))
+            await db.upsert_read_progress(
+                user_id=user.user_id,
+                book_id=book_id,
+                page=page,
+                completed=False,
+                read_date=iso_ts,
+            )
+            return {
+                "status": "success",
+                "action": "pull",
+                "book_id": book_id,
+                "completed": False,
+                "page": page,
+                "message": f"Pulled reading progress (In Progress, page {page}) from Grimmory.",
+            }
+        else:
+            await db.delete_read_progress(user_id=user.user_id, book_id=book_id)
+            return {
+                "status": "success",
+                "action": "pull",
+                "book_id": book_id,
+                "completed": False,
+                "page": 0,
+                "message": "Grimmory reports unread; local progress cleared.",
+            }
+
+    @router.post("/admin/api/books/{book_id}/progress/push")
+    async def push_book_progress(
+        book_id: int,
+        request: Request,
+        payload: Optional[BookProgressPushRequest] = None,
+    ) -> Dict[str, Any]:
+        user = await require_admin_session(request)
+
+        book = await db.get_book_by_id(book_id, include_deleted=False)
+        if not book:
+            raise HTTPException(status_code=404, detail=f"Book {book_id} not found")
+
+        token = user.token
+        if not token or (settings.sync_username and user.username == settings.sync_username):
+            try:
+                token = await grimmory_client.get_sync_token()
+            except Exception:
+                token = user.token
+
+        if payload and (payload.completed is not None or payload.page is not None):
+            cur_prog = await db.get_book_read_progress(user.user_id, book_id) or {}
+            new_comp = payload.completed if payload.completed is not None else bool(cur_prog.get("completed"))
+            new_page = payload.page if payload.page is not None else cur_prog.get("page", 1)
+            now_iso = datetime.now(timezone.utc).isoformat()
+            await db.upsert_read_progress(
+                user_id=user.user_id,
+                book_id=book_id,
+                page=new_page,
+                completed=new_comp,
+                read_date=now_iso,
+            )
+
+        progress = await db.get_book_read_progress(user.user_id, book_id)
+
+        try:
+            if progress and (progress.get("completed") or progress.get("page", 0) > 0):
+                page = progress.get("page", 1)
+                completed = bool(progress.get("completed"))
+                page_count = book.get("page_count", 0)
+                percentage = 100.0 if completed else (round((page / max(1, page_count)) * 100.0, 2) if page_count > 0 else 0.0)
+                timestamp = progress.get("read_date") or datetime.now(timezone.utc).isoformat()
+
+                req = build_grimmory_progress_request(
+                    book_id=book_id,
+                    page=page,
+                    percentage=percentage,
+                    completed=completed,
+                    timestamp=timestamp,
+                )
+                await grimmory_client.update_read_progress(req, token=token)
+                await grimmory_client.update_read_status([book_id], "READ" if completed else "READING", token=token)
+                schedule_koreader_progress_sync(book, book_id, page, page_count, percentage, token=token)
+
+                return {
+                    "status": "success",
+                    "action": "push",
+                    "book_id": book_id,
+                    "completed": completed,
+                    "page": page,
+                    "message": f"Pushed read progress ({'Completed' if completed else f'page {page}'}) to Grimmory.",
+                }
+            else:
+                await grimmory_client.update_read_status([book_id], "UNREAD", token=token)
+                return {
+                    "status": "success",
+                    "action": "push",
+                    "book_id": book_id,
+                    "completed": False,
+                    "page": 0,
+                    "message": "Local status is unread; pushed UNREAD status to Grimmory.",
+                }
+        except httpx.HTTPStatusError as e:
+            raise HTTPException(status_code=e.response.status_code, detail=f"Grimmory returned HTTP {e.response.status_code}")
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Could not push to Grimmory: {e}")
 
     @router.get("/admin/api/logs")
     async def get_logs_endpoint(request: Request) -> Dict[str, Any]:
