@@ -1,0 +1,59 @@
+# Example Docker Compose Stack: Grimmory + Grimmory-Proxy
+# Usage:
+#   1. Copy to docker-compose.yml: cp docker-compose.stack.example.yml docker-compose.yml
+#   2. Edit environment variables and volume paths
+#   3. Run: docker compose up -d
+
+services:
+  # Upstream Grimmory Server
+  grimmory:
+    image: ghcr.io/grimmory-org/grimmory:latest
+    container_name: grimmory
+    restart: unless-stopped
+    networks:
+      - grimmory-net
+    ports:
+      - "6060:6060" # Grimmory WebUI (optional if accessing through proxy only)
+    volumes:
+      - /path/to/your/books:/books:ro # Mount your comic/ebook library directory
+      - grimmory-data:/data
+    environment:
+      - TZ=UTC
+
+  # Grimmory-to-Komga Proxy Bridge
+  grimmory-proxy:
+    image: ghcr.io/saetron/grimmory-proxy:latest
+    container_name: grimmory-proxy
+    restart: unless-stopped
+    depends_on:
+      - grimmory
+    networks:
+      - grimmory-net
+    ports:
+      - "8080:8080" # Komga API & Admin WebUI
+    volumes:
+      - proxy-data:/app/data
+    environment:
+      # Internal network address of the upstream Grimmory instance
+      - GRIMMORY_URL=http://grimmory:6060
+      # Public URL of Grimmory (used when redirecting web readers)
+      - GRIMMORY_PUBLIC_URL=http://localhost:6060
+      # Dedicated background sync credentials
+      - SYNC_USERNAME=admin_user
+      - SYNC_PASSWORD=admin_password
+      # Synchronization intervals (in minutes)
+      - SYNC_INTERVAL_MINUTES=30
+      - USER_SYNC_INTERVAL_MINUTES=5
+      # Optional: In-memory image compression (saves mobile reader bandwidth)
+      - IMAGE_COMPRESSION_ENABLED=false
+      - IMAGE_COMPRESSION_FORMAT=webp
+      - IMAGE_CACHE_TYPE=memory
+      - IMAGE_CACHE_MEMORY_MAX_ITEMS=150
+
+networks:
+  grimmory-net:
+    driver: bridge
+
+volumes:
+  grimmory-data:
+  proxy-data:
