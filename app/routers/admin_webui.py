@@ -5,7 +5,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 import httpx
-from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
@@ -17,6 +17,7 @@ from app.models.internal import PageCalcStatus, UserSession
 from app.services.auth import AuthService
 from app.services.cache import thumbnail_cache
 from app.services.image_compressor import image_compressor
+from app.services.log_buffer import proxy_log_handler
 from app.services.page_calculator import PageCalculator
 from app.services.sync import SyncService
 from app.services.user_sync import UserSyncService
@@ -246,12 +247,18 @@ def get_admin_router(
 
         calc_job_status = await _resolve_calc_job_status()
 
+        try:
+            libraries = await db.get_libraries()
+        except Exception:
+            libraries = []
+
         return templates.TemplateResponse(
             request=request,
             name="dashboard.html",
             context={
                 "user": user,
                 "active_page": "dashboard",
+                "libraries": libraries,
                 "users": users_list,
                 "stats": stats,
                 "calc_job": calc_job_status,
@@ -273,6 +280,96 @@ def get_admin_router(
                     "cache_type": settings.image_cache_type,
                     "cache_stats": image_compressor.get_cache_stats(),
                 },
+            },
+        )
+
+    @router.get("/stats", response_class=HTMLResponse)
+    @router.get("/admin/stats", response_class=HTMLResponse)
+    async def stats_page(request: Request) -> Response:
+        user = await AuthService.get_current_user_optional(request)
+        if not user or not user.is_admin:
+            return RedirectResponse(url="/admin/login", status_code=status.HTTP_302_FOUND)
+
+        try:
+            stats = await asyncio.wait_for(db.get_stats(), timeout=5.0)
+        except Exception as e:
+            logger.warning(f"Error fetching stats for stats page: {e}")
+            stats = {
+                "libraries_count": 0, "series_count": 0, "books_count": 0,
+                "books_with_pages": 0, "books_missing_pages": 0, "formats_breakdown": {},
+                "database_size_bytes": 0, "wal_size_bytes": 0,
+            }
+
+        try:
+            thumb_count, thumb_bytes = await asyncio.wait_for(
+                asyncio.to_thread(thumbnail_cache.get_cache_size), timeout=5.0
+            )
+        except Exception:
+            thumb_count, thumb_bytes = 0, 0
+
+        calc_job_status = await _resolve_calc_job_status()
+
+        return templates.TemplateResponse(
+            request=request,
+            name="stats.html",
+            context={
+                "user": user,
+                "active_page": "stats",
+                "stats": stats,
+                "calc_job": calc_job_status,
+                "thumbnail_count": thumb_count,
+                "thumbnail_bytes": thumb_bytes,
+                "app_version": settings.app_version,
+                "grimmory_url": settings.grimmory_url,
+                "grimmory_public_url": settings.public_grimmory_url,
+            },
+        )
+
+    @router.get("/users", response_class=HTMLResponse)
+    @router.get("/admin/users", response_class=HTMLResponse)
+    async def users_page(request: Request) -> Response:
+        user = await AuthService.get_current_user_optional(request)
+        if not user or not user.is_admin:
+            return RedirectResponse(url="/admin/login", status_code=status.HTTP_302_FOUND)
+
+        try:
+            users_list = await asyncio.wait_for(db.get_users_detailed(), timeout=5.0)
+        except Exception as e:
+            logger.warning(f"Error fetching users list for users page: {e}")
+            users_list = []
+
+        return templates.TemplateResponse(
+            request=request,
+            name="users.html",
+            context={
+                "user": user,
+                "active_page": "users",
+                "users": users_list,
+                "app_version": settings.app_version,
+                "grimmory_url": settings.grimmory_url,
+                "grimmory_public_url": settings.public_grimmory_url,
+            },
+        )
+
+    @router.get("/logs", response_class=HTMLResponse)
+    @router.get("/admin/logs", response_class=HTMLResponse)
+    async def logs_page(request: Request) -> Response:
+        user = await AuthService.get_current_user_optional(request)
+        if not user or not user.is_admin:
+            return RedirectResponse(url="/admin/login", status_code=status.HTTP_302_FOUND)
+
+        return templates.TemplateResponse(
+            request=request,
+            name="logs.html",
+            context={
+                "user": user,
+                "active_page": "logs",
+                "sync_logs": sync_service.status.logs[-200:],
+                "read_sync_logs": user_sync.status.logs[-200:],
+                "proxy_logs": proxy_log_handler.get_logs()[-200:],
+                "app_version": settings.app_version,
+                "grimmory_url": settings.grimmory_url,
+                "grimmory_public_url": settings.public_grimmory_url,
             },
         )
 
@@ -652,5 +749,74 @@ def get_admin_router(
             "settings": updated_dict,
             "config_path": str(settings.resolve_config_path()),
         }
+
+    # ---------------- Book Explorer & Logs API Endpoints ----------------
+
+    @router.get("/admin/api/books/search")
+    async def search_books_endpoint(
+        request: Request,
+        query: Optional[str] = Query(None),
+        library_id: Optional[int] = Query(None),
+        limit: int = Query(24, ge=1, le=100),
+        offset: int = Query(0, ge=0),
+    ) -> Dict[str, Any]:
+        user = await require_admin_session(request)
+
+        records, total = await db.get_books_list(
+            library_id=library_id,
+            search=query.strip() if query else None,
+            offset=offset,
+            limit=limit,
+            sort_by="created",
+            sort_dir="desc",
+            user_id=user.user_id if user else None,
+        )
+
+        formatted_books = []
+        for r in records:
+            formatted_books.append({
+                "id": r["id"],
+                "name": r.get("name", ""),
+                "series_id": r.get("series_id"),
+                "series_name": r.get("series_name") or r.get("series_id", ""),
+                "number": r.get("number", 0.0),
+                "book_type": r.get("book_type") or "EPUB",
+                "page_count": r.get("page_count", 0),
+                "file_size": r.get("file_size", 0),
+                "library_id": r.get("library_id"),
+                "user_completed": bool(r.get("user_completed")),
+                "user_page": r.get("user_page", 0),
+            })
+
+        return {"books": formatted_books, "total": total, "limit": limit, "offset": offset}
+
+    @router.get("/admin/api/logs")
+    async def get_logs_endpoint(request: Request) -> Dict[str, Any]:
+        user = await require_admin_session(request)
+        return {
+            "sync_logs": sync_service.status.logs[-200:],
+            "read_sync_logs": user_sync.status.logs[-200:],
+            "proxy_logs": proxy_log_handler.get_logs()[-200:],
+        }
+
+    @router.post("/admin/api/logs/clear")
+    async def clear_logs_endpoint(request: Request) -> Dict[str, Any]:
+        user = await require_admin_session(request)
+        body = {}
+        try:
+            body = await request.json()
+        except Exception:
+            pass
+
+        log_type = body.get("type", "all")
+        if log_type in ("sync", "all"):
+            sync_service.status.logs.clear()
+        if log_type in ("read-sync", "read_sync", "all"):
+            user_sync.status.logs.clear()
+        if log_type in ("proxy", "all"):
+            proxy_log_handler.clear()
+
+        logger.info(f"Admin '{user.username}' cleared log buffer ({log_type})")
+        return {"success": True, "message": f"Logs cleared ({log_type})."}
 
     return router

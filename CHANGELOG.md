@@ -10,6 +10,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Full WebUI Rework & Modular Page Architecture**:
+  - **Clean Status & Book Query Explorer Dashboard (`/admin`, `/dashboard`)**:
+    - Redesigned the primary landing dashboard to focus on overall health/sync status and an interactive book search explorer.
+    - Added instant, debounced book querying by title, series, or ID (`GET /admin/api/books/search`) with library filtering, cover previews, and direct read links.
+  - **Dedicated Statistics & Page Engine Page (`/stats`)**:
+    - Moved overall KPI cards, format distribution breakdown, storage analytics, and page calculation triggers to a dedicated `/stats` interface.
+  - **Dedicated Connected Users Page (`/users`)**:
+    - Relocated connected reader clients and user read tracking management to a dedicated `/users` page.
+  - **Dedicated Live Logs Viewer (`/logs`)**:
+    - Created dedicated `/logs` stream viewer with tabbed categories: Proxy Application Logs, Catalog Metadata Sync Logs, and User Read Sync Logs.
+    - Capped log streams to the last 200 lines via ring buffer memory management (`RingBufferLogHandler`), preventing memory bloat.
+    - Added instant tab switching, auto-scroll toggle, auto-polling, and one-click log clearing (`POST /admin/api/logs/clear`).
 - **Persistent Configuration File (`config.json`) with WebUI Settings Management**:
   - **First Startup Initialization**: On first launch, the proxy automatically generates a persistent `config.json` populated from environment variables and defaults.
   - **File Precedence**: On all subsequent startups, `config.json` takes precedence over environment variables, allowing persistent in-app configuration.

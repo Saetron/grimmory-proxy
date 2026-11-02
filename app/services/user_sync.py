@@ -29,8 +29,8 @@ class UserSyncService:
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         entry = f"[{ts}] {message}"
         self.status.logs.append(entry)
-        if len(self.status.logs) > 100:
-            self.status.logs = self.status.logs[-100:]
+        if len(self.status.logs) > 200:
+            self.status.logs = self.status.logs[-200:]
         logger.info(message)
 
     def set_db(self, db: Database) -> None:
