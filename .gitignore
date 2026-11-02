@@ -65,6 +65,7 @@ data/
 *.db-shm
 thumbnails/
 *.log
+site/
 
 # IDE / Editor settings
 .idea/
