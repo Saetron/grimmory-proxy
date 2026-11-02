@@ -138,17 +138,19 @@ jobs:
       - name: Create or update GitHub Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_VERSION: ${{ steps.bump.outputs.version }}
         run: |
-          VERSION="${{ steps.bump.outputs.version }}"
+          VERSION="${RELEASE_VERSION}"
           TAG="v${VERSION}"
           python -c "
-          import re
+          import os, re
           from pathlib import Path
 
+          version = os.environ.get('RELEASE_VERSION', '').strip() or Path('VERSION').read_text(encoding='utf-8').strip()
           changelog = Path('CHANGELOG.md').read_text(encoding='utf-8')
-          pattern = rf'## \[{re.escape(VERSION)}(?:\.0)?\][^\n]*\n(.*?)(?=\n## \[|\Z)'
+          pattern = rf'## \[{re.escape(version)}(?:\.0)?\][^\n]*\n(.*?)(?=\n## \[|\Z)'
           match = re.search(pattern, changelog, re.DOTALL)
-          notes = match.group(1).strip() if match else f'Release v{VERSION}'
+          notes = match.group(1).strip() if match else f'Release v{version}'
           Path('release_notes.md').write_text(notes, encoding='utf-8')
           "
           gh release create "$TAG" --title "$TAG" --notes-file release_notes.md || gh release edit "$TAG" --title "$TAG" --notes-file release_notes.md
