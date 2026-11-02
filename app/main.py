@@ -139,8 +139,8 @@ def _safe_grimmory_redirect(path_suffix: str, query: str = "") -> RedirectRespon
     )
 
 
-@app.get("/series/{series_id:path}")
-@app.get("/series")
+@app.get("/series/{series_id:path}", include_in_schema=False)
+@app.get("/series", include_in_schema=False)
 async def redirect_series(request: Request, series_id: str = ""):
     """
     Redirect series browser clicks directly to Grimmory web UI.
@@ -172,10 +172,10 @@ async def redirect_series(request: Request, series_id: str = ""):
     return _safe_grimmory_redirect(f"series/{encoded_name}", query)
 
 
-@app.get("/book/{book_id:path}")
-@app.get("/books/{book_id:path}")
-@app.get("/book")
-@app.get("/books")
+@app.get("/book/{book_id:path}", include_in_schema=False)
+@app.get("/books/{book_id:path}", include_in_schema=False)
+@app.get("/book", include_in_schema=False)
+@app.get("/books", include_in_schema=False)
 async def redirect_book(request: Request, book_id: str = ""):
     """
     Redirect book browser clicks directly to Grimmory web UI.
@@ -208,10 +208,10 @@ async def redirect_book(request: Request, book_id: str = ""):
     return _safe_grimmory_redirect(f"book/{clean_book_id}", query)
 
 
-@app.get("/library/{library_id:path}")
-@app.get("/libraries/{library_id:path}")
-@app.get("/library")
-@app.get("/libraries")
+@app.get("/library/{library_id:path}", include_in_schema=False)
+@app.get("/libraries/{library_id:path}", include_in_schema=False)
+@app.get("/library", include_in_schema=False)
+@app.get("/libraries", include_in_schema=False)
 async def redirect_library(request: Request, library_id: str = ""):
     """
     Redirect library browser clicks directly to Grimmory web UI.
@@ -226,10 +226,10 @@ async def redirect_library(request: Request, library_id: str = ""):
     return _safe_grimmory_redirect(f"library/{clean_lib_id}/books", query)
 
 
-@app.get("/shelf/{shelf_id:path}")
-@app.get("/shelves/{shelf_id:path}")
-@app.get("/collection/{collection_id:path}")
-@app.get("/collections/{collection_id:path}")
+@app.get("/shelf/{shelf_id:path}", include_in_schema=False)
+@app.get("/shelves/{shelf_id:path}", include_in_schema=False)
+@app.get("/collection/{collection_id:path}", include_in_schema=False)
+@app.get("/collections/{collection_id:path}", include_in_schema=False)
 async def redirect_shelf(request: Request, shelf_id: str = "", collection_id: str = ""):
     """
     Redirect shelf/collection clicks to Grimmory web UI (/shelf/:shelfId/books).
@@ -243,9 +243,9 @@ async def redirect_shelf(request: Request, shelf_id: str = "", collection_id: st
     return _safe_grimmory_redirect(f"shelf/{first_part}/books", query)
 
 
-@app.get("/author/{author_id:path}")
-@app.get("/authors/{author_id:path}")
-@app.get("/authors")
+@app.get("/author/{author_id:path}", include_in_schema=False)
+@app.get("/authors/{author_id:path}", include_in_schema=False)
+@app.get("/authors", include_in_schema=False)
 async def redirect_author(request: Request, author_id: str = ""):
     """
     Redirect author clicks to Grimmory web UI (/author/:authorId or /authors).
@@ -258,7 +258,7 @@ async def redirect_author(request: Request, author_id: str = ""):
     return _safe_grimmory_redirect(f"author/{clean_author_id}", query)
 
 
-@app.get("/")
+@app.get("/", include_in_schema=False)
 async def root_redirect(request: Request):
     """
     If accessed by a browser, redirect to the Admin WebUI dashboard.
