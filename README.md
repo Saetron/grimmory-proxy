@@ -5,7 +5,7 @@
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED.svg)](https://www.docker.com/)
 [![Version](https://img.shields.io/badge/Version-v1.12-orange.svg)](VERSION)
 [![Komga API](https://img.shields.io/badge/Komga%20API-v1.12.0-orange.svg)](https://komga.org/)
-[![Grimmory](https://img.shields.io/badge/Grimmory-Server-f97316.svg)](https://grimmory.org/)
+[![Grimmory](https://img.shields.io/badge/Grimmory-3.6.0%2FNightly-f97316.svg)](https://grimmory.org/)
 
 A high-performance Python and Docker proxy that translates the **[Grimmory API](https://grimmory.org/api/)** into the complete **[Komga API v1.12.0 specification](https://raw.githubusercontent.com/gotson/komga/refs/heads/master/komga/docs/openapi.json)**. It seamlessly restores compatibility for Komga-compatible reader applications—including **Mihon / Tachiyomi**, **Panels**, **Komic**, **Paperback**, and **Kuro Reader**—following Grimmory's deprecation of its native Komga endpoint.
 
