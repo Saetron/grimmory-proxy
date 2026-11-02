@@ -335,6 +335,34 @@ async function pollStatus() {
       dbInfo.innerText = walMb && parseFloat(walMb) > 0 ? `${dbMb} MB (WAL: ${walMb} MB)` : `${dbMb} MB`;
     }
 
+    // Update Reader Compression Info
+    if (data.image_compression) {
+      const comp = data.image_compression;
+      const compBadge = document.getElementById("compression-status-badge");
+      const compBtn = document.getElementById("btn-toggle-compression");
+      const cacheInfo = document.getElementById("compression-cache-info");
+      const clearBtn = document.getElementById("btn-clear-img-cache");
+
+      if (compBadge) {
+        if (comp.enabled) {
+          const dimText = comp.max_dimension ? `, max ${comp.max_dimension}px` : "";
+          compBadge.innerHTML = `<strong style="color: var(--color-success); font-size: 0.8rem;">Enabled (${comp.format.toUpperCase()}, Q${comp.quality}${dimText})</strong>`;
+        } else {
+          compBadge.innerHTML = `<strong style="color: var(--color-text-muted); font-size: 0.8rem;">Disabled</strong>`;
+        }
+      }
+      if (compBtn) {
+        compBtn.innerText = comp.enabled ? "Disable" : "Enable";
+      }
+      if (cacheInfo && comp.cache_stats) {
+        const mb = (comp.cache_stats.total_bytes / (1024 * 1024)).toFixed(2);
+        cacheInfo.innerText = `${comp.cache_stats.item_count} pages (${mb} MB) [0 SSD writes]`;
+      }
+      if (clearBtn && comp.cache_stats) {
+        clearBtn.style.display = comp.cache_stats.item_count > 0 ? "inline-block" : "none";
+      }
+    }
+
     // Update completion progress bar
     const total = data.stats.books_count || 0;
     const withPages = data.stats.books_with_pages || 0;
@@ -667,6 +695,40 @@ function renderUsersTable(users) {
     `;
   });
   tbody.innerHTML = html;
+}
+
+async function toggleCompression() {
+  const badge = document.getElementById("compression-status-badge");
+  const isCurrentlyEnabled = badge && badge.innerText.includes("Enabled");
+  const newEnabled = !isCurrentlyEnabled;
+
+  try {
+    const res = await fetch("/admin/api/image-compression", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: newEnabled }),
+    });
+    const data = await res.json();
+    if (data.success) {
+      pollStatus();
+    }
+  } catch (err) {
+    console.error("Failed to toggle image compression:", err);
+  }
+}
+
+async function clearImageCache() {
+  try {
+    const res = await fetch("/admin/api/image-compression/clear-cache", {
+      method: "POST",
+    });
+    const data = await res.json();
+    if (data.success) {
+      pollStatus();
+    }
+  } catch (err) {
+    console.error("Failed to clear image cache:", err);
+  }
 }
 
 function escapeHtml(str) {

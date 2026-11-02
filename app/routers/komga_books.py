@@ -22,6 +22,7 @@ from app.models.komga import BookDto, PageDto, PageableDto, build_pageable
 from app.services.auth import AuthService
 from app.services.cache import memory_cache, thumbnail_cache
 from app.services.filter_utils import extract_filter_params, resolve_effective_library_ids
+from app.services.image_compressor import image_compressor
 from app.services.koreader_utils import format_koreader_progress, resolve_koreader_doc_hash
 from app.services.mapper import KomgaMapper
 from app.services.page_calculator import PageCalculator
@@ -473,16 +474,12 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
         if not img_bytes:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Page image not found")
 
-        content_type = "image/jpeg"
-        if convert and convert.lower() == "png":
-            try:
-                with Image.open(io.BytesIO(img_bytes)) as img:
-                    out = io.BytesIO()
-                    img.save(out, format="PNG")
-                    img_bytes = out.getvalue()
-                    content_type = "image/png"
-            except Exception as e:
-                logger.warning(f"Error converting page image to PNG: {e}")
+        img_bytes, content_type = await image_compressor.process_page_image(
+            book_id=book_id,
+            page_number=page_number,
+            raw_bytes=img_bytes,
+            convert=convert,
+        )
 
         return Response(content=img_bytes, media_type=content_type)
 

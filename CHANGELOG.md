@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added
+- **On-The-Fly Reader Image Compression & Optimization**:
+  - Added async `ImageCompressor` service utilizing Pillow with non-blocking execution via `asyncio.to_thread`.
+  - Transcodes large comic/book page images to WebP or JPEG on demand, reducing transfer bandwidth and page loading latency for reader clients (Komic, Panels, Mihon, Tachiyomi, Kuro Reader).
+  - **Zero SSD Writes (In-Memory LRU Cache)**:
+    - Implemented `MemoryPageCache` (default `IMAGE_CACHE_TYPE="memory"`, max 150 pages) caching recently accessed compressed pages strictly in RAM.
+    - Page flips and back-and-forth reading hit RAM cache (<1ms) without inflicting write wear on SSD storage.
+  - **Smart Image Guard & Dimension Downscaling**:
+    - Optional `IMAGE_COMPRESSION_MAX_DIMENSION` (default 1920px) preserving aspect ratio using high-quality Lanczos resampling.
+    - `IMAGE_COMPRESSION_MIN_SIZE_KB` threshold (default 400KB) bypassing pages that are already lightweight to conserve CPU.
+    - Guard against negative compression (serves original if re-encoding yields larger file size).
+    - Robust color mode handling (CMYK conversion to RGB, alpha channel flattened against white background for JPEG).
+  - **Full Komga Protocol Parity**:
+    - Supports client-driven conversion via `GET /api/v1/books/{id}/pages/{pageNumber}?convert=webp` (or `jpeg`, `png`) regardless of whether global compression is enabled.
+  - **Admin WebUI Dashboard Controls**:
+    - Added Reader Compression status and In-Memory Page Cache metrics to the admin dashboard.
+    - Added `POST /admin/api/image-compression` to toggle compression and update quality/format at runtime.
+    - Added `POST /admin/api/image-compression/clear-cache` to immediately flush the in-memory page cache.
+    - Hooked cache eviction into `release_memory()` to free RAM during storage optimization.
+
 ## [1.11] - 2026-10-27
 
 ### Fixed & Performance

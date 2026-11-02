@@ -3,18 +3,19 @@ import json
 import logging
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 import httpx
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.config import settings
 from app.database import Database
 from app.models.internal import PageCalcStatus, UserSession
 from app.services.auth import AuthService
 from app.services.cache import thumbnail_cache
+from app.services.image_compressor import image_compressor
 from app.services.page_calculator import PageCalculator
 from app.services.sync import SyncService
 from app.services.user_sync import UserSyncService
@@ -30,6 +31,15 @@ templates.env.globals["grimmory_public_url"] = settings.public_grimmory_url
 
 class CalcPagesRequest(BaseModel):
     missing_only: bool = True
+
+
+class ImageCompressionConfigRequest(BaseModel):
+    enabled: Optional[bool] = None
+    format: Optional[Literal["webp", "jpeg", "original"]] = None
+    quality: Optional[int] = Field(None, ge=1, le=100)
+    max_dimension: Optional[int] = Field(None, ge=0)
+    min_size_kb: Optional[int] = Field(None, ge=0)
+    cache_type: Optional[Literal["memory", "none", "disk"]] = None
 
 
 async def require_admin_session(request: Request) -> UserSession:
@@ -252,6 +262,15 @@ def get_admin_router(
                 "sync_interval_minutes": settings.sync_interval_minutes,
                 "user_sync_interval_minutes": settings.user_sync_interval_minutes,
                 "app_version": settings.app_version,
+                "image_compression": {
+                    "enabled": settings.image_compression_enabled,
+                    "format": settings.image_compression_format,
+                    "quality": settings.image_compression_quality,
+                    "max_dimension": settings.image_compression_max_dimension,
+                    "min_size_kb": settings.image_compression_min_size_kb,
+                    "cache_type": settings.image_cache_type,
+                    "cache_stats": image_compressor.get_cache_stats(),
+                },
             },
         )
 
@@ -300,6 +319,15 @@ def get_admin_router(
             "read_sync_running": user_sync.status.is_running,
             "app_version": settings.app_version,
             "users": users_list,
+            "image_compression": {
+                "enabled": settings.image_compression_enabled,
+                "format": settings.image_compression_format,
+                "quality": settings.image_compression_quality,
+                "max_dimension": settings.image_compression_max_dimension,
+                "min_size_kb": settings.image_compression_min_size_kb,
+                "cache_type": settings.image_cache_type,
+                "cache_stats": image_compressor.get_cache_stats(),
+            },
         }
 
     @router.post("/admin/api/calculate-pages")
@@ -491,6 +519,60 @@ def get_admin_router(
         return {
             "success": success,
             "message": f"Read progress sync completed for user '{target_row['username']}'." if success else f"Read progress sync failed for user '{target_row['username']}'."
+        }
+
+    # ---------------- Reader Image Optimization Endpoints ----------------
+
+    @router.post("/admin/api/image-compression")
+    async def update_image_compression_endpoint(
+        payload: ImageCompressionConfigRequest,
+        request: Request,
+    ) -> Dict[str, Any]:
+        user = await require_admin_session(request)
+
+        if payload.enabled is not None:
+            settings.image_compression_enabled = payload.enabled
+        if payload.format is not None:
+            settings.image_compression_format = payload.format
+        if payload.quality is not None:
+            settings.image_compression_quality = payload.quality
+        if payload.max_dimension is not None:
+            settings.image_compression_max_dimension = payload.max_dimension
+        if payload.min_size_kb is not None:
+            settings.image_compression_min_size_kb = payload.min_size_kb
+        if payload.cache_type is not None:
+            settings.image_cache_type = payload.cache_type
+
+        status_text = "enabled" if settings.image_compression_enabled else "disabled"
+        logger.info(
+            f"Admin '{user.username}' updated image compression config: "
+            f"enabled={settings.image_compression_enabled}, format={settings.image_compression_format}, "
+            f"quality={settings.image_compression_quality}, max_dimension={settings.image_compression_max_dimension}, "
+            f"cache_type={settings.image_cache_type}"
+        )
+        return {
+            "success": True,
+            "message": f"Reader image compression is now {status_text}.",
+            "image_compression": {
+                "enabled": settings.image_compression_enabled,
+                "format": settings.image_compression_format,
+                "quality": settings.image_compression_quality,
+                "max_dimension": settings.image_compression_max_dimension,
+                "min_size_kb": settings.image_compression_min_size_kb,
+                "cache_type": settings.image_cache_type,
+                "cache_stats": image_compressor.get_cache_stats(),
+            },
+        }
+
+    @router.post("/admin/api/image-compression/clear-cache")
+    async def clear_image_compression_cache_endpoint(request: Request) -> Dict[str, Any]:
+        user = await require_admin_session(request)
+        image_compressor.clear_cache()
+        logger.info(f"Admin '{user.username}' cleared image compression page cache.")
+        return {
+            "success": True,
+            "message": "In-memory reader image cache cleared successfully.",
+            "cache_stats": image_compressor.get_cache_stats(),
         }
 
     return router

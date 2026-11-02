@@ -140,6 +140,40 @@ class Settings(BaseSettings):
         description="Number of text characters considered one page for novels (Calibre ADE standard: 1024)",
     )
 
+    # Reader image compression & optimization
+    image_compression_enabled: bool = Field(
+        default=False,
+        description="Whether to compress/optimize reader page images on the fly",
+    )
+    image_compression_format: Literal["webp", "jpeg", "original"] = Field(
+        default="webp",
+        description="Target format for compressed reader pages ('webp', 'jpeg', or 'original')",
+    )
+    image_compression_quality: int = Field(
+        default=80,
+        description="Quality setting (1-100) for on-the-fly compressed pages",
+    )
+    image_compression_max_dimension: int = Field(
+        default=1920,
+        description="Maximum width or height in pixels for compressed pages (0 to preserve original dimensions)",
+    )
+    image_compression_min_size_kb: int = Field(
+        default=400,
+        description="Minimum file size in KB before compression is applied (pages smaller than this are served as-is)",
+    )
+    image_cache_type: Literal["memory", "none", "disk"] = Field(
+        default="memory",
+        description="Cache backend for compressed pages ('memory', 'none', or 'disk')",
+    )
+    image_cache_memory_max_items: int = Field(
+        default=150,
+        description="Maximum number of compressed pages retained in memory LRU cache",
+    )
+    image_cache_disk_dir: str = Field(
+        default="/app/data/page_cache",
+        description="Disk directory for cached compressed pages when image_cache_type='disk'",
+    )
+
     @property
     def cors_origins_list(self) -> List[str]:
         origins = [o.strip().rstrip("/") for o in self.cors_allow_origins.split(",") if o.strip()]

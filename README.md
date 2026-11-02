@@ -125,6 +125,14 @@ A high-performance Python and Docker proxy/bridge that translates the **[Grimmor
 | `SYNC_ON_STARTUP` | `true` | Whether to trigger background metadata sync on startup. |
 | `SYNC_CONCURRENCY` | `6` | Concurrency limit for background series/book page inspection. |
 | `NOVEL_CHARS_PER_PAGE` | `1024` | Number of characters per page for novels (Calibre ADE standard: 1024). |
+| `IMAGE_COMPRESSION_ENABLED` | `false` | Whether to compress/optimize reader page images on the fly. |
+| `IMAGE_COMPRESSION_FORMAT` | `webp` | Target format for compressed reader pages (`webp`, `jpeg`, or `original`). |
+| `IMAGE_COMPRESSION_QUALITY` | `80` | Quality setting (1–100) for on-the-fly compressed reader pages. |
+| `IMAGE_COMPRESSION_MAX_DIMENSION` | `1920` | Maximum width or height in pixels for compressed pages (`0` to preserve original dimensions). |
+| `IMAGE_COMPRESSION_MIN_SIZE_KB` | `400` | Minimum file size in KB before compression is applied (smaller pages are served as-is to save CPU). |
+| `IMAGE_CACHE_TYPE` | `memory` | Cache backend for compressed pages (`memory`, `none`, or `disk`). `memory` uses zero SSD writes. |
+| `IMAGE_CACHE_MEMORY_MAX_ITEMS` | `150` | Maximum number of compressed pages retained in memory LRU cache. |
+| `IMAGE_CACHE_DISK_DIR` | `/app/data/page_cache` | Disk directory for cached compressed pages when `IMAGE_CACHE_TYPE=disk`. |
 | `SQLITE_CACHE_SIZE` | `-8000` | SQLite page cache size limit in KiB (negative value specifies size in KiB; default `-8000` = ~8 MB). |
 | `SQLITE_MMAP_SIZE` | `67108864` | SQLite memory-mapped I/O size limit in bytes (default `67108864` = 64 MB; `0` to disable mmap). |
 | `SQLITE_WAL_AUTOCHECKPOINT` | `1000` | SQLite WAL autocheckpoint page threshold (default: 1000 pages). |

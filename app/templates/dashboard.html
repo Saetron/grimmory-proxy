@@ -445,6 +445,28 @@
         <span style="color: var(--color-text-muted);">Cover Thumbnails:</span>
         <strong style="color: var(--color-text-strong);">{{ thumbnail_count }} files ({{ "{:.2f} MB".format(thumbnail_bytes / (1024 * 1024)) }})</strong>
       </div>
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <span style="color: var(--color-text-muted);">Reader Compression:</span>
+        <div style="display: flex; align-items: center; gap: 0.5rem;">
+          <span id="compression-status-badge">
+            {% if image_compression.enabled %}
+              <strong style="color: var(--color-success); font-size: 0.8rem;">Enabled ({{ image_compression.format | upper }}, Q{{ image_compression.quality }}{% if image_compression.max_dimension %}, max {{ image_compression.max_dimension }}px{% endif %})</strong>
+            {% else %}
+              <strong style="color: var(--color-text-muted); font-size: 0.8rem;">Disabled</strong>
+            {% endif %}
+          </span>
+          <button id="btn-toggle-compression" onclick="toggleCompression()" class="btn btn-ghost btn-sm" style="padding: 0.15rem 0.45rem; font-size: 0.75rem;" title="Toggle On-The-Fly Reader Compression">
+            {% if image_compression.enabled %}Disable{% else %}Enable{% endif %}
+          </button>
+        </div>
+      </div>
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <span style="color: var(--color-text-muted);">In-Memory Page Cache:</span>
+        <div style="display: flex; align-items: center; gap: 0.5rem;">
+          <strong id="compression-cache-info" style="color: var(--color-text-strong); font-size: 0.8rem;">{{ image_compression.cache_stats.item_count }} pages ({{ "{:.2f} MB".format(image_compression.cache_stats.total_bytes / (1024 * 1024)) }}) [0 SSD writes]</strong>
+          <button id="btn-clear-img-cache" onclick="clearImageCache()" class="btn btn-ghost btn-sm" style="padding: 0.15rem 0.45rem; font-size: 0.75rem; {% if image_compression.cache_stats.item_count == 0 %}display: none;{% endif %}" title="Clear In-Memory Page Cache">Clear</button>
+        </div>
+      </div>
     </div>
   </div>
 </div>
