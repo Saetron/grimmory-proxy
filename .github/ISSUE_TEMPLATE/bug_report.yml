@@ -1,0 +1,95 @@
+name: "🐛 Bug Report"
+description: "Report a bug, regression, or reader app compatibility issue"
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting an issue! Please check existing issues before submitting.
+        If this is a security vulnerability, please report it via the [Security Advisories tab](https://github.com/Saetron/grimmory-proxy/security/advisories) instead.
+
+  - type: input
+    id: proxy_version
+    attributes:
+      label: "grimmory-proxy Version"
+      description: "e.g., 1.12 or docker image tag"
+      placeholder: "v1.12"
+    validations:
+      required: true
+
+  - type: input
+    id: grimmory_version
+    attributes:
+      label: "Grimmory Server Version"
+      description: "Version of your upstream Grimmory instance"
+      placeholder: "e.g., v0.4.x"
+    validations:
+      required: false
+
+  - type: dropdown
+    id: reader_app
+    attributes:
+      label: "Reader Client Application"
+      description: "Which reader app did you encounter the issue with?"
+      options:
+        - "Mihon / Tachiyomi"
+        - "Panels"
+        - "Komic"
+        - "Kuro Reader"
+        - "Paperback"
+        - "Web Browser / Admin WebUI"
+        - "Other (specify below)"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: book_format
+    attributes:
+      label: "Book Format (if applicable)"
+      options:
+        - "Not format-specific"
+        - "EPUB"
+        - "CBZ / CBR / Manga"
+        - "PDF"
+        - "MOBI / AZW"
+    validations:
+      required: false
+
+  - type: textarea
+    id: description
+    attributes:
+      label: "Describe the Bug"
+      description: "A clear and concise description of what the bug is."
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: "Steps to Reproduce"
+      description: "Detailed steps to reproduce the issue."
+      placeholder: |
+        1. Open reader client
+        2. Navigate to series X
+        3. Attempt to stream page Y
+        4. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: "Expected Behavior"
+      description: "What did you expect to happen?"
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: "Proxy Logs"
+      description: "Relevant logs from `docker logs grimmory-proxy` or the `/logs` admin viewer."
+      render: shell
+    validations:
+      required: false

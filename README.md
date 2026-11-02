@@ -68,12 +68,14 @@ Connect **Mihon**, **Panels**, **Komic**, **Paperback**, or **Kuro Reader** usin
 
 ---
 
-## Documentation
+## Documentation & Community
 
-For in-depth guides and technical details, see the documentation in [`docs/`](docs/):
+For in-depth guides, technical details, and contributing guidelines:
 
-- ⚙️ **[Configuration Guide](docs/configuration.md)**: Full environment variables reference, `config.json` precedence rules, and caching tuning.
+- ⚙️ **[Configuration Guide](docs/configuration.md)**: Full environment variables reference, config.json precedence rules, and caching tuning.
 - 🔌 **[Supported API Endpoints](docs/endpoints.md)**: Exhaustive breakdown of Komga routes, Admin API endpoints, and Grimmory browser redirects.
 - 🏛️ **[Architecture & Development](docs/development.md)**: Architecture diagram, Calibre ADE calculation engine, local development, and test suite guide.
+- 🤝 **[Contributing Guidelines](CONTRIBUTING.md)**: Development workflow, branch rules (dev -> main), testing, and PR submission.
+- 📜 **[Code of Conduct](CODE_OF_CONDUCT.md)**: Community standards and pledge.
 - 📋 **[Changelog](CHANGELOG.md)**: Complete release history and version migration notes.
 - 🛡️ **[Security Policy](SECURITY.md)**: Supported versions and private vulnerability reporting.
