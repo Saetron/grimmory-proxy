@@ -58,6 +58,6 @@ Access the Admin Dashboard at `http://localhost:8080/admin`.
 - **[Full-Stack Deployment & Reverse Proxy](deployment.md)**: Production multi-container Docker Compose with Grimmory, Caddy, Nginx, and Traefik.
 - **[Configuration Reference](configuration.md)**: Full list of environment variables, caching options, and performance tuning.
 - **[API Endpoints](endpoints.md)**: Supported Komga v1/v2 endpoints, browser redirect handlers, and Admin WebUI routes.
-- **[Interactive API Reference](api-reference.md)**: Searchable OpenAPI explorer (Scalar) and downloadable `openapi.json` for all 129+ endpoints.
+- **[Interactive API Reference](api-reference.md)**: Searchable OpenAPI explorer (Scalar) and downloadable `openapi.json` for all 100+ endpoints.
 - **[Architecture & Development](development.md)**: System design, page calculation engine, testing, and CI/CD pipelines.
 - **[Changelog](changelog.md)**: Release history and version updates.

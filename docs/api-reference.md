@@ -1,6 +1,6 @@
 # Interactive API Reference
 
-`grimmory-proxy` exposes **129+ endpoints** implementing the complete Komga v1.12.0 specification, along with internal proxy administration APIs.
+`grimmory-proxy` exposes **100+ REST API endpoints** implementing the complete Komga v1.12.0 specification, along with internal proxy administration APIs.
 
 <div style="display: flex; gap: 0.75rem; margin: 1.5rem 0; flex-wrap: wrap;">
   <a href="scalar.html" target="_blank" rel="noopener noreferrer" style="display: inline-flex; align-items: center; padding: 0.5rem 1rem; background-color: #f97316; color: white; border-radius: 6px; text-decoration: none; font-weight: 500; font-size: 0.875rem;">

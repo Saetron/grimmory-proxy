@@ -83,7 +83,7 @@ def get_admin_router(
 
     router = APIRouter(tags=["Admin WebUI"])
 
-    @router.get("/admin/login", response_class=HTMLResponse)
+    @router.get("/admin/login", response_class=HTMLResponse, include_in_schema=False)
     async def login_page(request: Request) -> Response:
         # If already logged in as admin, redirect to dashboard
         user = await AuthService.get_current_user_optional(request)
@@ -95,7 +95,7 @@ def get_admin_router(
             context={"user": None, "error": None, "app_version": settings.app_version},
         )
 
-    @router.post("/admin/login", response_class=HTMLResponse)
+    @router.post("/admin/login", response_class=HTMLResponse, include_in_schema=False)
     async def login_post(
         request: Request,
         response: Response,
@@ -179,7 +179,7 @@ def get_admin_router(
                 status_code=status.HTTP_401_UNAUTHORIZED,
             )
 
-    @router.get("/admin/logout")
+    @router.get("/admin/logout", include_in_schema=False)
     async def logout_admin(response: Response) -> Response:
         redirect = RedirectResponse(url="/admin/login", status_code=status.HTTP_302_FOUND)
         for cookie_name in ["admin_session", "KOMGA-SESSION", "SESSION", "remember-me"]:
@@ -217,8 +217,8 @@ def get_admin_router(
                 logger.debug(f"Could not load latest calc job for dashboard: {e}")
         return calc_job_status
 
-    @router.get("/admin", response_class=HTMLResponse)
-    @router.get("/dashboard", response_class=HTMLResponse)
+    @router.get("/admin", response_class=HTMLResponse, include_in_schema=False)
+    @router.get("/dashboard", response_class=HTMLResponse, include_in_schema=False)
     async def dashboard_page(request: Request) -> Response:
         user = await AuthService.get_current_user_optional(request)
         if not user or not user.is_admin:
@@ -300,8 +300,8 @@ def get_admin_router(
             },
         )
 
-    @router.get("/stats", response_class=HTMLResponse)
-    @router.get("/admin/stats", response_class=HTMLResponse)
+    @router.get("/stats", response_class=HTMLResponse, include_in_schema=False)
+    @router.get("/admin/stats", response_class=HTMLResponse, include_in_schema=False)
     async def stats_page(request: Request) -> Response:
         user = await AuthService.get_current_user_optional(request)
         if not user or not user.is_admin:
@@ -348,8 +348,8 @@ def get_admin_router(
             },
         )
 
-    @router.get("/users", response_class=HTMLResponse)
-    @router.get("/admin/users", response_class=HTMLResponse)
+    @router.get("/users", response_class=HTMLResponse, include_in_schema=False)
+    @router.get("/admin/users", response_class=HTMLResponse, include_in_schema=False)
     async def users_page(request: Request) -> Response:
         user = await AuthService.get_current_user_optional(request)
         if not user or not user.is_admin:
@@ -374,8 +374,8 @@ def get_admin_router(
             },
         )
 
-    @router.get("/logs", response_class=HTMLResponse)
-    @router.get("/admin/logs", response_class=HTMLResponse)
+    @router.get("/logs", response_class=HTMLResponse, include_in_schema=False)
+    @router.get("/admin/logs", response_class=HTMLResponse, include_in_schema=False)
     async def logs_page(request: Request) -> Response:
         user = await AuthService.get_current_user_optional(request)
         if not user or not user.is_admin:
@@ -748,8 +748,8 @@ def get_admin_router(
 
     # ---------------- Configuration File & Settings Endpoints ----------------
 
-    @router.get("/settings", response_class=HTMLResponse)
-    @router.get("/admin/settings", response_class=HTMLResponse)
+    @router.get("/settings", response_class=HTMLResponse, include_in_schema=False)
+    @router.get("/admin/settings", response_class=HTMLResponse, include_in_schema=False)
     async def settings_page(request: Request) -> Response:
         user = await AuthService.get_current_user_optional(request)
         if not user or not user.is_admin:
