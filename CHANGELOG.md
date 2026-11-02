@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.12] - 2026-11-02
 
 ### Added
+- **Single-Book Page Calculation & Read Progress Sync Controls**:
+  - Added option to trigger page calculation for a specific book on-demand (`POST /admin/api/books/{book_id}/calculate-pages` and `POST /admin/api/calculate-pages` with `book_id`).
+  - Added option to push local reading progress for an individual book directly to Grimmory (`POST /admin/api/books/{book_id}/progress/push`).
+  - Added option to pull upstream reading progress from Grimmory for an individual book (`POST /admin/api/books/{book_id}/progress/pull`).
 - **Page Calculation Error Tracking & Book File Validation**:
   - **Persistent Problematic Files Table (`page_calc_errors`)**:
     - Automatically records calculation and inspection failures (e.g., corrupt CBZ/EPUB archives, unreadable PDFs, zero-byte downloads, or timeouts) with book ID, title, series name, library ID, format, exact file path on disk, and specific error reason.
@@ -67,6 +71,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - Hooked cache eviction into `release_memory()` to free RAM during storage optimization.
 
 ### Changed
+- **Book Query Explorer Streamlining**:
+  - Removed redundant "Read" button from book cards in the WebUI Book Query Explorer.
+  - Removed "Unread" badges from book cards to reduce admin clutter, displaying progress badges only for books actively in progress or completed.
 - **Refactored Read Progress & KOReader Synchronization**:
   - Consolidated `GrimmoryReadProgressRequest` payload construction (`build_grimmory_progress_request`) and asynchronous KOReader progress forwarding (`schedule_koreader_progress_sync`) in `app/services/koreader_utils.py`, eliminating duplicated synchronization logic across `komga_progress.py`, `komga_books.py`, and `koreader.py`.
   - Extracted shared `_resolve_series_or_404` and `_clear_book_progress` helpers in `app/routers/komga_progress.py`.

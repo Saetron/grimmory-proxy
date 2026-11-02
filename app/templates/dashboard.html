@@ -247,7 +247,7 @@ async function performBookSearch() {
         const pageBadgeBg = b.page_count > 0 ? 'var(--color-success-bg)' : 'var(--color-danger-bg)';
         const bookType = escapeHtml(b.book_type || "EPUB");
 
-        let statusBadge = '<span class="brand-badge" style="background: rgba(255,255,255,0.06); color: var(--color-text-muted); font-size: 0.68rem;">Unread</span>';
+        let statusBadge = '';
         if (b.user_completed) {
           statusBadge = '<span class="brand-badge" style="background: var(--color-success-bg); color: var(--color-success); font-size: 0.68rem;">Read</span>';
         } else if (b.user_page && b.user_page > 0) {
@@ -279,15 +279,25 @@ async function performBookSearch() {
               </div>
 
               <div style="display: flex; justify-content: space-between; align-items: center; margin-top: auto; padding-top: 0.5rem; border-top: 1px solid rgba(255,255,255,0.05);">
-                <span style="font-size: 0.72rem; color: ${pageBadgeColor}; background: ${pageBadgeBg}; padding: 0.1rem 0.4rem; border-radius: 4px; font-weight: 600;">
+                <span id="book-pages-${b.id}" style="font-size: 0.72rem; color: ${pageBadgeColor}; background: ${pageBadgeBg}; padding: 0.1rem 0.4rem; border-radius: 4px; font-weight: 600;">
                   ${pages}
                 </span>
-                ${statusBadge}
+                <span id="book-status-${b.id}">${statusBadge}</span>
               </div>
 
-              <div style="display: flex; gap: 0.35rem; margin-top: 0.65rem;">
-                <a href="/api/v1/books/${b.id}/pages/1" target="_blank" rel="noopener" class="btn btn-ghost btn-sm" style="flex: 1; justify-content: center; padding: 0.25rem; font-size: 0.72rem;" title="Stream page 1 in browser">Read</a>
-                <a href="/api/v1/books/${b.id}" target="_blank" rel="noopener" class="btn btn-ghost btn-sm" style="flex: 1; justify-content: center; padding: 0.25rem; font-size: 0.72rem;" title="View Komga Book JSON DTO">JSON</a>
+              <div style="display: flex; gap: 0.35rem; margin-top: 0.65rem; flex-wrap: wrap;">
+                <button type="button" onclick="calculateSingleBookPages(${b.id}, this)" class="btn btn-ghost btn-sm" style="flex: 1; min-width: 60px; justify-content: center; padding: 0.25rem 0.3rem; font-size: 0.7rem;" title="Calculate pages for this book">
+                  Calc Pages
+                </button>
+                <button type="button" onclick="syncBookProgress(${b.id}, 'pull', this)" class="btn btn-ghost btn-sm" style="flex: 1; min-width: 48px; justify-content: center; padding: 0.25rem 0.3rem; font-size: 0.7rem;" title="Pull read progress from Grimmory">
+                  Pull
+                </button>
+                <button type="button" onclick="syncBookProgress(${b.id}, 'push', this)" class="btn btn-ghost btn-sm" style="flex: 1; min-width: 48px; justify-content: center; padding: 0.25rem 0.3rem; font-size: 0.7rem;" title="Push read progress to Grimmory">
+                  Push
+                </button>
+                <a href="/api/v1/books/${b.id}" target="_blank" rel="noopener" class="btn btn-ghost btn-sm" style="justify-content: center; padding: 0.25rem 0.45rem; font-size: 0.7rem;" title="View Komga Book JSON DTO">
+                  JSON
+                </a>
               </div>
             </div>
           </div>
@@ -296,6 +306,63 @@ async function performBookSearch() {
     }
   } catch (err) {
     console.error("Error searching books:", err);
+  }
+}
+
+async function calculateSingleBookPages(bookId, btn) {
+  const originalText = btn.innerText;
+  btn.disabled = true;
+  btn.innerText = "Calc...";
+  try {
+    const res = await fetch(`/admin/api/books/${bookId}/calculate-pages`, { method: "POST" });
+    const data = await res.json();
+    if (!res.ok) {
+      alert("Error calculating pages: " + (data.detail || data.message || "Failed"));
+      return;
+    }
+    const pageBadge = document.getElementById(`book-pages-${bookId}`);
+    if (pageBadge && data.page_count !== undefined) {
+      const pCount = data.page_count;
+      pageBadge.innerText = pCount > 0 ? `${pCount} pages` : 'No pages';
+      pageBadge.style.color = pCount > 0 ? 'var(--color-success)' : 'var(--color-danger)';
+      pageBadge.style.backgroundColor = pCount > 0 ? 'var(--color-success-bg)' : 'var(--color-danger-bg)';
+    }
+    alert(data.message || `Successfully calculated pages (${data.page_count} pages)`);
+  } catch (err) {
+    alert("Request failed: " + err);
+  } finally {
+    btn.disabled = false;
+    btn.innerText = originalText;
+  }
+}
+
+async function syncBookProgress(bookId, action, btn) {
+  const originalText = btn.innerText;
+  btn.disabled = true;
+  btn.innerText = action === "pull" ? "Pulling..." : "Pushing...";
+  try {
+    const res = await fetch(`/admin/api/books/${bookId}/progress/${action}`, { method: "POST" });
+    const data = await res.json();
+    if (!res.ok) {
+      alert(`Error during progress ${action}: ` + (data.detail || data.message || "Failed"));
+      return;
+    }
+    const statusEl = document.getElementById(`book-status-${bookId}`);
+    if (statusEl) {
+      if (data.completed) {
+        statusEl.innerHTML = '<span class="brand-badge" style="background: var(--color-success-bg); color: var(--color-success); font-size: 0.68rem;">Read</span>';
+      } else if (data.page && data.page > 0) {
+        statusEl.innerHTML = `<span class="brand-badge" style="background: rgba(59,130,246,0.15); color: #60a5fa; font-size: 0.68rem;">p. ${data.page}</span>`;
+      } else {
+        statusEl.innerHTML = '';
+      }
+    }
+    alert(data.message || `Read progress ${action} completed successfully.`);
+  } catch (err) {
+    alert("Request failed: " + err);
+  } finally {
+    btn.disabled = false;
+    btn.innerText = originalText;
   }
 }
 
