@@ -1,7 +1,7 @@
 [project]
 site_url = "https://saetron.github.io/grimmory-proxy/"
-site_name = "grimmory-proxy"
-site_description = "High-performance Komga v1.12.0 API bridge for Grimmory book server"
+site_name = "grimmory-proxy | Komga API Emulation for Grimmory"
+site_description = "Restore Komga API emulation for Grimmory. Connect Mihon, Tachiyomi, Panels, and Komic to Grimmory 3.x+ with full Komga v1.12.0 protocol parity."
 site_author = "Saetron"
 copyright = "Copyright &copy; 2026 Saetron"
 

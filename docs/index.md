@@ -1,8 +1,12 @@
-# grimmory-proxy
+# grimmory-proxy: Komga API Emulation for Grimmory
 
-A high-performance Python and Docker proxy that translates the **[Grimmory API](https://grimmory.org/api/)** into the complete **[Komga API v1.12.0 specification](https://raw.githubusercontent.com/gotson/komga/refs/heads/master/komga/docs/openapi.json)**. 
+> [!IMPORTANT]
+> **Looking for Grimmory's Komga API Emulation?**
+> In Grimmory 3.x, Grimmory deprecated its native Komga endpoint. `grimmory-proxy` is a high-performance Docker API bridge that restores full **Komga v1.12.0 API emulation**, allowing Komga-compatible reader applications—including **Mihon / Tachiyomi**, **Panels**, **Komic**, **Paperback**, and **Kuro Reader**—to connect transparently to modern Grimmory servers.
 
-It seamlessly restores compatibility for Komga-compatible reader applications—including **Mihon / Tachiyomi**, **Panels**, **Komic**, **Paperback**, and **Kuro Reader**—following Grimmory's deprecation of its native Komga endpoint.
+---
+
+A high-performance Python and Docker bridge that translates the **[Grimmory API](https://grimmory.org/api/)** into the complete **[Komga API v1.12.0 specification](https://raw.githubusercontent.com/gotson/komga/refs/heads/master/komga/docs/openapi.json)**. 
 
 ---
 
@@ -49,14 +53,11 @@ Access the Admin Dashboard at `http://localhost:8080/admin`.
 
 ---
 
-## Connecting Your Reader Apps
+## Navigation & Guides
 
-Connect **Mihon**, **Panels**, **Komic**, **Paperback**, or **Kuro Reader** using the Komga server option:
-
-1. In your reader app, add a new **Komga** server.
-2. **Server Address**: `http://<server-ip>:8080` (or `https://proxy.yourdomain.com` behind your reverse proxy).
-3. **Username & Password**: Enter your personal Grimmory credentials.
-4. Browse your libraries, read comics, manga, and novels with accurate page totals, and sync reading progress automatically.
-
-> [!NOTE]
-> Client reading sessions authenticate against your Grimmory server. Each user only sees their permitted libraries, reading progress, and personal shelves.
+- **[Reader Apps Setup](clients.md)**: Configuration guides for Mihon, Panels, Komic, Paperback, and Kuro Reader.
+- **[Full-Stack Deployment & Reverse Proxy](deployment.md)**: Production multi-container Docker Compose with Grimmory, Caddy, Nginx, and Traefik.
+- **[Configuration Reference](configuration.md)**: Full list of environment variables, caching options, and performance tuning.
+- **[API Endpoints](endpoints.md)**: Supported Komga v1/v2 endpoints, browser redirect handlers, and Admin WebUI routes.
+- **[Architecture & Development](development.md)**: System design, page calculation engine, testing, and CI/CD pipelines.
+- **[Changelog](changelog.md)**: Release history and version updates.
