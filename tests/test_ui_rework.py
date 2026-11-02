@@ -49,45 +49,61 @@ async def test_ui_rework_pages_and_book_search():
 
     # Setup dummy library, series, and books
     await db.upsert_libraries([{"id": 901, "name": "Manga Archive", "paths": []}])
-    await db.upsert_series_batch([{"id": "901-berserk", "library_id": 901, "name": "Berserk", "slug": "berserk", "books_count": 2}])
+    await db.upsert_series_batch([
+        {"id": "901-berserk", "library_id": 901, "name": "Berserk", "slug": "berserk", "books_count": 2},
+        {"id": "901-stormlight", "library_id": 901, "name": "The Stormlight Archive", "slug": "stormlight", "books_count": 1},
+    ])
     await db.upsert_books_batch([
         {"id": 90101, "series_id": "901-berserk", "library_id": 901, "name": "Berserk Vol 1", "number": 1.0, "page_count": 210, "book_type": "CBZ"},
         {"id": 90102, "series_id": "901-berserk", "library_id": 901, "name": "Berserk Vol 2", "number": 2.0, "page_count": 220, "book_type": "CBZ"},
+        {"id": 90103, "series_id": "901-stormlight", "library_id": 901, "name": "The Way of Kings", "number": 1.0, "page_count": 1007, "book_type": "EPUB", "file_size_kb": 4096},
     ])
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url="http://test", cookies=cookies) as client:
         # 1. Main Dashboard (/admin & /dashboard)
-        resp_dash = await client.get("/admin", cookies=cookies)
+        resp_dash = await client.get("/admin")
         assert resp_dash.status_code == 200
         assert "Query Books on Proxy" in resp_dash.text
         assert "book-search-input" in resp_dash.text
 
         # 2. Stats Page (/stats & /admin/stats)
-        resp_stats = await client.get("/stats", cookies=cookies)
+        resp_stats = await client.get("/stats")
         assert resp_stats.status_code == 200
         assert "Library Metrics & Page Enrichment" in resp_stats.text
         assert "Page Calculation Engine" in resp_stats.text
 
         # 3. Users Page (/users & /admin/users)
-        resp_users = await client.get("/users", cookies=cookies)
+        resp_users = await client.get("/users")
         assert resp_users.status_code == 200
         assert "Connected Users & Readers" in resp_users.text
         assert "ui_tester_admin" in resp_users.text
 
         # 4. Logs Page (/logs & /admin/logs)
-        resp_logs = await client.get("/logs", cookies=cookies)
+        resp_logs = await client.get("/logs")
         assert resp_logs.status_code == 200
         assert "Live System & Background Sync Logs" in resp_logs.text
         assert "200 lines" in resp_logs.text
 
-        # 5. Book Search API (/admin/api/books/search)
+        # 5. Book Search API (/admin/api/books/search) by book title, series name, and ID
         resp_search = await client.get("/admin/api/books/search?query=Berserk", headers=headers)
         assert resp_search.status_code == 200
         search_data = resp_search.json()
         assert search_data["total"] >= 2
         assert any(b["id"] == 90101 for b in search_data["books"])
         assert any(b["name"] == "Berserk Vol 1" for b in search_data["books"])
+
+        resp_series_search = await client.get("/admin/api/books/search?query=Stormlight", headers=headers)
+        assert resp_series_search.status_code == 200
+        series_search_data = resp_series_search.json()
+        assert series_search_data["total"] == 1
+        assert series_search_data["books"][0]["id"] == 90103
+        assert series_search_data["books"][0]["file_size"] == 4096
+
+        resp_id_search = await client.get("/admin/api/books/search?query=90103", headers=headers)
+        assert resp_id_search.status_code == 200
+        assert resp_id_search.json()["total"] == 1
+        assert resp_id_search.json()["books"][0]["name"] == "The Way of Kings"
 
         # 6. Logs API (/admin/api/logs and /admin/api/logs/clear)
         resp_api_logs = await client.get("/admin/api/logs", headers=headers)

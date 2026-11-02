@@ -64,6 +64,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - Added `POST /admin/api/image-compression/clear-cache` to immediately flush the in-memory page cache.
     - Hooked cache eviction into `release_memory()` to free RAM during storage optimization.
 
+### Changed
+- **Refactored Read Progress & KOReader Synchronization**:
+  - Consolidated `GrimmoryReadProgressRequest` payload construction (`build_grimmory_progress_request`) and asynchronous KOReader progress forwarding (`schedule_koreader_progress_sync`) in `app/services/koreader_utils.py`, eliminating duplicated synchronization logic across `komga_progress.py`, `komga_books.py`, and `koreader.py`.
+  - Extracted shared `_resolve_series_or_404` and `_clear_book_progress` helpers in `app/routers/komga_progress.py`.
+  - Unified `KNOWN_AUTHOR_ROLES` constant definition in `app/services/filter_utils.py` and reused `parse_raw_json` across services.
+
+### Fixed
+- **Dashboard Action Buttons (`Sync Catalog` & `Refresh All`)**: Fixed missing JavaScript handler bindings (`triggerMetadataSync` and `triggerPurgeAndRefresh`) in `app/static/app.js` that prevented the top status bar buttons on `/admin` from triggering metadata synchronization or catalog purge-and-refresh.
+- **Live Runtime Settings Propagation (`POST /admin/api/settings`)**:
+  - Added `GrimmoryClient.update_base_url()` so updating `grimmory_url` at runtime also updates the underlying `httpx.AsyncClient.base_url` and invalidates `_sync_token` and `_sync_token_expires_at`.
+  - Updated `SyncService.start_background_loop` and `UserSyncService.start_background_loop` to evaluate `sync_interval_minutes` and `user_sync_interval_minutes` dynamically on each iteration instead of exiting permanently when initialized to `0`.
+  - Propagated live updates for `cache_ttl`, `thumbnails_dir`, `image_cache_memory_max_items`, `image_cache_disk_dir`, Jinja2 template globals, and root logger level when saving settings.
+- **Book Explorer Search by Series Name & Book ID**: Fixed `Database.get_books_list` search filtering to match series name (`s.name LIKE ?`) and exact numeric book ID (`b.id = ?`) in addition to book title, and fixed `file_size_kb` field mapping in `GET /admin/api/books/search`.
+- **Series Metadata Backfill Author Upsert**: Fixed `ON CONFLICT(library_id, name, role)` target in `Database.connect()` series metadata backfill migration to match the composite primary key of the `authors` table.
+- **Test Suite HTTPX Cookie Deprecation Warnings**: Updated `AsyncClient` instantiations in test suites to pass `cookies` at client initialization rather than per-request, eliminating all `DeprecationWarning` emissions.
+
 ### Dependencies
 - Bumped `fastapi` from `>=0.158.1` to `>=0.162.0`.
 - Bumped `pydantic-settings` from `>=2.16.1` to `>=2.16.2`.

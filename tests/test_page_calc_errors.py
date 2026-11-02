@@ -182,16 +182,16 @@ async def test_admin_api_page_calc_errors_endpoints():
     cookies = {"admin_session": "tok_error_tester"}
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url="http://test", cookies=cookies) as client:
         # 1. GET /admin/api/page-calc/errors
-        res = await client.get("/admin/api/page-calc/errors", cookies=cookies)
+        res = await client.get("/admin/api/page-calc/errors")
         assert res.status_code == 200
         data = res.json()
         assert data["total"] >= 1
         assert any(e["book_id"] == 999 for e in data["errors"])
 
         # 2. GET /admin/api/status should include page_calc_errors and page_calc_logs
-        res_status = await client.get("/admin/api/status", cookies=cookies)
+        res_status = await client.get("/admin/api/status")
         assert res_status.status_code == 200
         status_data = res_status.json()
         assert "page_calc_errors" in status_data
@@ -199,22 +199,22 @@ async def test_admin_api_page_calc_errors_endpoints():
         assert "page_calc_logs" in status_data
 
         # 3. GET /admin/api/logs should include page_calc_logs
-        res_logs = await client.get("/admin/api/logs", cookies=cookies)
+        res_logs = await client.get("/admin/api/logs")
         assert res_logs.status_code == 200
         logs_data = res_logs.json()
         assert "page_calc_logs" in logs_data
 
         # 4. GET /stats should render the Problematic Files section
-        res_stats = await client.get("/stats", cookies=cookies)
+        res_stats = await client.get("/stats")
         assert res_stats.status_code == 200
         assert "Problematic Files & Calculation Errors" in res_stats.text
         assert "Damaged PDF" in res_stats.text
 
         # 5. POST /admin/api/page-calc/errors/clear
-        res_clear = await client.post("/admin/api/page-calc/errors/clear", cookies=cookies)
+        res_clear = await client.post("/admin/api/page-calc/errors/clear")
         assert res_clear.status_code == 200
         assert res_clear.json()["status"] == "cleared"
 
         # Verify cleared
-        res_after = await client.get("/admin/api/page-calc/errors", cookies=cookies)
+        res_after = await client.get("/admin/api/page-calc/errors")
         assert res_after.json()["total"] == 0

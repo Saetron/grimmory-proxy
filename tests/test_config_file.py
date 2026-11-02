@@ -103,9 +103,9 @@ async def test_admin_settings_webui_and_api(tmp_path, monkeypatch):
     cookies = {"admin_session": "tok_settings_tester"}
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url="http://test", cookies=cookies) as client:
         # 1. GET /settings HTML page
-        resp_html = await client.get("/settings", cookies=cookies)
+        resp_html = await client.get("/settings")
         assert resp_html.status_code == 200
         assert "Configuration & Bridge Settings" in resp_html.text
         assert "config.json" in resp_html.text
@@ -119,24 +119,33 @@ async def test_admin_settings_webui_and_api(tmp_path, monkeypatch):
         assert "raw_json" in data
 
         # 3. POST /admin/api/settings update
-        resp_post = await client.post(
-            "/admin/api/settings",
-            json={
-                "settings": {
-                    "sync_interval_minutes": 18,
-                    "image_compression_enabled": True,
-                    "image_compression_quality": 88,
-                }
-            },
-            headers=headers,
-        )
-        assert resp_post.status_code == 200
-        post_data = resp_post.json()
-        assert post_data["success"] is True
-        assert post_data["settings"]["sync_interval_minutes"] == 18
-        assert post_data["settings"]["image_compression_quality"] == 88
+        from app.clients.grimmory import grimmory_client
+        orig_url = settings.grimmory_url
+        try:
+            resp_post = await client.post(
+                "/admin/api/settings",
+                json={
+                    "settings": {
+                        "grimmory_url": "http://grimmory-updated:6060/",
+                        "sync_interval_minutes": 18,
+                        "image_compression_enabled": True,
+                        "image_compression_quality": 88,
+                    }
+                },
+                headers=headers,
+            )
+            assert resp_post.status_code == 200
+            post_data = resp_post.json()
+            assert post_data["success"] is True
+            assert post_data["settings"]["sync_interval_minutes"] == 18
+            assert post_data["settings"]["image_compression_quality"] == 88
+            assert grimmory_client.base_url == "http://grimmory-updated:6060"
+            assert str(grimmory_client._http_client.base_url).rstrip("/") == "http://grimmory-updated:6060"
 
-        # Verify disk file was updated
-        disk_data = json.loads(test_cfg_path.read_text(encoding="utf-8"))
-        assert disk_data["sync_interval_minutes"] == 18
-        assert disk_data["image_compression_quality"] == 88
+            # Verify disk file was updated
+            disk_data = json.loads(test_cfg_path.read_text(encoding="utf-8"))
+            assert disk_data["sync_interval_minutes"] == 18
+            assert disk_data["image_compression_quality"] == 88
+        finally:
+            settings.grimmory_url = orig_url
+            grimmory_client.update_base_url(orig_url)
