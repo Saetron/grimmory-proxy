@@ -204,7 +204,7 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
             user=user,
         )
 
-    @router.api_route("/api/v1/books/ondeck", methods=["GET", "POST"], response_model=PageableDto[BookDto])
+    @router.get("/api/v1/books/ondeck", response_model=PageableDto[BookDto], operation_id="get_books_ondeck")
     async def get_books_ondeck(
         request: Request,
         page: int = Query(0, ge=0),
@@ -224,7 +224,16 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
         content = [KomgaMapper.to_book_dto(r) for r in records]
         return build_pageable(content, page, size, total)
 
-    @router.api_route("/api/v1/books/latest", methods=["GET", "POST"], response_model=PageableDto[BookDto])
+    @router.post("/api/v1/books/ondeck", response_model=PageableDto[BookDto], operation_id="get_books_ondeck_post")
+    async def get_books_ondeck_post(
+        request: Request,
+        page: int = Query(0, ge=0),
+        size: int = Query(20, ge=1),
+        user: UserSession = Depends(AuthService.require_user),
+    ) -> PageableDto[BookDto]:
+        return await get_books_ondeck(request, page, size, user)
+
+    @router.get("/api/v1/books/latest", response_model=PageableDto[BookDto], operation_id="get_books_latest")
     async def get_books_latest(
         request: Request,
         page: int = Query(0, ge=0),
@@ -246,7 +255,16 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
         content = [KomgaMapper.to_book_dto(r) for r in records]
         return build_pageable(content, page, size, total)
 
-    @router.api_route("/api/v1/books/released", methods=["GET", "POST"], response_model=PageableDto[BookDto])
+    @router.post("/api/v1/books/latest", response_model=PageableDto[BookDto], operation_id="get_books_latest_post")
+    async def get_books_latest_post(
+        request: Request,
+        page: int = Query(0, ge=0),
+        size: int = Query(20, ge=1),
+        user: UserSession = Depends(AuthService.require_user),
+    ) -> PageableDto[BookDto]:
+        return await get_books_latest(request, page, size, user)
+
+    @router.get("/api/v1/books/released", response_model=PageableDto[BookDto], operation_id="get_books_released")
     async def get_books_released(
         request: Request,
         page: int = Query(0, ge=0),
@@ -267,6 +285,15 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
         )
         content = [KomgaMapper.to_book_dto(r) for r in records]
         return build_pageable(content, page, size, total)
+
+    @router.post("/api/v1/books/released", response_model=PageableDto[BookDto], operation_id="get_books_released_post")
+    async def get_books_released_post(
+        request: Request,
+        page: int = Query(0, ge=0),
+        size: int = Query(20, ge=1),
+        user: UserSession = Depends(AuthService.require_user),
+    ) -> PageableDto[BookDto]:
+        return await get_books_released(request, page, size, user)
 
     @router.get("/api/v1/books/{book_id}", response_model=BookDto)
     async def get_book_by_id(

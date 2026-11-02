@@ -15,6 +15,7 @@ nav = [
   { "Deployment & Proxy" = "deployment.md" },
   { "Configuration" = "configuration.md" },
   { "API Endpoints" = "endpoints.md" },
+  { "Interactive API" = "api-reference.md" },
   { "Architecture & Dev" = "development.md" },
   { "Changelog" = "changelog.md" },
 ]

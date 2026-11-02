@@ -179,9 +179,14 @@ async def set_cookie_login(
     return _map_user_to_dto(user)
 
 
-@router.api_route("/api/logout", methods=["GET", "POST"])
+@router.get("/api/logout", status_code=status.HTTP_204_NO_CONTENT, operation_id="logout_get")
 async def logout(response: Response) -> Response:
     for name in ["KOMGA-SESSION", "SESSION", "remember-me"]:
         response.delete_cookie(key=name)
     response.status_code = status.HTTP_204_NO_CONTENT
     return response
+
+
+@router.post("/api/logout", status_code=status.HTTP_204_NO_CONTENT, operation_id="logout_post")
+async def logout_post(response: Response) -> Response:
+    return await logout(response)

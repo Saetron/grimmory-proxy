@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <title>grimmory-proxy API Reference</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <script id="api-reference"></script>
+    <script>
+      const specUrl = new URL("openapi.json", window.location.href).href;
+      const ref = document.getElementById("api-reference");
+      ref.setAttribute("data-url", specUrl);
+      ref.setAttribute(
+        "data-configuration",
+        JSON.stringify({
+          theme: "deepSpace",
+          darkMode: true,
+          searchHotKey: "k",
+          showSidebar: true,
+        })
+      );
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/@scalar/api-reference"></script>
+  </body>
+</html>

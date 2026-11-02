@@ -10,9 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Interactive OpenAPI Reference & Static Export**: Added `docs/openapi.json` (exporting all 129+ Komga and Admin WebUI endpoints), `docs/scalar.html` (interactive search and exploration via Scalar API Reference), and `docs/api-reference.md` integrated directly into the Zensical documentation site.
 - **Full-Stack Deployment & Reverse Proxy Guide**: Added `docs/deployment.md` and `docker-compose.stack.example.yml` detailing production multi-container setup with Grimmory, alongside ready-to-use Caddy, Nginx (with streaming buffer optimizations), and Traefik reverse proxy configurations.
 - **Reader Client Setup Documentation**: Added comprehensive setup guides in `docs/clients.md` covering Mihon/Tachiyomi, Panels (iOS), Komic (Android/Flutter), Paperback, and Kuro Reader with connection troubleshooting and feature compatibility matrix.
 - **Automated GitHub Release Publishing**: Added step in `.github/workflows/ci.yml` to automatically create or update GitHub Releases with notes extracted from `CHANGELOG.md` whenever a release build workflow finishes.
+
+### Fixed
+- **FastAPI Duplicate Operation IDs**: Explicitly defined distinct `operation_id` values and dedicated handlers for dual-method GET/POST endpoints (`/api/logout`, `/api/v1/books/ondeck`, `/api/v1/books/latest`, `/api/v1/books/released`), resolving duplicate OpenAPI operation warnings.
 
 ## [1.12] - 2026-11-02
 
