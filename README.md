@@ -5,8 +5,6 @@
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED.svg)](https://www.docker.com/)
 [![Version](https://img.shields.io/badge/Version-v1.11-orange.svg)](VERSION)
 [![Komga API](https://img.shields.io/badge/Komga%20API-v1.12.0-orange.svg)](https://komga.org/)
-[![Theme](https://img.shields.io/badge/Theme-Grimmory%20Design-f97316.svg)](https://grimmory.org/)
-[![Changelog](https://img.shields.io/badge/Changelog-Keep%20a%20Changelog-blue.svg)](CHANGELOG.md)
 
 A high-performance Python and Docker proxy/bridge that translates the **[Grimmory API](https://grimmory.org/api/)** into the complete **[Komga API v1.12.0 specification](https://raw.githubusercontent.com/gotson/komga/refs/heads/master/komga/docs/openapi.json)**, restoring seamless compatibility for any Komga-compatible reader application—including **Mihon / Tachiyomi**, **Panels**, **Komic**, **Paperback**, and **Kuro Reader**—following Grimmory's deprecation of its native Komga endpoint.
 
@@ -56,13 +54,19 @@ A high-performance Python and Docker proxy/bridge that translates the **[Grimmor
     - `/author/{id}` &rarr; `{public_grimmory_url}/author/{authorId}`
   - Komga DTOs include `metadata.links` pointing directly to Grimmory for one-click navigation in supported readers.
 
-- **Grimmory-Themed Admin Management WebUI**:
+- **On-the-Fly Reader Image Compression & Zero-SSD In-Memory Caching**:
+  - Dynamically transcodes and compresses oversized comic and manga pages to modern formats (`webp`, `jpeg`, or original) on request to drastically reduce transfer payloads over mobile or slow networks.
+  - Zero disk wear option (`IMAGE_CACHE_TYPE=memory`) maintains an in-RAM LRU cache for compressed pages without writing temporary files to SSD storage.
+  - Configurable quality, max dimensions, and minimum file size threshold (`IMAGE_COMPRESSION_MIN_SIZE_KB`).
+
+- **Modular Grimmory-Themed Admin WebUI**:
   - Designed with Grimmory's official visual identity, dark obsidian palette, and warm orange accents.
-  - Password-protected dashboard (`/admin`) restricted exclusively to **Grimmory Administrators**.
-  - Real-time catalog metrics: Libraries, series, books, format distribution, cache sizes, memory usage, and page calculation progress.
-  - **Connected Readers Management**: View all readers connected through the bridge with library access lists, read progress counts, and online indicators; trigger individual user syncs or purge cached user data on demand.
-  - Interactive controls to trigger missing page calculations, recalculate all books, or initiate background catalog and read progress syncs with live terminal logs.
-  - On-demand storage optimization and memory reclamation action.
+  - Password-protected interface (`/admin`) restricted exclusively to **Grimmory Administrators**.
+  - **Dashboard (`/admin`)**: Clean system health and synchronization status overview with a live debounced book query explorer to instantly search and inspect cached books across libraries.
+  - **Statistics (`/stats`)**: Deep catalog metrics, library breakdowns, format distribution, cache sizes, memory usage, and page calculation engine controls.
+  - **Connected Readers (`/users`)**: Connected reader directory with library access lists, read progress counts, and online indicators; trigger individual user syncs or purge cached user data on demand.
+  - **Live Streaming Logs (`/logs`)**: Multi-stream terminal supporting metadata sync, read progress sync, and server logs, capped at 200 lines per stream to prevent browser memory consumption.
+  - **Persistent Settings (`/settings`)**: Runtime configuration management backed by a persistent `config.json` file created on first boot that takes precedence over environment variables and supports live UI editing.
 
 - **Performance, Concurrency & Memory Management**:
   - Persistent SQLite database in WAL mode (`aiosqlite`) with centralized write serialization (`Database.write_db`) to prevent `database is locked` concurrency errors.
@@ -234,7 +238,15 @@ A high-performance Python and Docker proxy/bridge that translates the **[Grimmor
 
 ### Admin WebUI & Management API
 - `GET /admin/login`, `POST /admin/login` - Secure sign-in page for Grimmory Administrators.
-- `GET /admin` / `GET /dashboard` - Interactive statistics, health indicators, connected users panel, and control panel.
+- `GET /admin` / `GET /dashboard` - Dashboard with operational bridge overview, sync status, and interactive book search explorer.
+- `GET /stats` - Comprehensive catalog KPIs, format distribution, storage metrics, and page calculation engine controls.
+- `GET /users` - Connected reader users directory with library access, reading progress statistics, and sync/purge actions.
+- `GET /logs` - Multi-stream terminal logs (metadata sync, user read sync, server logs) capped at 200 lines.
+- `GET /settings` - Persistent configuration manager for live editing and raw JSON inspection.
+- `GET /admin/api/books/search` - Search and inspect books available in the proxy cache.
+- `GET /admin/api/logs` - Fetch the last 200 lines across log streams.
+- `POST /admin/api/logs/clear` - Clear selected log buffer (`metadata`, `read_sync`, or `server`).
+- `GET /admin/api/settings`, `POST /admin/api/settings` - Retrieve or update runtime persistent configuration.
 - `GET /admin/api/users` - List connected reader users with library access, reading progress statistics, and online indicators.
 - `POST /admin/api/users/{id}/purge` - Permanently purge a user and delete all their cached read progress, settings, and sessions.
 - `POST /admin/api/users/{id}/sync` - Force an immediate on-demand Grimmory read progress sync for a specific user.
