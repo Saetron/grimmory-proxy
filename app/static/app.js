@@ -159,9 +159,12 @@ async function stopPageCalc(clickedBtn = null) {
   }
 }
 
-async function triggerSync() {
-  const btn = document.getElementById("btn-sync") || (window.event && window.event.target);
+async function triggerSync(clickedBtn = null) {
+  const btn = clickedBtn || document.getElementById("btn-sync") || (window.event && window.event.target);
   if (btn) {
+    if (!btn.dataset.originalHtml) {
+      btn.dataset.originalHtml = btn.innerHTML;
+    }
     btn.disabled = true;
     btn.innerText = "Syncing...";
   }
@@ -189,6 +192,8 @@ async function triggerSync() {
     pollStatus();
   }
 }
+
+const triggerMetadataSync = triggerSync;
 
 async function clearSyncLogs() {
   try {
@@ -262,6 +267,9 @@ async function purgeAndRefreshData(clickedBtn = null) {
       showCalcBanner(data.message || "Catalog and read progress purged. Fresh background sync started.", "success");
       pollStatus();
       refreshUsers();
+      if (typeof performBookSearch === "function") {
+        performBookSearch();
+      }
     } else {
       alert("Error: " + (data.detail || "Failed to purge and refresh data"));
     }
@@ -274,6 +282,8 @@ async function purgeAndRefreshData(clickedBtn = null) {
     }
   }
 }
+
+const triggerPurgeAndRefresh = purgeAndRefreshData;
 
 async function optimizeStorage(clickedBtn = null) {
   const btn = clickedBtn || document.getElementById("btn-optimize-storage");
@@ -389,13 +399,19 @@ async function pollStatus() {
           syncBadge.className = "status-badge status-running";
         }
         if (syncBtn) {
+          if (!syncBtn.dataset.originalHtml) {
+            syncBtn.dataset.originalHtml = syncBtn.innerHTML;
+          }
           syncBtn.disabled = true;
           syncBtn.innerText = "Syncing...";
         }
       } else {
         if (syncBtn && syncBtn.disabled) {
           syncBtn.disabled = false;
-          syncBtn.innerText = "🔄 Sync Metadata Now";
+          syncBtn.innerHTML = syncBtn.dataset.originalHtml || "🔄 Sync Metadata Now";
+          if (typeof performBookSearch === "function") {
+            performBookSearch();
+          }
         }
         if (syncBadge) {
           if (syncStatus.error_message) {

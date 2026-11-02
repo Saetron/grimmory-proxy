@@ -1866,8 +1866,13 @@ class Database:
             conditions.append(f"({' OR '.join(series_clauses)})")
 
         if search:
-            conditions.append("b.name LIKE ?")
-            params.append(f"%{search}%")
+            like_val = f"%{search}%"
+            if search.strip().isdigit():
+                conditions.append("(b.name LIKE ? OR s.name LIKE ? OR b.id = ?)")
+                params.extend([like_val, like_val, int(search.strip())])
+            else:
+                conditions.append("(b.name LIKE ? OR s.name LIKE ?)")
+                params.extend([like_val, like_val])
 
         if tags:
             tag_clauses = []
@@ -2015,8 +2020,10 @@ class Database:
 
         async with self.get_db() as db:
             db.row_factory = aiosqlite.Row
+            join_series_count = "LEFT JOIN series s ON b.series_id = s.id" if search else ""
             count_query = f"""
                 SELECT COUNT(*) as total FROM books b
+                {join_series_count}
                 {join_rp_clause}
                 {where_clause}
             """

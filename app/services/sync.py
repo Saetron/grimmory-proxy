@@ -370,15 +370,19 @@ class SyncService:
             await self.sync_all_metadata()
 
         if settings.sync_interval_minutes <= 0:
-            logger.info("Periodic sync is disabled (SYNC_INTERVAL_MINUTES=0)")
-            return
-
-        interval_sec = settings.sync_interval_minutes * 60
-        logger.info(f"Starting background sync scheduler with interval of {settings.sync_interval_minutes} minutes")
+            logger.info("Periodic sync is currently disabled (SYNC_INTERVAL_MINUTES=0)")
+        else:
+            logger.info(f"Starting background sync scheduler with interval of {settings.sync_interval_minutes} minutes")
 
         while True:
             try:
-                await asyncio.sleep(interval_sec)
+                interval_minutes = settings.sync_interval_minutes
+                if interval_minutes <= 0:
+                    await asyncio.sleep(60)
+                    continue
+                await asyncio.sleep(interval_minutes * 60)
+                if settings.sync_interval_minutes <= 0:
+                    continue
                 logger.info("Periodic sync interval elapsed, triggering sync...")
                 await self.sync_all_metadata()
             except asyncio.CancelledError:

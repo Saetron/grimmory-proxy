@@ -15,7 +15,7 @@ from app.config import settings
 from app.database import Database
 from app.models.internal import PageCalcStatus, UserSession
 from app.services.auth import AuthService
-from app.services.cache import thumbnail_cache
+from app.services.cache import memory_cache, thumbnail_cache
 from app.services.image_compressor import image_compressor
 from app.services.log_buffer import proxy_log_handler
 from app.services.page_calculator import PageCalculator
@@ -776,20 +776,28 @@ def get_admin_router(
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Settings payload must be a JSON object")
 
         old_grimmory_url = settings.grimmory_url
-        old_sync_interval = settings.sync_interval_minutes
-        old_user_sync_interval = settings.user_sync_interval_minutes
+        old_sync_creds = (settings.sync_username, settings.sync_password)
 
         updated_dict = settings.save_config_file(updates)
 
         # Propagate dynamic changes to live singletons
         if settings.grimmory_url != old_grimmory_url:
-            grimmory_client.base_url = settings.grimmory_url
-            grimmory_client._cached_token = None
-        if settings.sync_interval_minutes != old_sync_interval:
-            sync_service.interval = settings.sync_interval_minutes
-        if settings.user_sync_interval_minutes != old_user_sync_interval:
-            user_sync.interval = settings.user_sync_interval_minutes
+            grimmory_client.update_base_url(settings.grimmory_url)
+        elif (settings.sync_username, settings.sync_password) != old_sync_creds:
+            grimmory_client._sync_token = None
+            grimmory_client._sync_token_expires_at = None
+
+        templates.env.globals["grimmory_url"] = settings.grimmory_url
+        templates.env.globals["grimmory_public_url"] = settings.public_grimmory_url
+        memory_cache.ttl = settings.cache_ttl
+        thumbnail_cache.base_dir = Path(settings.thumbnails_dir)
+        image_compressor.memory_cache.max_items = settings.image_cache_memory_max_items
+        image_compressor.disk_cache.base_dir = Path(settings.image_cache_disk_dir)
         image_compressor.clear_cache()
+
+        log_level = getattr(logging, settings.log_level.upper(), None)
+        if isinstance(log_level, int):
+            logging.getLogger().setLevel(log_level)
 
         logger.info(f"Admin '{user.username}' saved configuration to {settings.resolve_config_path()}")
         return {
@@ -831,7 +839,7 @@ def get_admin_router(
                 "number": r.get("number", 0.0),
                 "book_type": r.get("book_type") or "EPUB",
                 "page_count": r.get("page_count", 0),
-                "file_size": r.get("file_size", 0),
+                "file_size": r.get("file_size_kb", 0) or r.get("file_size", 0),
                 "library_id": r.get("library_id"),
                 "user_completed": bool(r.get("user_completed")),
                 "user_page": r.get("user_page", 0),

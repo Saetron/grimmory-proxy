@@ -33,6 +33,15 @@ class GrimmoryClient:
     async def close(self) -> None:
         await self._http_client.aclose()
 
+    def update_base_url(self, new_url: str) -> None:
+        """Updates the target Grimmory base URL and resets cached sync authentication."""
+        cleaned = new_url.rstrip("/")
+        self.base_url = cleaned
+        self._http_client.base_url = httpx.URL(cleaned)
+        self._sync_token = None
+        self._sync_token_expires_at = None
+        self._user_favorites_cache.clear()
+
     # ---------------- Authentication ----------------
 
     async def login(self, username: str, password: str, timeout: float = 15.0) -> GrimmoryLoginResponse:

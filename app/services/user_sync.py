@@ -132,13 +132,10 @@ class UserSyncService:
         """
         Starts periodic background loop syncing read states for all active users.
         """
-        interval_minutes = settings.user_sync_interval_minutes
-        if interval_minutes <= 0:
-            logger.info("Periodic user read status sync is disabled (USER_SYNC_INTERVAL_MINUTES=0)")
-            return
-
-        interval_sec = interval_minutes * 60
-        logger.info(f"Starting periodic user read status sync scheduler every {interval_minutes} minutes")
+        if settings.user_sync_interval_minutes <= 0:
+            logger.info("Periodic user read status sync is currently disabled (USER_SYNC_INTERVAL_MINUTES=0)")
+        else:
+            logger.info(f"Starting periodic user read status sync scheduler every {settings.user_sync_interval_minutes} minutes")
 
         # Initial delay before the first periodic cycle so startup metadata sync finishes
         try:
@@ -149,9 +146,13 @@ class UserSyncService:
 
         while True:
             try:
+                interval_minutes = settings.user_sync_interval_minutes
+                if interval_minutes <= 0:
+                    await asyncio.sleep(60)
+                    continue
                 logger.info("Periodic user read status sync interval elapsed, checking users...")
                 await self.sync_all_active_users()
-                await asyncio.sleep(interval_sec)
+                await asyncio.sleep(settings.user_sync_interval_minutes * 60 if settings.user_sync_interval_minutes > 0 else 60)
             except asyncio.CancelledError:
                 logger.info("Periodic user read status sync task cancelled")
                 break
