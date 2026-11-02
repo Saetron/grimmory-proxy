@@ -7,6 +7,88 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+## [1.12] - 2026-11-02
+
+### Added
+- **Page Calculation Error Tracking & Book File Validation**:
+  - **Persistent Problematic Files Table (`page_calc_errors`)**:
+    - Automatically records calculation and inspection failures (e.g., corrupt CBZ/EPUB archives, unreadable PDFs, zero-byte downloads, or timeouts) with book ID, title, series name, library ID, format, exact file path on disk, and specific error reason.
+    - Prevents false-positive page counts (no longer defaults corrupted archives or zero-byte files to 1 page).
+    - Automatically deletes resolved error records when a book is successfully recalculated and enriched.
+  - **WebUI Problematic Book Files Inspection Panel (`/stats`)**:
+    - Added dedicated "Problematic Files & Calculation Errors" panel in the Statistics & Page Engine page with instant issue badges.
+    - Displays detailed table including direct link to book, series name, format, disk file path in `<code>` block, failure reason, and occurrence timestamp.
+    - Added "Retry Failed Files" action to run targeted page calculation exclusively on books with recorded errors (`POST /admin/api/calculate-pages` with `retry_failed_only: true`).
+    - Added "Clear Error History" action (`POST /admin/api/page-calc/errors/clear`) to reset error history.
+  - **Live Page Calculation Streaming Logs (`/logs`)**:
+    - Added dedicated "Page Calculation & Errors" tab in the live logs viewer, backed by an in-memory ring buffer capped at 200 lines.
+    - Streams inspection events, calculation successes, timeouts, and highlighted error messages in real time.
+    - Exposed programmatic endpoints `GET /admin/api/page-calc/errors` and `POST /admin/api/logs/clear` for page calculation logs.
+- **Full WebUI Rework & Modular Page Architecture**:
+  - **Clean Status & Book Query Explorer Dashboard (`/admin`, `/dashboard`)**:
+    - Redesigned the primary landing dashboard to focus on overall health/sync status and an interactive book search explorer.
+    - Added instant, debounced book querying by title, series, or ID (`GET /admin/api/books/search`) with library filtering, cover previews, and direct read links.
+  - **Dedicated Statistics & Page Engine Page (`/stats`)**:
+    - Moved overall KPI cards, format distribution breakdown, storage analytics, and page calculation triggers to a dedicated `/stats` interface.
+  - **Dedicated Connected Users Page (`/users`)**:
+    - Relocated connected reader clients and user read tracking management to a dedicated `/users` page.
+  - **Dedicated Live Logs Viewer (`/logs`)**:
+    - Created dedicated `/logs` stream viewer with tabbed categories: Proxy Application Logs, Catalog Metadata Sync Logs, and User Read Sync Logs.
+    - Capped log streams to the last 200 lines via ring buffer memory management (`RingBufferLogHandler`), preventing memory bloat.
+    - Added instant tab switching, auto-scroll toggle, auto-polling, and one-click log clearing (`POST /admin/api/logs/clear`).
+- **Persistent Configuration File (`config.json`) with WebUI Settings Management**:
+  - **First Startup Initialization**: On first launch, the proxy automatically generates a persistent `config.json` populated from environment variables and defaults.
+  - **File Precedence**: On all subsequent startups, `config.json` takes precedence over environment variables, allowing persistent in-app configuration.
+  - **New WebUI Settings Menu (`/settings`)**:
+    - Added dedicated `/settings` page in the admin interface accessible from the header navigation.
+    - Categorized configuration controls for Grimmory upstream connection, sync intervals, reader image compression, and storage.
+    - Live raw JSON viewer and editor for `config.json` with syntax validation.
+    - Exposed `GET /admin/api/settings` and `POST /admin/api/settings` for programmatic configuration management.
+    - Dynamic runtime updates for sync loops, Grimmory URL, and reader caches without restarting the container.
+- **On-The-Fly Reader Image Compression & Optimization**:
+  - Added async `ImageCompressor` service utilizing Pillow with non-blocking execution via `asyncio.to_thread`.
+  - Transcodes large comic/book page images to WebP or JPEG on demand, reducing transfer bandwidth and page loading latency for reader clients (Komic, Panels, Mihon, Tachiyomi, Kuro Reader).
+  - **Zero SSD Writes (In-Memory LRU Cache)**:
+    - Implemented `MemoryPageCache` (default `IMAGE_CACHE_TYPE="memory"`, max 150 pages) caching recently accessed compressed pages strictly in RAM.
+    - Page flips and back-and-forth reading hit RAM cache (<1ms) without inflicting write wear on SSD storage.
+  - **Smart Image Guard & Dimension Downscaling**:
+    - Optional `IMAGE_COMPRESSION_MAX_DIMENSION` (default 1920px) preserving aspect ratio using high-quality Lanczos resampling.
+    - `IMAGE_COMPRESSION_MIN_SIZE_KB` threshold (default 400KB) bypassing pages that are already lightweight to conserve CPU.
+    - Guard against negative compression (serves original if re-encoding yields larger file size).
+    - Robust color mode handling (CMYK conversion to RGB, alpha channel flattened against white background for JPEG).
+  - **Full Komga Protocol Parity**:
+    - Supports client-driven conversion via `GET /api/v1/books/{id}/pages/{pageNumber}?convert=webp` (or `jpeg`, `png`) regardless of whether global compression is enabled.
+  - **Admin WebUI Dashboard Controls**:
+    - Added Reader Compression status and In-Memory Page Cache metrics to the admin dashboard.
+    - Added `POST /admin/api/image-compression` to toggle compression and update quality/format at runtime.
+    - Added `POST /admin/api/image-compression/clear-cache` to immediately flush the in-memory page cache.
+    - Hooked cache eviction into `release_memory()` to free RAM during storage optimization.
+
+### Changed
+- **Refactored Read Progress & KOReader Synchronization**:
+  - Consolidated `GrimmoryReadProgressRequest` payload construction (`build_grimmory_progress_request`) and asynchronous KOReader progress forwarding (`schedule_koreader_progress_sync`) in `app/services/koreader_utils.py`, eliminating duplicated synchronization logic across `komga_progress.py`, `komga_books.py`, and `koreader.py`.
+  - Extracted shared `_resolve_series_or_404` and `_clear_book_progress` helpers in `app/routers/komga_progress.py`.
+  - Unified `KNOWN_AUTHOR_ROLES` constant definition in `app/services/filter_utils.py` and reused `parse_raw_json` across services.
+
+### Fixed
+- **Dashboard Action Buttons (`Sync Catalog` & `Refresh All`)**: Fixed missing JavaScript handler bindings (`triggerMetadataSync` and `triggerPurgeAndRefresh`) in `app/static/app.js` that prevented the top status bar buttons on `/admin` from triggering metadata synchronization or catalog purge-and-refresh.
+- **Live Runtime Settings Propagation (`POST /admin/api/settings`)**:
+  - Added `GrimmoryClient.update_base_url()` so updating `grimmory_url` at runtime also updates the underlying `httpx.AsyncClient.base_url` and invalidates `_sync_token` and `_sync_token_expires_at`.
+  - Updated `SyncService.start_background_loop` and `UserSyncService.start_background_loop` to evaluate `sync_interval_minutes` and `user_sync_interval_minutes` dynamically on each iteration instead of exiting permanently when initialized to `0`.
+  - Propagated live updates for `cache_ttl`, `thumbnails_dir`, `image_cache_memory_max_items`, `image_cache_disk_dir`, Jinja2 template globals, and root logger level when saving settings.
+- **Book Explorer Search by Series Name & Book ID**: Fixed `Database.get_books_list` search filtering to match series name (`s.name LIKE ?`) and exact numeric book ID (`b.id = ?`) in addition to book title, and fixed `file_size_kb` field mapping in `GET /admin/api/books/search`.
+- **Series Metadata Backfill Author Upsert**: Fixed `ON CONFLICT(library_id, name, role)` target in `Database.connect()` series metadata backfill migration to match the composite primary key of the `authors` table.
+- **Test Suite HTTPX Cookie Deprecation Warnings**: Updated `AsyncClient` instantiations in test suites to pass `cookies` at client initialization rather than per-request, eliminating all `DeprecationWarning` emissions.
+
+### Dependencies
+- Bumped `fastapi` from `>=0.158.1` to `>=0.162.0`.
+- Bumped `pydantic-settings` from `>=2.16.1` to `>=2.16.2`.
+- Bumped `pypdf` from `>=6.21.2` to `>=6.21.4`.
+- Bumped `pytest` from `>=9.1.1` to `>=9.2.0`.
+- Bumped `pytest-asyncio` from `>=1.4.0` to `>=1.4.1`.
+
 ## [1.11] - 2026-10-27
 
 ### Fixed & Performance
@@ -281,6 +363,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[1.12]: https://github.com/Saetron/grimmory-proxy/releases/tag/v1.12
 [1.11]: https://github.com/Saetron/grimmory-proxy/releases/tag/v1.11
 [1.10]: https://github.com/Saetron/grimmory-proxy/releases/tag/v1.10
 [1.9]: https://github.com/Saetron/grimmory-proxy/releases/tag/v1.9

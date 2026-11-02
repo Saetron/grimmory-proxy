@@ -11,14 +11,10 @@ import uuid
 import aiosqlite
 
 from app.config import settings
+from app.services.filter_utils import KNOWN_AUTHOR_ROLES
 from app.services.memory import release_memory
 
 logger = logging.getLogger("grimmory_proxy.database")
-
-KNOWN_AUTHOR_ROLES = {
-    "writer", "penciller", "inker", "colorist", "letterer",
-    "cover", "editor", "translator", "assistant",
-}
 
 SCHEMA_SQL = """
 PRAGMA journal_mode = WAL;
@@ -152,6 +148,21 @@ CREATE TABLE IF NOT EXISTS page_calc_jobs (
     completed_at TEXT,
     error_message TEXT
 );
+
+CREATE TABLE IF NOT EXISTS page_calc_errors (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id INTEGER,
+    book_id INTEGER NOT NULL UNIQUE,
+    book_title TEXT,
+    series_name TEXT,
+    library_id INTEGER,
+    book_type TEXT,
+    file_path TEXT,
+    error_message TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_page_calc_errors_book_id ON page_calc_errors (book_id);
+CREATE INDEX IF NOT EXISTS idx_page_calc_errors_created ON page_calc_errors (created_at DESC);
 
 CREATE TABLE IF NOT EXISTS api_keys (
     id TEXT PRIMARY KEY,
@@ -363,6 +374,26 @@ class Database:
             except Exception:
                 pass
 
+            try:
+                await db.execute("""
+                    CREATE TABLE IF NOT EXISTS page_calc_errors (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        job_id INTEGER,
+                        book_id INTEGER NOT NULL UNIQUE,
+                        book_title TEXT,
+                        series_name TEXT,
+                        library_id INTEGER,
+                        book_type TEXT,
+                        file_path TEXT,
+                        error_message TEXT NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                await db.execute("CREATE INDEX IF NOT EXISTS idx_page_calc_errors_book_id ON page_calc_errors (book_id)")
+                await db.execute("CREATE INDEX IF NOT EXISTS idx_page_calc_errors_created ON page_calc_errors (created_at DESC)")
+            except Exception as e:
+                logger.debug(f"page_calc_errors table initialization: {e}")
+
             # Backfill authors per library from books if not already done
             try:
                 chk_cur = await db.execute("SELECT value FROM sync_state WHERE key = 'authors_library_migrated_v2'")
@@ -434,7 +465,7 @@ class Database:
                         await db.execute("INSERT OR REPLACE INTO sync_state (key, value) VALUES ('series_metadata_backfilled_v1', 'true')")
                     else:
                         cursor = await db.execute("""
-                            SELECT s.id, s.raw_json, b.raw_json
+                            SELECT s.id, s.library_id, s.raw_json, b.raw_json
                             FROM series s
                             JOIN books b ON b.series_id = s.id
                             WHERE b.deleted = 0 AND b.raw_json IS NOT NULL
@@ -451,17 +482,17 @@ class Database:
                                 parse_raw_json,
                             )
 
-                            series_books: Dict[str, Tuple[str, List[Dict[str, Any]]]] = {}
-                            for sid, s_raw_str, b_raw_str in rows:
+                            series_books: Dict[str, Tuple[int, str, List[Dict[str, Any]]]] = {}
+                            for sid, s_lib_id, s_raw_str, b_raw_str in rows:
                                 if sid not in series_books:
-                                    series_books[sid] = (s_raw_str, [])
+                                    series_books[sid] = (s_lib_id or 1, s_raw_str, [])
                                 b_data = parse_raw_json(b_raw_str)
                                 if b_data:
-                                    series_books[sid][1].append(b_data)
+                                    series_books[sid][2].append(b_data)
 
                             series_updates = []
                             backfill_authors = set()
-                            for sid, (s_raw_str, b_list) in series_books.items():
+                            for sid, (s_lib_id, s_raw_str, b_list) in series_books.items():
                                 s_raw = parse_raw_json(s_raw_str)
 
                                 needs_update = not s_raw.get("authors") or not s_raw.get("publisher") or not s_raw.get("genres") or not s_raw.get("tags")
@@ -481,7 +512,7 @@ class Database:
 
                                     for b_data in b_list:
                                         for a in extract_authors_data(b_data):
-                                            backfill_authors.add((a["name"], a["role"]))
+                                            backfill_authors.add((s_lib_id, a["name"], a["role"]))
                                             if (a["name"].lower(), a["role"].lower()) not in authors_set:
                                                 authors_set.add((a["name"].lower(), a["role"].lower()))
                                                 authors_list.append(a)
@@ -517,7 +548,7 @@ class Database:
                                 await db.executemany("UPDATE series SET raw_json = ? WHERE id = ?", series_updates)
                             if backfill_authors:
                                 await db.executemany(
-                                    "INSERT INTO authors (name, role, count) VALUES (?, ?, 1) ON CONFLICT(name) DO UPDATE SET count = count + 1, role = COALESCE(excluded.role, authors.role)",
+                                    "INSERT INTO authors (library_id, name, role, count) VALUES (?, ?, ?, 1) ON CONFLICT(library_id, name, role) DO UPDATE SET count = count + 1",
                                     list(backfill_authors),
                                 )
                             await db.execute("INSERT OR REPLACE INTO sync_state (key, value) VALUES ('series_metadata_backfilled_v1', 'true')")
@@ -1831,8 +1862,13 @@ class Database:
             conditions.append(f"({' OR '.join(series_clauses)})")
 
         if search:
-            conditions.append("b.name LIKE ?")
-            params.append(f"%{search}%")
+            like_val = f"%{search}%"
+            if search.strip().isdigit():
+                conditions.append("(b.name LIKE ? OR s.name LIKE ? OR b.id = ?)")
+                params.extend([like_val, like_val, int(search.strip())])
+            else:
+                conditions.append("(b.name LIKE ? OR s.name LIKE ?)")
+                params.extend([like_val, like_val])
 
         if tags:
             tag_clauses = []
@@ -1980,8 +2016,10 @@ class Database:
 
         async with self.get_db() as db:
             db.row_factory = aiosqlite.Row
+            join_series_count = "LEFT JOIN series s ON b.series_id = s.id" if search else ""
             count_query = f"""
                 SELECT COUNT(*) as total FROM books b
+                {join_series_count}
                 {join_rp_clause}
                 {where_clause}
             """
@@ -2141,15 +2179,17 @@ class Database:
 
     async def get_books_missing_pages(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
         query = """
-            SELECT id, series_id, library_id, name, number, book_type, file_path, file_size_kb, page_count, deleted, released, created, last_modified
-            FROM books
-            WHERE deleted = 0
+            SELECT b.id, b.series_id, b.library_id, b.name, b.number, b.book_type, b.file_path, b.file_size_kb, b.page_count, b.deleted, b.released, b.created, b.last_modified,
+                   s.name as series_name
+            FROM books b
+            LEFT JOIN series s ON s.id = b.series_id
+            WHERE b.deleted = 0
               AND (
-                page_count IS NULL
-                OR page_count <= 0
-                OR NOT EXISTS (SELECT 1 FROM book_pages WHERE book_pages.book_id = books.id)
+                b.page_count IS NULL
+                OR b.page_count <= 0
+                OR NOT EXISTS (SELECT 1 FROM book_pages bp WHERE bp.book_id = b.id)
               )
-            ORDER BY id ASC
+            ORDER BY b.id ASC
         """
         if limit:
             query += f" LIMIT {limit}"
@@ -2161,10 +2201,28 @@ class Database:
 
     async def get_all_books_for_page_calc(self) -> List[Dict[str, Any]]:
         query = """
-            SELECT id, series_id, library_id, name, number, book_type, file_path, file_size_kb, page_count, deleted, released, created, last_modified
-            FROM books
-            WHERE deleted = 0
-            ORDER BY id ASC
+            SELECT b.id, b.series_id, b.library_id, b.name, b.number, b.book_type, b.file_path, b.file_size_kb, b.page_count, b.deleted, b.released, b.created, b.last_modified,
+                   s.name as series_name
+            FROM books b
+            LEFT JOIN series s ON s.id = b.series_id
+            WHERE b.deleted = 0
+            ORDER BY b.id ASC
+        """
+        async with self.get_db() as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(query)
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+    async def get_books_with_page_calc_errors(self) -> List[Dict[str, Any]]:
+        query = """
+            SELECT b.id, b.series_id, b.library_id, b.name, b.number, b.book_type, b.file_path, b.file_size_kb, b.page_count, b.deleted, b.released, b.created, b.last_modified,
+                   s.name as series_name
+            FROM books b
+            LEFT JOIN series s ON s.id = b.series_id
+            JOIN page_calc_errors pce ON pce.book_id = b.id
+            WHERE b.deleted = 0
+            ORDER BY b.id ASC
         """
         async with self.get_db() as db:
             db.row_factory = aiosqlite.Row
@@ -2354,6 +2412,71 @@ class Database:
                 "UPDATE page_calc_jobs SET status = 'stopped', current_book = 'Stopped (server restarted)' WHERE status = 'running'"
             )
             await db.commit()
+
+    # ---------------- Page Calculation Error Tracking ----------------
+
+    async def record_page_calc_error(
+        self,
+        book_id: int,
+        book_title: str,
+        series_name: Optional[str],
+        library_id: Optional[int],
+        book_type: Optional[str],
+        file_path: Optional[str],
+        error_message: str,
+        job_id: Optional[int] = None,
+    ) -> None:
+        async with self.write_db() as db:
+            await db.execute(
+                """
+                INSERT INTO page_calc_errors (
+                    job_id, book_id, book_title, series_name, library_id, book_type, file_path, error_message, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(book_id) DO UPDATE SET
+                    job_id = excluded.job_id,
+                    book_title = excluded.book_title,
+                    series_name = excluded.series_name,
+                    library_id = excluded.library_id,
+                    book_type = excluded.book_type,
+                    file_path = excluded.file_path,
+                    error_message = excluded.error_message,
+                    created_at = CURRENT_TIMESTAMP
+                """,
+                (job_id, book_id, book_title, series_name, library_id, book_type, file_path, error_message),
+            )
+            await db.commit()
+
+    async def get_page_calc_errors(self, limit: int = 100) -> List[Dict[str, Any]]:
+        async with self.get_db() as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT id, job_id, book_id, book_title, series_name, library_id, book_type, file_path, error_message, created_at
+                FROM page_calc_errors
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+    async def delete_page_calc_error(self, book_id: int) -> None:
+        async with self.write_db() as db:
+            await db.execute("DELETE FROM page_calc_errors WHERE book_id = ?", (book_id,))
+            await db.commit()
+
+    async def clear_page_calc_errors(self) -> None:
+        async with self.write_db() as db:
+            await db.execute("DELETE FROM page_calc_errors")
+            await db.commit()
+
+    async def get_page_calc_error_count(self) -> int:
+        async with self.get_db() as db:
+            cursor = await db.execute("SELECT COUNT(*) FROM page_calc_errors")
+            row = await cursor.fetchone()
+            return row[0] if row else 0
 
     # ---------------- Metadata Queries (Genres, Publishers, Tags, Authors) ----------------
 

@@ -23,6 +23,7 @@ from app.routers.komga_metadata import get_metadata_router
 from app.routers.komga_progress import get_progress_router
 from app.routers.komga_series import get_series_router
 from app.routers.koreader import get_koreader_router
+from app.services.log_buffer import proxy_log_handler
 from app.services.page_calculator import PageCalculator
 from app.services.sync import SyncService
 from app.services.user_sync import user_sync_service
@@ -33,6 +34,7 @@ logging.basicConfig(
     level=log_level,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
+logging.getLogger().addHandler(proxy_log_handler)
 logger = logging.getLogger("grimmory_proxy.main")
 
 # Database & Core Services

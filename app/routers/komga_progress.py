@@ -7,12 +7,6 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Response, status
 
 from app.clients.grimmory import grimmory_client
 from app.database import Database
-from app.models.grimmory import (
-    GrimmoryCbxProgress,
-    GrimmoryEpubProgress,
-    GrimmoryPdfProgress,
-    GrimmoryReadProgressRequest,
-)
 from app.models.internal import UserSession
 from app.models.komga import (
     ReadProgressDto,
@@ -21,8 +15,11 @@ from app.models.komga import (
     TachiyomiReadProgressUpdateV2Dto,
 )
 from app.services.auth import AuthService
-from app.services.koreader_utils import format_koreader_progress, resolve_koreader_doc_hash
-from app.services.mapper import KomgaMapper
+from app.services.koreader_utils import (
+    build_grimmory_progress_request,
+    schedule_koreader_progress_sync,
+)
+from app.services.mapper import KomgaMapper, parse_raw_json
 
 logger = logging.getLogger("grimmory_proxy.komga_progress")
 
@@ -32,14 +29,12 @@ async def _sync_series_books_read_to_grimmory(token: str, books: List[Dict[str, 
     book_ids = [b["id"] for b in books]
     for b in books:
         p_count = b.get("page_count", 0) or 1
-        req = GrimmoryReadProgressRequest(
-            bookId=b["id"],
-            cbxProgress=GrimmoryCbxProgress(page=p_count, percentage=100.0),
-            pdfProgress=GrimmoryPdfProgress(page=p_count, percentage=100.0),
-            epubProgress=GrimmoryEpubProgress(percentage=100.0),
-            dateFinished=date_finished,
-            readStatus="READ",
-            progressValid=True,
+        req = build_grimmory_progress_request(
+            book_id=b["id"],
+            page=p_count,
+            percentage=100.0,
+            completed=True,
+            timestamp=date_finished,
         )
         tasks.append(grimmory_client.update_read_progress(req, token=token))
     tasks.append(grimmory_client.update_read_status(book_ids, "READ", token=token))
@@ -56,18 +51,33 @@ def get_progress_router(db: Database) -> APIRouter:
     async def _resolve_book_page_count(book_id: int, record: Optional[Dict[str, Any]]) -> int:
         page_count = (record.get("page_count", 0) or 0) if record else 0
         if page_count <= 0 and record and record.get("raw_json"):
-            try:
-                raw_data = json.loads(record["raw_json"]) if isinstance(record["raw_json"], str) else record["raw_json"]
-                if isinstance(raw_data, dict):
-                    page_count = raw_data.get("metadata", {}).get("pageCount") or raw_data.get("pageCount") or 0
-            except Exception:
-                pass
+            raw_data = parse_raw_json(record["raw_json"])
+            if raw_data:
+                page_count = raw_data.get("metadata", {}).get("pageCount") or raw_data.get("pageCount") or 0
         if page_count <= 0:
             pages = await db.get_book_pages(book_id)
             if pages:
                 page_count = len(pages)
                 await db.update_book_page_count(book_id, page_count)
         return page_count if page_count > 0 else 1
+
+    async def _resolve_series_or_404(series_id: str, user_id: Optional[int] = None) -> Dict[str, Any]:
+        series = await db.get_series_by_id(series_id, user_id=user_id)
+        if not series:
+            series = await db.find_series_by_id_or_slug(series_id, user_id=user_id)
+        if not series:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Series not found")
+        return series
+
+    async def _clear_book_progress(user: UserSession, book_id: int) -> None:
+        await db.delete_read_progress(user_id=user.user_id, book_id=book_id)
+        await db.delete_r2_progression(user_id=user.user_id, book_id=book_id)
+        try:
+            success = await grimmory_client.reset_read_progress([book_id], token=user.token)
+            if not success:
+                logger.warning(f"Failed to reset progress on Grimmory for book {book_id} and user {user.username}")
+        except Exception as e:
+            logger.warning(f"Error resetting progress on Grimmory for book {book_id}: {e}")
 
     # ---------------- Standard Komga Book Read Progress ----------------
 
@@ -113,12 +123,7 @@ def get_progress_router(db: Database) -> APIRouter:
 
         # Check if marking unread
         if dto.completed is False and (dto.page is None or dto.page <= 0):
-            await db.delete_read_progress(user_id=user.user_id, book_id=book_id)
-            await db.delete_r2_progression(user_id=user.user_id, book_id=book_id)
-            try:
-                await grimmory_client.reset_read_progress([book_id], token=user.token)
-            except Exception as e:
-                logger.warning(f"Failed to reset progress on Grimmory for book {book_id}: {e}")
+            await _clear_book_progress(user, book_id)
             return Response(status_code=status.HTTP_204_NO_CONTENT)
 
         # Determine completion and page position according to Komga & reader application behavior
@@ -151,7 +156,6 @@ def get_progress_router(db: Database) -> APIRouter:
             page_num = page_count if page_count > 1 else page_num
 
         now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        date_finished = now_str if completed else None
 
         # Save to proxy database immediately for instant responsiveness on home screen
         await db.upsert_read_progress(
@@ -162,15 +166,12 @@ def get_progress_router(db: Database) -> APIRouter:
             read_date=now_str,
         )
 
-        req = GrimmoryReadProgressRequest(
-            bookId=book_id,
-            cbxProgress=GrimmoryCbxProgress(page=page_num, percentage=percentage, lastRead=now_str),
-            pdfProgress=GrimmoryPdfProgress(page=page_num, percentage=percentage, lastRead=now_str),
-            epubProgress=GrimmoryEpubProgress(percentage=percentage, lastRead=now_str),
-            dateFinished=date_finished,
-            readStatus="READ" if completed else "READING",
-            lastRead=now_str,
-            progressValid=True,
+        req = build_grimmory_progress_request(
+            book_id=book_id,
+            page=page_num,
+            percentage=percentage,
+            completed=completed,
+            timestamp=now_str,
         )
 
         try:
@@ -181,22 +182,7 @@ def get_progress_router(db: Database) -> APIRouter:
         except Exception as e:
             logger.warning(f"Error calling Grimmory update_read_progress for book {book_id}: {e}")
 
-        # Forward reading progress to Grimmory KOReader endpoint as well
-        try:
-            doc_hash = resolve_koreader_doc_hash(record or {"id": book_id})
-            koreader_prog_str = format_koreader_progress(
-                record.get("book_type") if record else None, page_num, page_count, percentage
-            )
-            asyncio.create_task(
-                grimmory_client.update_koreader_progress(
-                    doc_hash,
-                    koreader_prog_str,
-                    percentage / 100.0,
-                    token=user.token,
-                )
-            )
-        except Exception as e:
-            logger.debug(f"Could not forward KOReader progress: {e}")
+        schedule_koreader_progress_sync(record, book_id, page_num, page_count, percentage, user.token)
 
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -205,15 +191,7 @@ def get_progress_router(db: Database) -> APIRouter:
         book_id: int,
         user: UserSession = Depends(AuthService.require_user),
     ) -> Response:
-        await db.delete_read_progress(user_id=user.user_id, book_id=book_id)
-        await db.delete_r2_progression(user_id=user.user_id, book_id=book_id)
-        try:
-            success = await grimmory_client.reset_read_progress([book_id], token=user.token)
-            if not success:
-                logger.warning(f"Failed to reset progress on Grimmory for book {book_id} and user {user.username}")
-        except Exception as e:
-            logger.warning(f"Error resetting progress on Grimmory for book {book_id}: {e}")
-
+        await _clear_book_progress(user, book_id)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     # ---------------- Series Read Progress Endpoints ----------------
@@ -229,11 +207,7 @@ def get_progress_router(db: Database) -> APIRouter:
         """
         Mark all books for a series as read (or unread if completed=False).
         """
-        series = await db.get_series_by_id(series_id)
-        if not series:
-            series = await db.find_series_by_id_or_slug(series_id)
-        if not series:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Series not found")
+        series = await _resolve_series_or_404(series_id)
 
         books = await db.get_books_by_series(series["id"])
         if not books:
@@ -275,11 +249,7 @@ def get_progress_router(db: Database) -> APIRouter:
         """
         Mark all books in a series as unread.
         """
-        series = await db.get_series_by_id(series_id)
-        if not series:
-            series = await db.find_series_by_id_or_slug(series_id)
-        if not series:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Series not found")
+        series = await _resolve_series_or_404(series_id)
 
         books = await db.get_books_by_series(series["id"])
         if not books:
@@ -300,11 +270,7 @@ def get_progress_router(db: Database) -> APIRouter:
         series_id: str,
         user: UserSession = Depends(AuthService.require_user),
     ) -> TachiyomiReadProgressV2Dto:
-        series = await db.get_series_by_id(series_id, user_id=user.user_id)
-        if not series:
-            series = await db.find_series_by_id_or_slug(series_id, user_id=user.user_id)
-        if not series:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Series not found")
+        series = await _resolve_series_or_404(series_id, user_id=user.user_id)
 
         books = await db.get_books_by_series(series["id"])
         books_count = len(books)
@@ -331,11 +297,7 @@ def get_progress_router(db: Database) -> APIRouter:
         update_dto: TachiyomiReadProgressUpdateV2Dto,
         user: UserSession = Depends(AuthService.require_user),
     ) -> Response:
-        series = await db.get_series_by_id(series_id)
-        if not series:
-            series = await db.find_series_by_id_or_slug(series_id)
-        if not series:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Series not found")
+        series = await _resolve_series_or_404(series_id)
 
         books = await db.get_books_by_series(series["id"])
         if not books:
@@ -481,15 +443,14 @@ def get_progress_router(db: Database) -> APIRouter:
         )
 
         # 3. Synchronize to Grimmory backend
-        req = GrimmoryReadProgressRequest(
-            bookId=book_id,
-            cbxProgress=GrimmoryCbxProgress(page=page_num, percentage=percentage, lastRead=modified),
-            pdfProgress=GrimmoryPdfProgress(page=page_num, percentage=percentage, lastRead=modified),
-            epubProgress=GrimmoryEpubProgress(percentage=percentage, href=href, cfi=cfi, lastRead=modified),
-            dateFinished=modified if completed else None,
-            readStatus="READ" if completed else "READING",
-            lastRead=modified,
-            progressValid=True,
+        req = build_grimmory_progress_request(
+            book_id=book_id,
+            page=page_num,
+            percentage=percentage,
+            completed=completed,
+            timestamp=modified,
+            href=href,
+            cfi=cfi,
         )
         try:
             success = await grimmory_client.update_read_progress(req, token=user.token)
@@ -499,22 +460,7 @@ def get_progress_router(db: Database) -> APIRouter:
         except Exception as e:
             logger.warning(f"Error calling Grimmory update_read_progress for book {book_id}: {e}")
 
-        # Forward reading progress to Grimmory KOReader endpoint as well
-        try:
-            doc_hash = resolve_koreader_doc_hash(record or {"id": book_id})
-            koreader_prog_str = format_koreader_progress(
-                record.get("book_type") if record else None, page_num, page_count, percentage
-            )
-            asyncio.create_task(
-                grimmory_client.update_koreader_progress(
-                    doc_hash,
-                    koreader_prog_str,
-                    percentage / 100.0,
-                    token=user.token,
-                )
-            )
-        except Exception as e:
-            logger.debug(f"Could not forward KOReader progress: {e}")
+        schedule_koreader_progress_sync(record, book_id, page_num, page_count, percentage, user.token)
 
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -523,15 +469,7 @@ def get_progress_router(db: Database) -> APIRouter:
         book_id: int,
         user: UserSession = Depends(AuthService.require_user),
     ) -> Response:
-        await db.delete_read_progress(user_id=user.user_id, book_id=book_id)
-        await db.delete_r2_progression(user_id=user.user_id, book_id=book_id)
-        try:
-            success = await grimmory_client.reset_read_progress([book_id], token=user.token)
-            if not success:
-                logger.warning(f"Failed to reset progress on Grimmory for book {book_id} and user {user.username}")
-        except Exception as e:
-            logger.warning(f"Error resetting progress on Grimmory for book {book_id}: {e}")
-
+        await _clear_book_progress(user, book_id)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     return router

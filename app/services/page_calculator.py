@@ -3,6 +3,7 @@ import io
 import logging
 import re
 import zipfile
+from datetime import datetime, timezone
 from html import unescape
 from typing import Any, Dict, List, Optional, Tuple
 import httpx
@@ -28,10 +29,29 @@ class PageCalculator:
     def __init__(self, db: Database):
         self.db = db
         self.status = PageCalcStatus()
+        self.logs: List[str] = []
         self._stop_requested = False
         self._lock: Optional[asyncio.Lock] = None
         self._task: Optional[asyncio.Task] = None
         self._worker_tasks: List[asyncio.Task] = []
+
+    def log(self, message: str, level: str = "info") -> None:
+        timestamp = datetime.now(timezone.utc).strftime("%H:%M:%S")
+        line = f"[{timestamp}] {message}"
+        self.logs.append(line)
+        if len(self.logs) > 200:
+            self.logs = self.logs[-200:]
+        self.status.logs = list(self.logs)
+        if level == "error":
+            logger.error(message)
+        elif level == "warning":
+            logger.warning(message)
+        else:
+            logger.info(message)
+
+    def clear_logs(self) -> None:
+        self.logs.clear()
+        self.status.logs.clear()
 
     @property
     def lock(self) -> asyncio.Lock:
@@ -47,13 +67,15 @@ class PageCalculator:
             self.status.is_running = False
         return False
 
-    def start_calculation_job(self, missing_only: bool = True) -> bool:
+    def start_calculation_job(self, missing_only: bool = True, retry_failed_only: bool = False) -> bool:
         if self.is_running:
             return False
         self._stop_requested = False
         self.status.is_running = True
         self.status.status = "running"
-        self._task = asyncio.create_task(self.run_calculation_job(missing_only=missing_only))
+        self._task = asyncio.create_task(
+            self.run_calculation_job(missing_only=missing_only, retry_failed_only=retry_failed_only)
+        )
         return True
 
     async def request_stop(self) -> None:
@@ -111,6 +133,9 @@ class PageCalculator:
         Calculate page count for EPUB novel using Calibre's ADE algorithm.
         Standard ADE heuristic counts 1,024 uncompressed characters per page.
         """
+        if not epub_bytes:
+            raise ValueError("Empty book file received (0 bytes)")
+
         total_chars = 0
         try:
             with zipfile.ZipFile(io.BytesIO(epub_bytes)) as z:
@@ -130,8 +155,10 @@ class PageCalculator:
                             total_chars += len(text)
                         except Exception as e:
                             logger.debug(f"Error parsing chapter {name}: {e}")
+        except zipfile.BadZipFile as e:
+            raise ValueError(f"Corrupt EPUB archive (BadZipFile): {e}")
         except Exception as e:
-            logger.warning(f"Error reading EPUB archive: {e}")
+            raise ValueError(f"Failed to read EPUB archive: {e}")
 
         pages_count = max(1, round(total_chars / chars_per_page)) if total_chars > 0 else 1
         page_dtos = [
@@ -152,6 +179,9 @@ class PageCalculator:
         Calculate page count for CBZ/CBX: 1 image = 1 page.
         Also parses image dimensions for the first few pages.
         """
+        if not cbz_bytes:
+            raise ValueError("Empty book file received (0 bytes)")
+
         page_dtos: List[PageDto] = []
         try:
             with zipfile.ZipFile(io.BytesIO(cbz_bytes)) as z:
@@ -160,6 +190,9 @@ class PageCalculator:
                     n for n in z.namelist()
                     if not n.startswith("__MACOSX/") and any(n.lower().endswith(ext) for ext in IMAGE_EXTENSIONS)
                 ])
+
+                if not image_entries:
+                    raise ValueError("No valid image files found inside CBZ archive")
 
                 for idx, entry_name in enumerate(image_entries, start=1):
                     ext = entry_name.lower().split(".")[-1]
@@ -186,23 +219,29 @@ class PageCalculator:
                             sizeBytes=size_bytes,
                         )
                     )
+        except zipfile.BadZipFile as e:
+            raise ValueError(f"Corrupt CBZ archive (BadZipFile): {e}")
         except Exception as e:
-            logger.warning(f"Error reading CBZ archive: {e}")
+            if isinstance(e, ValueError):
+                raise
+            raise ValueError(f"Failed to read CBZ archive: {e}")
 
-        pages_count = len(page_dtos) if page_dtos else 1
-        if not page_dtos:
-            page_dtos = [PageDto(number=1, fileName="page-001.jpg", mediaType="image/jpeg", width=1200, height=1600)]
-        return pages_count, page_dtos
+        return len(page_dtos), page_dtos
 
     @staticmethod
     def count_pdf_pages(pdf_bytes: bytes) -> Tuple[int, List[PageDto]]:
         """Calculate page count for PDF."""
-        pages_count = 1
+        if not pdf_bytes:
+            raise ValueError("Empty book file received (0 bytes)")
+
         try:
             reader = PdfReader(io.BytesIO(pdf_bytes))
             pages_count = len(reader.pages)
         except Exception as e:
-            logger.warning(f"Error reading PDF: {e}")
+            raise ValueError(f"Corrupt or unreadable PDF: {e}")
+
+        if pages_count <= 0:
+            raise ValueError("PDF document contains 0 pages")
 
         page_dtos = [
             PageDto(
@@ -283,13 +322,16 @@ class PageCalculator:
         book_id = book["id"]
         book_name = book.get("name", f"Book {book_id}")
         book_type = book.get("book_type", "EPUB")
+        series_name = book.get("series_name")
+        library_id = book.get("library_id")
+        file_path = book.get("file_path")
 
         try:
             page_count, page_dtos = await asyncio.wait_for(
                 self.inspect_book_pages(book_id, book_type),
                 timeout=60.0,
             )
-            logger.info(f"Calculated {page_count} pages for book {book_id} ('{book_name}') [{book_type}]")
+            self.log(f"Calculated {page_count} pages for book {book_id} ('{book_name}') [{book_type}]")
 
             # 1. Update local SQLite DB first so page count is immediately enriched
             await self.db.update_book_page_count(book_id, page_count)
@@ -298,42 +340,79 @@ class PageCalculator:
             page_records = [p.model_dump() for p in page_dtos]
             await self.db.upsert_book_pages(book_id, page_records)
 
-            # 3. Update Grimmory metadata upstream (best-effort with timeout)
+            # 3. Clear any previously recorded error for this book now that it succeeded
+            await self.db.delete_page_calc_error(book_id)
+
+            # 4. Update Grimmory metadata upstream (best-effort with timeout)
             try:
                 await asyncio.wait_for(
                     grimmory_client.update_book_metadata(book_id, {"pageCount": page_count}),
                     timeout=30.0,
                 )
             except Exception as e:
-                logger.warning(f"Could not push updated pageCount to Grimmory for book {book_id}: {e}")
+                self.log(f"Warning: Could not push updated pageCount to Grimmory for book {book_id}: {e}", level="warning")
 
             return "updated"
         except asyncio.TimeoutError:
-            logger.warning(f"Timeout inspecting/updating pages for book {book_id} ('{book_name}')")
+            err_msg = "Download or inspection timed out after 60 seconds"
+            self.log(f"ERROR: {err_msg} for book {book_id} ('{book_name}') [{book_type}]", level="error")
+            await self.db.record_page_calc_error(
+                book_id=book_id,
+                book_title=book_name,
+                series_name=series_name,
+                library_id=library_id,
+                book_type=book_type,
+                file_path=file_path,
+                error_message=err_msg,
+                job_id=self.status.job_id,
+            )
             return "error"
         except httpx.HTTPStatusError as e:
             if e.response.status_code in (404, 410):
-                logger.warning(f"Book {book_id} ('{book_name}') was removed from Grimmory (HTTP {e.response.status_code}); marking as deleted.")
+                self.log(f"Book {book_id} ('{book_name}') was removed from Grimmory (HTTP {e.response.status_code}); marking as deleted.", level="warning")
                 await self.db.mark_book_deleted(book_id)
+                await self.db.delete_page_calc_error(book_id)
                 return "removed"
-            logger.error(f"HTTP error calculating pages for book {book_id} ('{book_name}'): {e}")
+            err_msg = f"HTTP {e.response.status_code} error from Grimmory server"
+            self.log(f"ERROR: {err_msg} calculating pages for book {book_id} ('{book_name}'): {e}", level="error")
+            await self.db.record_page_calc_error(
+                book_id=book_id,
+                book_title=book_name,
+                series_name=series_name,
+                library_id=library_id,
+                book_type=book_type,
+                file_path=file_path,
+                error_message=err_msg,
+                job_id=self.status.job_id,
+            )
             return "error"
         except Exception as e:
             err_msg = str(e)
             if "404" in err_msg or "Not Found" in err_msg:
-                logger.warning(f"Book {book_id} ('{book_name}') was removed from Grimmory; marking as deleted: {e}")
+                self.log(f"Book {book_id} ('{book_name}') was removed from Grimmory; marking as deleted: {e}", level="warning")
                 await self.db.mark_book_deleted(book_id)
+                await self.db.delete_page_calc_error(book_id)
                 return "removed"
-            logger.error(f"Error calculating pages for book {book_id} ('{book_name}'): {e}")
+            self.log(f"ERROR calculating pages for book {book_id} ('{book_name}') [{book_type}]: {err_msg}", level="error")
+            await self.db.record_page_calc_error(
+                book_id=book_id,
+                book_title=book_name,
+                series_name=series_name,
+                library_id=library_id,
+                book_type=book_type,
+                file_path=file_path,
+                error_message=err_msg,
+                job_id=self.status.job_id,
+            )
             return "error"
 
-    async def run_calculation_job(self, missing_only: bool = True) -> PageCalcStatus:
+    async def run_calculation_job(self, missing_only: bool = True, retry_failed_only: bool = False) -> PageCalcStatus:
         """
         Runs the background page calculation loop across books using SYNC_CONCURRENCY workers.
         """
         async with self.lock:
             if self._task and not self._task.done() and self._task != asyncio.current_task():
-                logger.warning("A page calculation job is already in progress")
+                self.log("A page calculation job is already in progress", level="warning")
                 return self.status
 
             self._stop_requested = False
@@ -344,7 +423,9 @@ class PageCalculator:
             job_id = None
             try:
                 # Fetch books to process
-                if missing_only:
+                if retry_failed_only:
+                    books = await self.db.get_books_with_page_calc_errors()
+                elif missing_only:
                     books = await self.db.get_books_missing_pages()
                 else:
                     books = await self.db.get_all_books_for_page_calc()
@@ -359,11 +440,17 @@ class PageCalculator:
                 self.status.removed_books = 0
                 self.status.error_count = 0
                 self.status.current_book = "Initializing..."
+                self.status.recent_errors = await self.db.get_page_calc_errors(limit=50)
 
                 if total_books == 0:
                     self.status.is_running = False
                     self.status.status = "completed"
-                    msg = "All books already have page counts calculated" if missing_only else "No books found in catalog"
+                    if retry_failed_only:
+                        msg = "No problematic books with errors found to retry"
+                    elif missing_only:
+                        msg = "All books already have page counts calculated"
+                    else:
+                        msg = "No books found in catalog"
                     self.status.current_book = msg
                     await self.db.update_page_calc_progress(
                         job_id=job_id,
@@ -374,12 +461,12 @@ class PageCalculator:
                         current_book=msg,
                         status="completed",
                     )
-                    logger.info(f"Page calculation job {job_id} finished immediately: {msg}")
+                    self.log(f"Page calculation job {job_id} finished immediately: {msg}")
                     return self.status
 
-                logger.info(f"Starting page calculation job {job_id} for {total_books} books (concurrency: {settings.sync_concurrency})")
+                self.log(f"Starting page calculation job {job_id} for {total_books} books (concurrency: {settings.sync_concurrency})")
             except Exception as e:
-                logger.error(f"Error initializing page calculation job: {e}", exc_info=True)
+                self.log(f"Error initializing page calculation job: {e}", level="error")
                 self.status.is_running = False
                 self.status.status = "failed"
                 self.status.error_message = str(e)
@@ -448,9 +535,9 @@ class PageCalculator:
                     current_book=self.status.current_book,
                     status=final_status,
                 )
-            logger.info(f"Page calculation job finished with status '{final_status}': {self.status.updated_books}/{total_books} updated, {self.status.removed_books} removed")
+            self.log(f"Page calculation job finished with status '{final_status}': {self.status.updated_books}/{total_books} updated, {self.status.error_count} errors, {self.status.removed_books} removed")
         except asyncio.CancelledError:
-            logger.info(f"Page calculation job {job_id} was cancelled")
+            self.log(f"Page calculation job {job_id} was cancelled", level="warning")
             self.status.status = "stopped"
             self.status.current_book = "Calculation stopped"
             if job_id:
@@ -464,7 +551,7 @@ class PageCalculator:
                     status="stopped",
                 )
         except Exception as e:
-            logger.error(f"Page calculation job failed: {e}", exc_info=True)
+            self.log(f"Page calculation job failed: {e}", level="error")
             self.status.status = "failed"
             self.status.error_message = str(e)
             self.status.current_book = f"Error: {e}"
@@ -483,6 +570,10 @@ class PageCalculator:
             self.status.is_running = False
             self._stop_requested = False
             self._worker_tasks.clear()
+            try:
+                self.status.recent_errors = await self.db.get_page_calc_errors(limit=50)
+            except Exception:
+                pass
             try:
                 await self.db.checkpoint("TRUNCATE")
             except Exception:

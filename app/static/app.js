@@ -159,9 +159,12 @@ async function stopPageCalc(clickedBtn = null) {
   }
 }
 
-async function triggerSync() {
-  const btn = document.getElementById("btn-sync") || (window.event && window.event.target);
+async function triggerSync(clickedBtn = null) {
+  const btn = clickedBtn || document.getElementById("btn-sync") || (window.event && window.event.target);
   if (btn) {
+    if (!btn.dataset.originalHtml) {
+      btn.dataset.originalHtml = btn.innerHTML;
+    }
     btn.disabled = true;
     btn.innerText = "Syncing...";
   }
@@ -189,6 +192,8 @@ async function triggerSync() {
     pollStatus();
   }
 }
+
+const triggerMetadataSync = triggerSync;
 
 async function clearSyncLogs() {
   try {
@@ -262,6 +267,9 @@ async function purgeAndRefreshData(clickedBtn = null) {
       showCalcBanner(data.message || "Catalog and read progress purged. Fresh background sync started.", "success");
       pollStatus();
       refreshUsers();
+      if (typeof performBookSearch === "function") {
+        performBookSearch();
+      }
     } else {
       alert("Error: " + (data.detail || "Failed to purge and refresh data"));
     }
@@ -274,6 +282,8 @@ async function purgeAndRefreshData(clickedBtn = null) {
     }
   }
 }
+
+const triggerPurgeAndRefresh = purgeAndRefreshData;
 
 async function optimizeStorage(clickedBtn = null) {
   const btn = clickedBtn || document.getElementById("btn-optimize-storage");
@@ -335,6 +345,34 @@ async function pollStatus() {
       dbInfo.innerText = walMb && parseFloat(walMb) > 0 ? `${dbMb} MB (WAL: ${walMb} MB)` : `${dbMb} MB`;
     }
 
+    // Update Reader Compression Info
+    if (data.image_compression) {
+      const comp = data.image_compression;
+      const compBadge = document.getElementById("compression-status-badge");
+      const compBtn = document.getElementById("btn-toggle-compression");
+      const cacheInfo = document.getElementById("compression-cache-info");
+      const clearBtn = document.getElementById("btn-clear-img-cache");
+
+      if (compBadge) {
+        if (comp.enabled) {
+          const dimText = comp.max_dimension ? `, max ${comp.max_dimension}px` : "";
+          compBadge.innerHTML = `<strong style="color: var(--color-success); font-size: 0.8rem;">Enabled (${comp.format.toUpperCase()}, Q${comp.quality}${dimText})</strong>`;
+        } else {
+          compBadge.innerHTML = `<strong style="color: var(--color-text-muted); font-size: 0.8rem;">Disabled</strong>`;
+        }
+      }
+      if (compBtn) {
+        compBtn.innerText = comp.enabled ? "Disable" : "Enable";
+      }
+      if (cacheInfo && comp.cache_stats) {
+        const mb = (comp.cache_stats.total_bytes / (1024 * 1024)).toFixed(2);
+        cacheInfo.innerText = `${comp.cache_stats.item_count} pages (${mb} MB) [0 SSD writes]`;
+      }
+      if (clearBtn && comp.cache_stats) {
+        clearBtn.style.display = comp.cache_stats.item_count > 0 ? "inline-block" : "none";
+      }
+    }
+
     // Update completion progress bar
     const total = data.stats.books_count || 0;
     const withPages = data.stats.books_with_pages || 0;
@@ -361,13 +399,19 @@ async function pollStatus() {
           syncBadge.className = "status-badge status-running";
         }
         if (syncBtn) {
+          if (!syncBtn.dataset.originalHtml) {
+            syncBtn.dataset.originalHtml = syncBtn.innerHTML;
+          }
           syncBtn.disabled = true;
           syncBtn.innerText = "Syncing...";
         }
       } else {
         if (syncBtn && syncBtn.disabled) {
           syncBtn.disabled = false;
-          syncBtn.innerText = "🔄 Sync Metadata Now";
+          syncBtn.innerHTML = syncBtn.dataset.originalHtml || "🔄 Sync Metadata Now";
+          if (typeof performBookSearch === "function") {
+            performBookSearch();
+          }
         }
         if (syncBadge) {
           if (syncStatus.error_message) {
@@ -494,10 +538,157 @@ async function pollStatus() {
         pill.innerText = `${data.users.length} User${data.users.length === 1 ? '' : 's'}`;
       }
     }
+
+    // Update Problematic Files & Page Calc Errors Table if returned
+    if (data.page_calc_errors !== undefined) {
+      renderPageCalcErrors(data.page_calc_errors);
+    }
   } catch (err) {
     console.debug("Status poll failed:", err);
   } finally {
     _isPolling = false;
+  }
+}
+
+function renderPageCalcErrors(errors) {
+  const badge = document.getElementById("calc-errors-count-badge");
+  const countSpan = document.getElementById("btn-retry-failed-count");
+  const retryBtn = document.getElementById("btn-calc-retry-failed");
+  const retryTopBtn = document.getElementById("btn-retry-failed-top");
+  const clearBtn = document.getElementById("btn-clear-errors");
+  const tableContainer = document.getElementById("calc-errors-table-container");
+
+  const total = errors ? errors.length : 0;
+  if (badge) {
+    badge.innerText = `${total} issue${total === 1 ? '' : 's'}`;
+    badge.style.background = total > 0 ? "rgba(239, 68, 68, 0.2)" : "rgba(34, 197, 94, 0.15)";
+    badge.style.color = total > 0 ? "#f87171" : "#4ade80";
+    badge.style.border = "1px solid " + (total > 0 ? "rgba(239, 68, 68, 0.4)" : "rgba(34, 197, 94, 0.3)");
+  }
+  if (countSpan) countSpan.innerText = total;
+  if (retryBtn) retryBtn.style.display = total > 0 ? "inline-flex" : "none";
+  if (retryTopBtn) retryTopBtn.style.display = total > 0 ? "inline-flex" : "none";
+  if (clearBtn) clearBtn.style.display = total > 0 ? "inline-flex" : "none";
+
+  if (!tableContainer) return;
+
+  if (total === 0) {
+    tableContainer.innerHTML = `
+      <div id="calc-no-errors-msg" style="padding: 1.5rem 1rem; text-align: center; color: var(--color-success); font-size: 0.875rem; display: flex; align-items: center; justify-content: center; gap: 0.5rem;">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+          <polyline points="22 4 12 14.01 9 11.01"></polyline>
+        </svg>
+        <span>No calculation errors recorded. All scanned books were parsed cleanly.</span>
+      </div>`;
+    return;
+  }
+
+  const rows = errors.map(err => {
+    const bookTitle = (err.book_title || `Book #${err.book_id}`).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const seriesName = (err.series_name || '-').replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const filePath = (err.file_path || 'Path unavailable').replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const errorMsg = (err.error_message || 'Unknown error').replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const btype = (err.book_type || 'EPUB').replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const occurred = err.created_at ? err.created_at.substring(0, 19).replace('T', ' ') : '-';
+
+    return `
+      <tr>
+        <td style="font-weight: 600; color: var(--color-text-strong);">
+          <a href="/book/${err.book_id}" target="_blank" style="color: var(--color-text-strong); text-decoration: none;" title="Open Book">
+            ${bookTitle}
+          </a>
+          <div style="font-size: 0.75rem; color: var(--color-text-muted); font-weight: normal;">ID: ${err.book_id}</div>
+        </td>
+        <td style="color: var(--color-text-secondary); font-size: 0.85rem;">${seriesName}</td>
+        <td>
+          <span class="brand-badge" style="font-size: 0.7rem; font-weight: 700; background: rgba(255, 255, 255, 0.06); color: var(--color-text);">
+            ${btype}
+          </span>
+        </td>
+        <td>
+          <code style="display: block; font-size: 0.75rem; color: #fbcfe8; background: rgba(0, 0, 0, 0.35); padding: 0.25rem 0.5rem; border-radius: 4px; word-break: break-all;">
+            ${filePath}
+          </code>
+        </td>
+        <td>
+          <div style="color: #f87171; font-size: 0.8rem; line-height: 1.4; word-break: break-word;">
+            ${errorMsg}
+          </div>
+        </td>
+        <td style="text-align: right; color: var(--color-text-muted); font-size: 0.75rem; white-space: nowrap;">
+          ${occurred}
+        </td>
+      </tr>`;
+  }).join("");
+
+  tableContainer.innerHTML = `
+    <div style="overflow-x: auto;">
+      <table>
+        <thead>
+          <tr>
+            <th style="min-width: 180px;">Book Title</th>
+            <th style="min-width: 120px;">Series</th>
+            <th style="width: 80px;">Format</th>
+            <th style="min-width: 260px;">File Path on Disk</th>
+            <th style="min-width: 220px;">Error Description</th>
+            <th style="width: 140px; text-align: right;">Occurred</th>
+          </tr>
+        </thead>
+        <tbody id="calc-errors-tbody">${rows}</tbody>
+      </table>
+    </div>`;
+}
+
+async function retryFailedPageCalc(clickedBtn = null) {
+  const btn = clickedBtn || document.getElementById("btn-calc-retry-failed");
+  const originalHtml = btn ? btn.innerHTML : "";
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = `<span style="display:inline-block;width:12px;height:12px;border:2px solid currentColor;border-top-color:transparent;border-radius:50%;animation:spin 0.8s linear infinite;margin-right:6px;"></span> Retrying...`;
+  }
+  try {
+    const res = await fetch("/admin/api/calculate-pages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ missing_only: false, retry_failed_only: true })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      showCalcBanner("Error: " + (data.detail || "Failed to retry problematic books"), "danger");
+    } else if (data.status === "no_work") {
+      showCalcBanner("No problematic books with errors found to retry.", "success");
+    } else {
+      showCalcBanner(`Retrying calculation for ${data.books_to_process || ''} problematic books...`, "success");
+    }
+  } catch (err) {
+    showCalcBanner("Request failed: " + err, "danger");
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = originalHtml;
+    }
+    pollStatus();
+  }
+}
+
+async function clearPageCalcErrors(clickedBtn = null) {
+  if (!confirm("Clear the list of recorded calculation errors? This will not fix corrupt files, but resets the error history.")) {
+    return;
+  }
+  const btn = clickedBtn || document.getElementById("btn-clear-errors");
+  if (btn) btn.disabled = true;
+  try {
+    const res = await fetch("/admin/api/page-calc/errors/clear", { method: "POST" });
+    if (res.ok) {
+      renderPageCalcErrors([]);
+      showCalcBanner("Calculation error history cleared.", "success");
+    }
+  } catch (err) {
+    console.error("Failed to clear calc errors:", err);
+  } finally {
+    if (btn) btn.disabled = false;
+    pollStatus();
   }
 }
 
@@ -667,6 +858,40 @@ function renderUsersTable(users) {
     `;
   });
   tbody.innerHTML = html;
+}
+
+async function toggleCompression() {
+  const badge = document.getElementById("compression-status-badge");
+  const isCurrentlyEnabled = badge && badge.innerText.includes("Enabled");
+  const newEnabled = !isCurrentlyEnabled;
+
+  try {
+    const res = await fetch("/admin/api/image-compression", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: newEnabled }),
+    });
+    const data = await res.json();
+    if (data.success) {
+      pollStatus();
+    }
+  } catch (err) {
+    console.error("Failed to toggle image compression:", err);
+  }
+}
+
+async function clearImageCache() {
+  try {
+    const res = await fetch("/admin/api/image-compression/clear-cache", {
+      method: "POST",
+    });
+    const data = await res.json();
+    if (data.success) {
+      pollStatus();
+    }
+  } catch (err) {
+    console.error("Failed to clear image cache:", err);
+  }
 }
 
 function escapeHtml(str) {

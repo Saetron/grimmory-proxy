@@ -5,8 +5,6 @@
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED.svg)](https://www.docker.com/)
 [![Version](https://img.shields.io/badge/Version-v1.11-orange.svg)](VERSION)
 [![Komga API](https://img.shields.io/badge/Komga%20API-v1.12.0-orange.svg)](https://komga.org/)
-[![Theme](https://img.shields.io/badge/Theme-Grimmory%20Design-f97316.svg)](https://grimmory.org/)
-[![Changelog](https://img.shields.io/badge/Changelog-Keep%20a%20Changelog-blue.svg)](CHANGELOG.md)
 
 A high-performance Python and Docker proxy/bridge that translates the **[Grimmory API](https://grimmory.org/api/)** into the complete **[Komga API v1.12.0 specification](https://raw.githubusercontent.com/gotson/komga/refs/heads/master/komga/docs/openapi.json)**, restoring seamless compatibility for any Komga-compatible reader application—including **Mihon / Tachiyomi**, **Panels**, **Komic**, **Paperback**, and **Kuro Reader**—following Grimmory's deprecation of its native Komga endpoint.
 
@@ -39,10 +37,11 @@ A high-performance Python and Docker proxy/bridge that translates the **[Grimmor
   - Automatically derives series titles for standalone books without upstream series names.
   - Appends ` - {author}` *only* when two or more standalone books in the library share an identical title by different authors, keeping library views clean and uncluttered while preventing accidental series mergers.
 
-- **Automated Book Page Calculation Engine**:
+- **Automated Book Page Calculation Engine & Error Validation**:
   - **Novels (EPUB, MOBI, AZW, FB2)**: Computes accurate page counts using Calibre's **Adobe Digital Editions (ADE)** heuristic (1,024 uncompressed characters per page, configurable via `NOVEL_CHARS_PER_PAGE`).
   - **Comics & Manga (CBZ / CBR / CBX)**: Fast 1:1 image file counting.
   - **PDF Documents**: Direct page count extraction via `pypdf`.
+  - **Error Logging & Problematic Files Validation**: Corrupted archives, zero-byte downloads, and unreadable files are logged with exact storage paths, recorded in SQLite (`page_calc_errors`), and highlighted in the WebUI (`/stats`) with instant retry and error clearing controls.
   - **Upstream Write-Back**: Automatically syncs calculated page counts back to Grimmory metadata (`pageCount`) via `PUT /api/v1/books/{id}/metadata?replaceMode=REPLACE_WHEN_PROVIDED`, preserving all existing tags, authors, and genres.
   - Fully asynchronous worker pool with concurrency control (`SYNC_CONCURRENCY`), graceful cancellation (`/admin/api/stop-calculation`), and automatic cleanup of stale locks on startup.
 
@@ -56,13 +55,19 @@ A high-performance Python and Docker proxy/bridge that translates the **[Grimmor
     - `/author/{id}` &rarr; `{public_grimmory_url}/author/{authorId}`
   - Komga DTOs include `metadata.links` pointing directly to Grimmory for one-click navigation in supported readers.
 
-- **Grimmory-Themed Admin Management WebUI**:
+- **On-the-Fly Reader Image Compression & Zero-SSD In-Memory Caching**:
+  - Dynamically transcodes and compresses oversized comic and manga pages to modern formats (`webp`, `jpeg`, or original) on request to drastically reduce transfer payloads over mobile or slow networks.
+  - Zero disk wear option (`IMAGE_CACHE_TYPE=memory`) maintains an in-RAM LRU cache for compressed pages without writing temporary files to SSD storage.
+  - Configurable quality, max dimensions, and minimum file size threshold (`IMAGE_COMPRESSION_MIN_SIZE_KB`).
+
+- **Modular Grimmory-Themed Admin WebUI**:
   - Designed with Grimmory's official visual identity, dark obsidian palette, and warm orange accents.
-  - Password-protected dashboard (`/admin`) restricted exclusively to **Grimmory Administrators**.
-  - Real-time catalog metrics: Libraries, series, books, format distribution, cache sizes, memory usage, and page calculation progress.
-  - **Connected Readers Management**: View all readers connected through the bridge with library access lists, read progress counts, and online indicators; trigger individual user syncs or purge cached user data on demand.
-  - Interactive controls to trigger missing page calculations, recalculate all books, or initiate background catalog and read progress syncs with live terminal logs.
-  - On-demand storage optimization and memory reclamation action.
+  - Password-protected interface (`/admin`) restricted exclusively to **Grimmory Administrators**.
+  - **Dashboard (`/admin`)**: Clean system health and synchronization status overview with a live debounced book query explorer to instantly search and inspect cached books across libraries.
+  - **Statistics (`/stats`)**: Deep catalog metrics, library breakdowns, format distribution, cache sizes, memory usage, and page calculation engine controls.
+  - **Connected Readers (`/users`)**: Connected reader directory with library access lists, read progress counts, and online indicators; trigger individual user syncs or purge cached user data on demand.
+  - **Live Streaming Logs (`/logs`)**: Multi-stream terminal supporting metadata sync, read progress sync, and server logs, capped at 200 lines per stream to prevent browser memory consumption.
+  - **Persistent Settings (`/settings`)**: Runtime configuration management backed by a persistent `config.json` file created on first boot that takes precedence over environment variables and supports live UI editing.
 
 - **Performance, Concurrency & Memory Management**:
   - Persistent SQLite database in WAL mode (`aiosqlite`) with centralized write serialization (`Database.write_db`) to prevent `database is locked` concurrency errors.
@@ -125,12 +130,21 @@ A high-performance Python and Docker proxy/bridge that translates the **[Grimmor
 | `SYNC_ON_STARTUP` | `true` | Whether to trigger background metadata sync on startup. |
 | `SYNC_CONCURRENCY` | `6` | Concurrency limit for background series/book page inspection. |
 | `NOVEL_CHARS_PER_PAGE` | `1024` | Number of characters per page for novels (Calibre ADE standard: 1024). |
+| `IMAGE_COMPRESSION_ENABLED` | `false` | Whether to compress/optimize reader page images on the fly. |
+| `IMAGE_COMPRESSION_FORMAT` | `webp` | Target format for compressed reader pages (`webp`, `jpeg`, or `original`). |
+| `IMAGE_COMPRESSION_QUALITY` | `80` | Quality setting (1–100) for on-the-fly compressed reader pages. |
+| `IMAGE_COMPRESSION_MAX_DIMENSION` | `1920` | Maximum width or height in pixels for compressed pages (`0` to preserve original dimensions). |
+| `IMAGE_COMPRESSION_MIN_SIZE_KB` | `400` | Minimum file size in KB before compression is applied (smaller pages are served as-is to save CPU). |
+| `IMAGE_CACHE_TYPE` | `memory` | Cache backend for compressed pages (`memory`, `none`, or `disk`). `memory` uses zero SSD writes. |
+| `IMAGE_CACHE_MEMORY_MAX_ITEMS` | `150` | Maximum number of compressed pages retained in memory LRU cache. |
+| `IMAGE_CACHE_DISK_DIR` | `/app/data/page_cache` | Disk directory for cached compressed pages when `IMAGE_CACHE_TYPE=disk`. |
 | `SQLITE_CACHE_SIZE` | `-8000` | SQLite page cache size limit in KiB (negative value specifies size in KiB; default `-8000` = ~8 MB). |
 | `SQLITE_MMAP_SIZE` | `67108864` | SQLite memory-mapped I/O size limit in bytes (default `67108864` = 64 MB; `0` to disable mmap). |
 | `SQLITE_WAL_AUTOCHECKPOINT` | `1000` | SQLite WAL autocheckpoint page threshold (default: 1000 pages). |
 | `CORS_ALLOW_ORIGINS` | `*` | Comma-separated browser origins allowed by CORS. With `*` credentialed (cookie) cross-origin requests are disabled; list explicit origins to enable them. |
 | `COOKIE_SECURE` | `false` | Set the `Secure` flag on the admin session cookie (enable when served over HTTPS). |
 | `DATABASE_PATH` | `/app/data/bridge.db` | Path to persistent SQLite cache database. |
+| `CONFIG_PATH` | `/app/data/config.json` | Path to persistent configuration file (created automatically on first launch and managed via the `/settings` WebUI menu). Takes precedence over environment variables after creation. |
 | `THUMBNAILS_DIR` | `/app/data/thumbnails` | Path to disk cache for cover thumbnails. |
 | `PORT` | `8080` | Port the proxy listens on inside the container. |
 | `HOST` | `0.0.0.0` | Bind host address. |
@@ -225,11 +239,21 @@ A high-performance Python and Docker proxy/bridge that translates the **[Grimmor
 
 ### Admin WebUI & Management API
 - `GET /admin/login`, `POST /admin/login` - Secure sign-in page for Grimmory Administrators.
-- `GET /admin` / `GET /dashboard` - Interactive statistics, health indicators, connected users panel, and control panel.
+- `GET /admin` / `GET /dashboard` - Dashboard with operational bridge overview, sync status, and interactive book search explorer.
+- `GET /stats` - Comprehensive catalog KPIs, format distribution, storage metrics, and page calculation engine controls.
+- `GET /users` - Connected reader users directory with library access, reading progress statistics, and sync/purge actions.
+- `GET /logs` - Multi-stream terminal logs (metadata sync, user read sync, server logs) capped at 200 lines.
+- `GET /settings` - Persistent configuration manager for live editing and raw JSON inspection.
+- `GET /admin/api/books/search` - Search and inspect books available in the proxy cache.
+- `GET /admin/api/logs` - Fetch the last 200 lines across log streams (`metadata`, `read_sync`, `proxy`, `page_calc`).
+- `POST /admin/api/logs/clear` - Clear selected log buffer (`metadata`, `read_sync`, `proxy`, or `page_calc`).
+- `GET /admin/api/page-calc/errors` - List recorded book calculation errors and problematic file paths.
+- `POST /admin/api/page-calc/errors/clear` - Clear recorded page calculation errors history.
+- `GET /admin/api/settings`, `POST /admin/api/settings` - Retrieve or update runtime persistent configuration.
 - `GET /admin/api/users` - List connected reader users with library access, reading progress statistics, and online indicators.
 - `POST /admin/api/users/{id}/purge` - Permanently purge a user and delete all their cached read progress, settings, and sessions.
 - `POST /admin/api/users/{id}/sync` - Force an immediate on-demand Grimmory read progress sync for a specific user.
-- `POST /admin/api/calculate-pages` - Trigger page calculation (missing only or full recalculation).
+- `POST /admin/api/calculate-pages` - Trigger page calculation (missing only, full recalculation, or retry failed only).
 - `POST /admin/api/stop-calculation` - Gracefully abort active calculation job.
 - `POST /admin/api/sync` - Trigger on-demand metadata sync.
 - `POST /admin/api/sync/clear-logs` - Clear metadata sync log history.

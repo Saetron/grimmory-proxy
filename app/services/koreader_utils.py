@@ -1,8 +1,20 @@
+import asyncio
 import hashlib
 import io
+import logging
 import os
-import re
 from typing import Any, Dict, Optional
+
+from app.clients.grimmory import grimmory_client
+from app.models.grimmory import (
+    GrimmoryCbxProgress,
+    GrimmoryEpubProgress,
+    GrimmoryPdfProgress,
+    GrimmoryReadProgressRequest,
+)
+from app.services.mapper import parse_raw_json
+
+logger = logging.getLogger("grimmory_proxy.koreader_utils")
 
 
 def compute_koreader_hash(file_or_path: Any) -> Optional[str]:
@@ -55,13 +67,7 @@ def resolve_koreader_doc_hash(book_record: Dict[str, Any]) -> str:
         if computed:
             return computed
 
-    raw = book_record.get("raw_json") or {}
-    if isinstance(raw, str):
-        try:
-            import json
-            raw = json.loads(raw)
-        except Exception:
-            raw = {}
+    raw = parse_raw_json(book_record.get("raw_json"))
 
     pfile = raw.get("primaryFile") or {}
     for k in ("hash", "md5", "koreaderHash"):
@@ -82,3 +88,51 @@ def format_koreader_progress(book_type: Optional[str], page: int, total_pages: i
     if b_type in ("CBZ", "CBR", "PDF", "DIVINA"):
         return str(max(1, page))
     return f"/body/DocFragment[{max(1, page)}].0"
+
+
+def build_grimmory_progress_request(
+    book_id: int,
+    page: int,
+    percentage: float,
+    completed: bool,
+    timestamp: str,
+    href: Optional[str] = None,
+    cfi: Optional[str] = None,
+) -> GrimmoryReadProgressRequest:
+    """Builds a standardized GrimmoryReadProgressRequest payload."""
+    return GrimmoryReadProgressRequest(
+        bookId=book_id,
+        cbxProgress=GrimmoryCbxProgress(page=page, percentage=percentage, lastRead=timestamp),
+        pdfProgress=GrimmoryPdfProgress(page=page, percentage=percentage, lastRead=timestamp),
+        epubProgress=GrimmoryEpubProgress(percentage=percentage, href=href, cfi=cfi, lastRead=timestamp),
+        dateFinished=timestamp if completed else None,
+        readStatus="READ" if completed else "READING",
+        lastRead=timestamp,
+        progressValid=True,
+    )
+
+
+def schedule_koreader_progress_sync(
+    record: Optional[Dict[str, Any]],
+    book_id: int,
+    page: int,
+    page_count: int,
+    percentage: float,
+    token: str,
+) -> None:
+    """Asynchronously forwards reading progress to the upstream Grimmory KOReader endpoint."""
+    try:
+        doc_hash = resolve_koreader_doc_hash(record or {"id": book_id})
+        koreader_prog_str = format_koreader_progress(
+            record.get("book_type") if record else None, page, page_count, percentage
+        )
+        asyncio.create_task(
+            grimmory_client.update_koreader_progress(
+                doc_hash,
+                koreader_prog_str,
+                percentage / 100.0,
+                token=token,
+            )
+        )
+    except Exception as e:
+        logger.debug(f"Could not forward KOReader progress for book {book_id}: {e}")

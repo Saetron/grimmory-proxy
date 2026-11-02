@@ -8,15 +8,12 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.clients.grimmory import grimmory_client
 from app.database import Database
-from app.models.grimmory import (
-    GrimmoryCbxProgress,
-    GrimmoryEpubProgress,
-    GrimmoryPdfProgress,
-    GrimmoryReadProgressRequest,
-)
 from app.models.internal import UserSession
 from app.services.auth import AuthService
-from app.services.koreader_utils import format_koreader_progress
+from app.services.koreader_utils import (
+    build_grimmory_progress_request,
+    format_koreader_progress,
+)
 
 logger = logging.getLogger("grimmory_proxy.koreader")
 
@@ -157,15 +154,12 @@ def get_koreader_router(db: Database) -> APIRouter:
         )
 
         # 2. Update Grimmory main progress
-        req = GrimmoryReadProgressRequest(
-            bookId=book_id,
-            cbxProgress=GrimmoryCbxProgress(page=page_num, percentage=perc_0_to_100, lastRead=now_str),
-            pdfProgress=GrimmoryPdfProgress(page=page_num, percentage=perc_0_to_100, lastRead=now_str),
-            epubProgress=GrimmoryEpubProgress(percentage=perc_0_to_100, lastRead=now_str),
-            dateFinished=now_str if completed else None,
-            readStatus="READ" if completed else "READING",
-            lastRead=now_str,
-            progressValid=True,
+        req = build_grimmory_progress_request(
+            book_id=book_id,
+            page=page_num,
+            percentage=perc_0_to_100,
+            completed=completed,
+            timestamp=now_str,
         )
 
         async def _forward_upstream():
