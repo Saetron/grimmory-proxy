@@ -50,6 +50,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - Added `POST /admin/api/image-compression/clear-cache` to immediately flush the in-memory page cache.
     - Hooked cache eviction into `release_memory()` to free RAM during storage optimization.
 
+### Dependencies
+- Bumped `fastapi` from `>=0.158.1` to `>=0.162.0`.
+- Bumped `pydantic-settings` from `>=2.16.1` to `>=2.16.2`.
+- Bumped `pypdf` from `>=6.21.2` to `>=6.21.4`.
+- Bumped `pytest` from `>=9.1.1` to `>=9.2.0`.
+- Bumped `pytest-asyncio` from `>=1.4.0` to `>=1.4.1`.
+
 ## [1.11] - 2026-10-27
 
 ### Fixed & Performance
