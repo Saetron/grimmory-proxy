@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Reader Client Setup Documentation**: Added comprehensive setup guides in `docs/clients.md` covering Mihon/Tachiyomi, Panels (iOS), Komic (Android/Flutter), Paperback, and Kuro Reader with connection troubleshooting and feature compatibility matrix.
 - **Automated GitHub Release Publishing**: Added step in `.github/workflows/ci.yml` to automatically create or update GitHub Releases with notes extracted from `CHANGELOG.md` whenever a release build workflow finishes.
 
 ## [1.12] - 2026-11-02

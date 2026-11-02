@@ -11,6 +11,7 @@ edit_uri = "edit/main/docs/"
 
 nav = [
   { "Home" = "index.md" },
+  { "Reader Apps Setup" = "clients.md" },
   { "Configuration" = "configuration.md" },
   { "API Endpoints" = "endpoints.md" },
   { "Architecture & Dev" = "development.md" },
