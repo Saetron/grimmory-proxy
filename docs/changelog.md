@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Automated GitHub Release Publishing**: Added step in `.github/workflows/ci.yml` to automatically create or update GitHub Releases with notes extracted from `CHANGELOG.md` whenever a release build workflow finishes.
 
 ### Fixed
+- **Komga LibraryDto ScanInterval Enum Parity**: Fixed default and returned `scanInterval` in `LibraryDto` from `EVERY_6_HOURS` to `EVERY_6H`, conforming strictly to the Komga OpenAPI specification and preventing `JsonConvertException` enum deserialization failures in clients using `snd.komga.client.library.ScanInterval` (such as Komf and Komelia).
 - **FastAPI Duplicate Operation IDs**: Explicitly defined distinct `operation_id` values and dedicated handlers for dual-method GET/POST endpoints (`/api/logout`, `/api/v1/books/ondeck`, `/api/v1/books/latest`, `/api/v1/books/released`), resolving duplicate OpenAPI operation warnings.
 
 ### Dependencies

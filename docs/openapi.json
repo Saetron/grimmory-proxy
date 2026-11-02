@@ -6477,7 +6477,7 @@
           "scanInterval": {
             "type": "string",
             "title": "Scaninterval",
-            "default": "EVERY_6_HOURS"
+            "default": "EVERY_6H"
           },
           "scanOnStartup": {
             "type": "boolean",

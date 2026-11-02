@@ -133,6 +133,8 @@ def test_kotlin_dto_serialization_compliance():
 
     assert "seriesCover" in lib_json
     assert lib_json["seriesCover"] == "FIRST"
+    assert "scanInterval" in lib_json
+    assert lib_json["scanInterval"] == "EVERY_6H"
 
 
 def test_metadata_extraction_and_mapping():

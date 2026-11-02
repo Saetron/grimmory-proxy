@@ -36,7 +36,7 @@ class LibraryDto(BaseModel):
     importLocalArtwork: bool = True
     importBarcodeIsbn: bool = True
     scanForceModifiedTime: bool = False
-    scanInterval: str = "EVERY_6_HOURS"
+    scanInterval: str = "EVERY_6H"
     scanOnStartup: bool = False
     scanCbx: bool = True
     scanPdf: bool = True

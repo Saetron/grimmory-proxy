@@ -3127,6 +3127,43 @@ async def test_author_queries_role_and_fast_path():
         assert res_b.json()["content"][0]["id"] == "30101"
 
 
+@pytest.mark.asyncio
+async def test_get_libraries_scan_interval_enum_compliance():
+    from datetime import datetime, timezone, timedelta
+    from app.main import db
+    from app.models.internal import UserSession
+    from app.services.auth import AuthService
+
+    await db.connect()
+    user = UserSession(
+        user_id=990,
+        username="komf_user",
+        token="token_komf_enum",
+        is_admin=True,
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    AuthService.cache_session(user)
+
+    await db.upsert_libraries([{"id": 9901, "name": "Manga Lib", "paths": [{"path": "/data/manga"}]}])
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        headers = {"Authorization": "Bearer token_komf_enum"}
+        resp = await client.get("/api/v1/libraries", headers=headers)
+        assert resp.status_code == 200
+        libs = resp.json()
+        target_lib = next((l for l in libs if str(l["id"]) == "9901"), None)
+        assert target_lib is not None
+        # Strict enum compliance with snd.komga.client.library.ScanInterval
+        assert target_lib["scanInterval"] == "EVERY_6H"
+        assert target_lib["seriesCover"] in ["FIRST", "FIRST_UNREAD_OR_FIRST", "FIRST_UNREAD_OR_LAST", "LAST"]
+
+        resp_single = await client.get("/api/v1/libraries/9901", headers=headers)
+        assert resp_single.status_code == 200
+        assert resp_single.json()["scanInterval"] == "EVERY_6H"
+
+
+
 
 
 
