@@ -3,7 +3,7 @@
   "info": {
     "title": "grimmory-proxy API",
     "description": "Complete Komga v1.12.0 and Admin WebUI API specification for grimmory-proxy.",
-    "version": "1.12.1"
+    "version": "1.12.2"
   },
   "paths": {
     "/actuator/info": {
