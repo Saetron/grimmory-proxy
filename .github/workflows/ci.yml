@@ -95,9 +95,11 @@ jobs:
           git add VERSION README.md SECURITY.md
           if ! git diff-index --quiet HEAD --; then
             git commit -m "chore(release): bump version to ${{ steps.bump.outputs.version }} [skip ci]"
+            git tag -f "v${{ steps.bump.outputs.version }}"
+            git push origin HEAD --tags -f || git push origin "v${{ steps.bump.outputs.version }}" || true
+          else
+            echo "Release version already committed and tagged."
           fi
-          git tag -f "v${{ steps.bump.outputs.version }}"
-          git push origin HEAD --tags -f
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
