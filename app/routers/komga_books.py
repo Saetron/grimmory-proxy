@@ -309,6 +309,18 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
 
         return KomgaMapper.to_book_dto(record)
 
+    @router.get("/api/v1/books/{book_id}/readlists")
+    async def get_book_readlists(
+        book_id: int,
+        user: UserSession = Depends(AuthService.require_user),
+    ) -> List[Dict[str, Any]]:
+        record = await db.get_book_by_id(book_id, user_id=user.user_id if user else None)
+        if not record:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
+        if not user.is_admin and user.assigned_library_ids and record["library_id"] not in user.assigned_library_ids:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
+        return []
+
     @router.get("/api/v1/books/{book_id}/previous", response_model=BookDto)
     async def get_previous_book(
         book_id: int,
@@ -477,12 +489,12 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
         except Exception as e:
             logger.debug(f"Error recording page progress for book {b_id}: {e}")
 
-    @router.get("/api/v1/books/{book_id}/pages/{page_number}")
-    async def get_book_page_image(
+    async def _serve_book_page(
         book_id: int,
         page_number: int,
-        convert: Optional[str] = Query(None),
-        user: UserSession = Depends(AuthService.require_user),
+        user: UserSession,
+        convert: Optional[str] = None,
+        raw: bool = False,
     ) -> Response:
         if page_number > 0 and user:
             asyncio.create_task(_record_page_read_progress(user, book_id, page_number))
@@ -497,6 +509,16 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
         if not img_bytes:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Page image not found")
 
+        if raw:
+            content_type = "image/jpeg"
+            if img_bytes[:8] == b"\x89PNG\r\n\x1a\n":
+                content_type = "image/png"
+            elif img_bytes[:4] == b"RIFF" and img_bytes[8:12] == b"WEBP":
+                content_type = "image/webp"
+            elif img_bytes[:6] in (b"GIF87a", b"GIF89a"):
+                content_type = "image/gif"
+            return Response(content=img_bytes, media_type=content_type)
+
         img_bytes, content_type = await image_compressor.process_page_image(
             book_id=book_id,
             page_number=page_number,
@@ -505,6 +527,23 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
         )
 
         return Response(content=img_bytes, media_type=content_type)
+
+    @router.get("/api/v1/books/{book_id}/pages/{page_number}")
+    async def get_book_page_image(
+        book_id: int,
+        page_number: int,
+        convert: Optional[str] = Query(None),
+        user: UserSession = Depends(AuthService.require_user),
+    ) -> Response:
+        return await _serve_book_page(book_id, page_number, user, convert=convert, raw=False)
+
+    @router.get("/api/v1/books/{book_id}/pages/{page_number}/raw")
+    async def get_book_page_image_raw(
+        book_id: int,
+        page_number: int,
+        user: UserSession = Depends(AuthService.require_user),
+    ) -> Response:
+        return await _serve_book_page(book_id, page_number, user, raw=True)
 
     @router.get("/api/v1/books/{book_id}/pages/{page_number}/thumbnail")
     async def get_book_page_thumbnail(

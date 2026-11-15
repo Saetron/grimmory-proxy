@@ -240,7 +240,39 @@ def get_series_router(db: Database) -> APIRouter:
         effective_libs = resolve_effective_library_ids(user, filters["library_ids"])
         if effective_libs is not None and len(effective_libs) == 0:
             return []
-        return await db.get_series_alphabetical_groups(library_ids=effective_libs)
+        return await db.get_series_alphabetical_groups(
+            library_ids=effective_libs,
+            search=filters["search"],
+            genres=filters.get("genres"),
+            tags=filters.get("tags"),
+            publishers=filters.get("publishers"),
+            authors=filters.get("authors"),
+        )
+
+    @router.post("/api/v1/series/list/alphabetical-groups")
+    async def post_series_alphabetical_groups(
+        request: Request,
+        body: Optional[Any] = None,
+        user: UserSession = Depends(AuthService.require_user),
+    ) -> List[Dict[str, Any]]:
+        parsed_body = body
+        if not isinstance(parsed_body, (dict, list)):
+            try:
+                parsed_body = await request.json()
+            except Exception:
+                parsed_body = None
+        filters = extract_filter_params(request, parsed_body)
+        effective_libs = resolve_effective_library_ids(user, filters["library_ids"])
+        if effective_libs is not None and len(effective_libs) == 0:
+            return []
+        return await db.get_series_alphabetical_groups(
+            library_ids=effective_libs,
+            search=filters["search"],
+            genres=filters.get("genres"),
+            tags=filters.get("tags"),
+            publishers=filters.get("publishers"),
+            authors=filters.get("authors"),
+        )
 
     @router.get("/api/v1/series/genres")
     async def get_series_genres(

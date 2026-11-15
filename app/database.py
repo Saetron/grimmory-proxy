@@ -742,7 +742,7 @@ class Database:
             await self._execute_write_with_retry(_op, "upsert_series_batch")
             await asyncio.sleep(0)
 
-    async def get_series_list(
+    def _build_series_where_clause(
         self,
         library_id: Optional[int] = None,
         library_ids: Optional[List[int]] = None,
@@ -751,20 +751,14 @@ class Database:
         tags: Optional[List[str]] = None,
         publishers: Optional[List[str]] = None,
         authors: Optional[List[Any]] = None,
-        offset: int = 0,
-        limit: int = 20,
-        sort_by: str = "name",
-        sort_dir: str = "asc",
-        unpaged: bool = False,
-        user_id: Optional[int] = None,
-    ) -> Tuple[List[Dict[str, Any]], int]:
+    ) -> Optional[Tuple[str, List[Any]]]:
         conditions = []
         params: List[Any] = []
 
         target_libs = library_ids if library_ids is not None else ([library_id] if library_id is not None else None)
         if target_libs is not None:
             if len(target_libs) == 0:
-                return [], 0
+                return None
             placeholders = ",".join("?" for _ in target_libs)
             conditions.append(f"library_id IN ({placeholders})")
             params.extend(target_libs)
@@ -807,7 +801,6 @@ class Database:
                 book_auth_sql, book_params = _build_book_author_clause(auth_name, auth_role)
                 like_param = f"%{auth_name}%"
 
-                # Build uncorrelated subquery with constant library parameters if filtered
                 if target_libs:
                     lib_ph = ",".join("?" for _ in target_libs)
                     book_subquery = f"SELECT b.series_id FROM books b WHERE b.deleted = 0 AND b.library_id IN ({lib_ph}) AND {book_auth_sql}"
@@ -842,6 +835,36 @@ class Database:
                 conditions.append(f"({' OR '.join(auth_clauses)})")
 
         where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        return where_clause, params
+
+    async def get_series_list(
+        self,
+        library_id: Optional[int] = None,
+        library_ids: Optional[List[int]] = None,
+        search: Optional[str] = None,
+        genres: Optional[List[str]] = None,
+        tags: Optional[List[str]] = None,
+        publishers: Optional[List[str]] = None,
+        authors: Optional[List[Any]] = None,
+        offset: int = 0,
+        limit: int = 20,
+        sort_by: str = "name",
+        sort_dir: str = "asc",
+        unpaged: bool = False,
+        user_id: Optional[int] = None,
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        built = self._build_series_where_clause(
+            library_id=library_id,
+            library_ids=library_ids,
+            search=search,
+            genres=genres,
+            tags=tags,
+            publishers=publishers,
+            authors=authors,
+        )
+        if built is None:
+            return [], 0
+        where_clause, params = built
 
         # Normalize sort column
         clean_sort = sort_by.lower().replace("metadata.", "").replace("sort", "").strip()
@@ -914,16 +937,25 @@ class Database:
             return result, (len(result) if unpaged else total)
 
     async def get_series_alphabetical_groups(
-        self, library_ids: Optional[List[int]] = None
+        self,
+        library_ids: Optional[List[int]] = None,
+        search: Optional[str] = None,
+        genres: Optional[List[str]] = None,
+        tags: Optional[List[str]] = None,
+        publishers: Optional[List[str]] = None,
+        authors: Optional[List[Any]] = None,
     ) -> List[Dict[str, Any]]:
-        where_clause = ""
-        params: List[Any] = []
-        if library_ids is not None:
-            if len(library_ids) == 0:
-                return []
-            ph = ",".join("?" for _ in library_ids)
-            where_clause = f"WHERE library_id IN ({ph})"
-            params.extend(library_ids)
+        built = self._build_series_where_clause(
+            library_ids=library_ids,
+            search=search,
+            genres=genres,
+            tags=tags,
+            publishers=publishers,
+            authors=authors,
+        )
+        if built is None:
+            return []
+        where_clause, params = built
 
         query = f"""
             SELECT UPPER(SUBSTR(name, 1, 1)) AS first_char, COUNT(*) AS cnt
@@ -2691,6 +2723,76 @@ class Database:
         """
         async with self.get_db() as db:
             cursor = await db.execute(query, params_s + params_b + params_b + search_params)
+            rows = await cursor.fetchall()
+            return [r[0] for r in rows if r[0]]
+
+    async def get_series_release_years(
+        self,
+        library_ids: Optional[List[int]] = None,
+        search: Optional[str] = None,
+    ) -> List[str]:
+        clauses = ["release_date IS NOT NULL", "LENGTH(release_date) >= 4"]
+        params: List[Any] = []
+        if library_ids is not None:
+            if len(library_ids) == 0:
+                return []
+            ph = ",".join("?" for _ in library_ids)
+            clauses.append(f"library_id IN ({ph})")
+            params.extend(library_ids)
+        if search:
+            clauses.append("SUBSTR(release_date, 1, 4) LIKE ?")
+            params.append(f"%{search}%")
+
+        query = f"""
+            SELECT DISTINCT SUBSTR(release_date, 1, 4) AS yr
+            FROM series
+            WHERE {' AND '.join(clauses)}
+            ORDER BY yr DESC
+        """
+        async with self.get_db() as db:
+            cursor = await db.execute(query, params)
+            rows = await cursor.fetchall()
+            return [r[0] for r in rows if r[0] and r[0].isdigit()]
+
+    async def get_all_languages(
+        self,
+        library_ids: Optional[List[int]] = None,
+        search: Optional[str] = None,
+    ) -> List[str]:
+        clauses_s = []
+        clauses_b = ["b.deleted = 0"]
+        params_s: List[Any] = []
+        params_b: List[Any] = []
+
+        if library_ids is not None:
+            if len(library_ids) == 0:
+                return []
+            ph = ",".join("?" for _ in library_ids)
+            clauses_s.append(f"s.library_id IN ({ph})")
+            params_s.extend(library_ids)
+            clauses_b.append(f"b.library_id IN ({ph})")
+            params_b.extend(library_ids)
+
+        where_s = f"WHERE {' AND '.join(clauses_s)}" if clauses_s else ""
+        where_b = f"WHERE {' AND '.join(clauses_b)}"
+
+        search_clause = ""
+        search_params: List[Any] = []
+        if search:
+            search_clause = "AND lang LIKE ?"
+            search_params.append(f"%{search}%")
+
+        query = f"""
+            SELECT DISTINCT lang FROM (
+                SELECT json_extract(s.raw_json, '$.language') as lang FROM series s {where_s}
+                UNION
+                SELECT COALESCE(json_extract(b.raw_json, '$.metadata.language'), json_extract(b.raw_json, '$.language')) as lang FROM books b {where_b}
+            )
+            WHERE lang IS NOT NULL AND TRIM(lang) != '' {search_clause}
+            ORDER BY lang COLLATE NOCASE ASC
+        """
+        async with self.get_db() as db:
+            cursor = await db.execute(query, params_s + params_b + search_params)
             rows = await cursor.fetchall()
             return [r[0] for r in rows if r[0]]
 

@@ -3385,3 +3385,101 @@ async def test_series_list_sorting_releasedate_readdate_random():
     finally:
         app.dependency_overrides.pop(AuthService.require_user, None)
 
+
+@pytest.mark.asyncio
+async def test_reader_and_client_facing_endpoints(monkeypatch):
+    import json
+    from datetime import datetime, timedelta, timezone
+    from unittest.mock import AsyncMock
+    from httpx import AsyncClient, ASGITransport
+    from app.main import app, db
+    from app.clients.grimmory import grimmory_client
+    from app.models.internal import UserSession
+    from app.services.auth import AuthService
+
+    await db.connect()
+    await db.upsert_libraries([{"id": 97, "name": "Client Lib", "paths": []}])
+    await db.upsert_series_batch([
+        {
+            "id": "97-one",
+            "library_id": 97,
+            "name": "One Piece",
+            "slug": "one-piece",
+            "sort_title": "one piece",
+            "raw_json": json.dumps({"releaseDate": "2023-06-01", "language": "ja"}),
+        },
+        {
+            "id": "97-two",
+            "library_id": 97,
+            "name": "Alpha",
+            "slug": "alpha",
+            "sort_title": "alpha",
+            "raw_json": json.dumps({"releaseDate": "2021-01-01", "language": "en"}),
+        },
+    ])
+    await db.upsert_books_batch([
+        {"id": 9701, "series_id": "97-one", "library_id": 97, "name": "Vol 1", "number": 1.0, "page_count": 20},
+    ])
+
+    monkeypatch.setattr(grimmory_client, "stream_page_image", AsyncMock(return_value=b"\x89PNG\r\n\x1a\nrawbytes"))
+    monkeypatch.setattr(grimmory_client, "update_read_progress", AsyncMock(return_value=True))
+    monkeypatch.setattr(grimmory_client, "update_read_status", AsyncMock(return_value=True))
+
+    user = UserSession(
+        user_id=97,
+        username="client_parity_user",
+        token="token_client_parity",
+        roles=["ROLE_USER"],
+        is_admin=False,
+        is_active=True,
+        allowed_library_ids=[97],
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    app.dependency_overrides[AuthService.require_user] = lambda: user
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            # 1. Raw page endpoint
+            raw_resp = await client.get("/api/v1/books/9701/pages/1/raw")
+            assert raw_resp.status_code == 200
+            assert raw_resp.headers["content-type"].startswith("image/png")
+            assert raw_resp.content == b"\x89PNG\r\n\x1a\nrawbytes"
+
+            # 2. Book readlists endpoint
+            rl_resp = await client.get("/api/v1/books/9701/readlists")
+            assert rl_resp.status_code == 200
+            assert rl_resp.json() == []
+
+            # 3. POST /api/v1/series/list/alphabetical-groups
+            alpha_resp = await client.post(
+                "/api/v1/series/list/alphabetical-groups",
+                json={"condition": {"allOf": [{"libraryId": {"operator": "is", "value": "97"}}]}},
+            )
+            assert alpha_resp.status_code == 200
+            assert alpha_resp.json() == [{"group": "A", "count": 1}, {"group": "O", "count": 1}]
+
+            # 4. Referential metadata v1 & v2
+            langs_v1 = await client.get("/api/v1/languages?library_id=97")
+            assert langs_v1.status_code == 200
+            assert set(langs_v1.json()) == {"en", "ja"}
+
+            langs_v2 = await client.get("/api/v2/languages?library_id=97")
+            assert langs_v2.status_code == 200
+            assert set(langs_v2.json()["content"]) == {"en", "ja"}
+
+            years_v2 = await client.get("/api/v2/series/release-years?library_id=97")
+            assert years_v2.status_code == 200
+            assert years_v2.json()["content"] == ["2023", "2021"]
+
+            for path in ("/api/v1/age-ratings", "/api/v1/sharing-labels"):
+                r = await client.get(path)
+                assert r.status_code == 200
+                assert r.json() == []
+
+            for path in ("/api/v2/age-ratings", "/api/v2/sharing-labels"):
+                r = await client.get(path)
+                assert r.status_code == 200
+                assert r.json()["content"] == []
+    finally:
+        app.dependency_overrides.pop(AuthService.require_user, None)
+
+

@@ -166,4 +166,90 @@ def get_metadata_router(db: Database) -> APIRouter:
             return []
         return await db.get_series_tags(library_ids=effective_libs)
 
+    # ---------------- Languages, Age Ratings, Sharing Labels, Release Years ----------------
+
+    @router.get("/api/v1/languages", response_model=List[str])
+    async def get_languages_v1(
+        request: Request,
+        library_id: Optional[List[int]] = Query(None),
+        collection_id: Optional[str] = Query(None),
+        user: UserSession = Depends(AuthService.require_user),
+    ) -> List[str]:
+        parsed_libs = parse_library_ids_param(request, library_id)
+        effective_libs = resolve_effective_library_ids(user, parsed_libs)
+        if effective_libs is not None and len(effective_libs) == 0:
+            return []
+        return await db.get_all_languages(library_ids=effective_libs)
+
+    @router.get("/api/v2/languages", response_model=PageableDto[str])
+    async def get_languages_v2(
+        request: Request,
+        search: Optional[str] = Query(None),
+        library_id: Optional[List[int]] = Query(None),
+        collection_id: Optional[List[str]] = Query(None),
+        unpaged: bool = Query(False),
+        page: int = Query(0, ge=0),
+        size: int = Query(20, ge=1),
+        user: UserSession = Depends(AuthService.require_user),
+    ) -> PageableDto[str]:
+        is_unpaged = is_unpaged_request(request, unpaged)
+        parsed_libs = parse_library_ids_param(request, library_id)
+        effective_libs = resolve_effective_library_ids(user, parsed_libs)
+        if effective_libs is not None and len(effective_libs) == 0:
+            return build_pageable([], page, size, 0, unpaged=is_unpaged)
+        langs = await db.get_all_languages(library_ids=effective_libs, search=search)
+        total = len(langs)
+        content = langs if is_unpaged else langs[page * size : (page + 1) * size]
+        return build_pageable(content, page, size if not is_unpaged else total, total, unpaged=is_unpaged)
+
+    @router.get("/api/v1/age-ratings", response_model=List[str])
+    async def get_age_ratings_v1(user: UserSession = Depends(AuthService.require_user)) -> List[str]:
+        return []
+
+    @router.get("/api/v2/age-ratings", response_model=PageableDto[int])
+    async def get_age_ratings_v2(
+        request: Request,
+        unpaged: bool = Query(False),
+        page: int = Query(0, ge=0),
+        size: int = Query(20, ge=1),
+        user: UserSession = Depends(AuthService.require_user),
+    ) -> PageableDto[int]:
+        is_unpaged = is_unpaged_request(request, unpaged)
+        return build_pageable([], page, size if not is_unpaged else 0, 0, unpaged=is_unpaged)
+
+    @router.get("/api/v1/sharing-labels", response_model=List[str])
+    async def get_sharing_labels_v1(user: UserSession = Depends(AuthService.require_user)) -> List[str]:
+        return []
+
+    @router.get("/api/v2/sharing-labels", response_model=PageableDto[str])
+    async def get_sharing_labels_v2(
+        request: Request,
+        unpaged: bool = Query(False),
+        page: int = Query(0, ge=0),
+        size: int = Query(20, ge=1),
+        user: UserSession = Depends(AuthService.require_user),
+    ) -> PageableDto[str]:
+        is_unpaged = is_unpaged_request(request, unpaged)
+        return build_pageable([], page, size if not is_unpaged else 0, 0, unpaged=is_unpaged)
+
+    @router.get("/api/v2/series/release-years", response_model=PageableDto[str])
+    async def get_series_release_years_v2(
+        request: Request,
+        search: Optional[str] = Query(None),
+        library_id: Optional[List[int]] = Query(None),
+        unpaged: bool = Query(False),
+        page: int = Query(0, ge=0),
+        size: int = Query(20, ge=1),
+        user: UserSession = Depends(AuthService.require_user),
+    ) -> PageableDto[str]:
+        is_unpaged = is_unpaged_request(request, unpaged)
+        parsed_libs = parse_library_ids_param(request, library_id)
+        effective_libs = resolve_effective_library_ids(user, parsed_libs)
+        if effective_libs is not None and len(effective_libs) == 0:
+            return build_pageable([], page, size, 0, unpaged=is_unpaged)
+        years = await db.get_series_release_years(library_ids=effective_libs, search=search)
+        total = len(years)
+        content = years if is_unpaged else years[page * size : (page + 1) * size]
+        return build_pageable(content, page, size if not is_unpaged else total, total, unpaged=is_unpaged)
+
     return router

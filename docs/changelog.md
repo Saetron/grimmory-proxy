@@ -11,6 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.12.3] - 2026-11-15
 
+### Added
+- **Client & Reader API Parity**:
+  - Added `GET /api/v1/books/{book_id}/pages/{page_number}/raw` for untranscoded original page streaming while still tracking read progress.
+  - Added `GET /api/v1/books/{book_id}/readlists` for client book-detail compatibility.
+  - Added `POST /api/v1/series/list/alphabetical-groups` sharing `Database._build_series_where_clause` with `POST /api/v1/series/list`.
+  - Added referential metadata endpoints: `GET /api/v1/languages`, `GET /api/v2/languages`, `GET /api/v1/age-ratings`, `GET /api/v2/age-ratings`, `GET /api/v1/sharing-labels`, `GET /api/v2/sharing-labels`, and `GET /api/v2/series/release-years`.
+
 ### Fixed
 - **Komic & Reader Resume Location Preservation**:
   - Fixed `PageDto` serialization so `width`, `height`, `sizeBytes`, and `size` are always non-null (`int`/`str`), resolving Swift `Codable` decoding failures (`GET /api/v1/books/{book_id}/pages`) in KMReader and Komic.
