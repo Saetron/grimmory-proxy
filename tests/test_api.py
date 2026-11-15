@@ -3669,6 +3669,91 @@ async def test_webpub_manifests_positions_resources_and_series_zip(monkeypatch):
         app.dependency_overrides.pop(AuthService.require_user, None)
 
 
+@pytest.mark.asyncio
+async def test_sync_excludes_audiobooks_by_default():
+    import json
+    from unittest.mock import AsyncMock, patch
+    from app.config import settings
+    from app.main import db, page_calculator
+    from app.services.sync import SyncService
+
+    await db.connect()
+
+    # Seed a previously synced audiobook to verify it gets marked deleted when excluded
+    async with db.write_db() as conn:
+        await conn.execute(
+            "INSERT OR REPLACE INTO libraries (id, name, raw_json) VALUES (?, ?, ?)",
+            (101, "AudioLib", json.dumps({"id": 101, "name": "AudioLib"})),
+        )
+        await conn.execute(
+            "INSERT OR REPLACE INTO series (id, library_id, name, slug, raw_json) VALUES (?, ?, ?, ?, ?)",
+            ("101-old-audio", 101, "Old Audio", "old-audio", json.dumps({"id": "101-old-audio"})),
+        )
+        await conn.execute(
+            """
+            INSERT OR REPLACE INTO books
+            (id, series_id, library_id, name, book_type, deleted, raw_json)
+            VALUES (?, ?, ?, ?, ?, 0, ?)
+            """,
+            (9950, "101-old-audio", 101, "Old Audio", "AUDIOBOOK", json.dumps({"id": 9950})),
+        )
+        await conn.commit()
+
+    libraries_payload = [{"id": 101, "name": "AudioLib"}]
+    books_payload = [
+        {
+            "id": 9950,
+            "libraryId": 101,
+            "bookType": "AUDIOBOOK",
+            "metadata": {"title": "Old Audio", "seriesName": "Old Audio"},
+            "primaryFile": {"bookType": "AUDIOBOOK", "fileName": "old.m4b", "fileSizeKb": 5000},
+        },
+        {
+            "id": 9951,
+            "libraryId": 101,
+            "metadata": {"title": "Audio By Extension", "seriesName": "Audio By Extension"},
+            "primaryFile": {"fileName": "story.mp3", "fileSizeKb": 2000},
+        },
+        {
+            "id": 9952,
+            "libraryId": 101,
+            "bookType": "CBX",
+            "metadata": {"title": "Valid Comic", "seriesName": "Valid Comic"},
+            "primaryFile": {"bookType": "CBX", "fileName": "valid.cbz", "fileSizeKb": 1000},
+        },
+    ]
+
+    sync_service = SyncService(db, page_calculator)
+    orig_flag = settings.sync_include_audiobooks
+    try:
+        settings.sync_include_audiobooks = False
+        with (
+            patch("app.services.sync.grimmory_client.get_sync_token", new=AsyncMock(return_value="tok")),
+            patch("app.services.sync.grimmory_client.get_libraries", new=AsyncMock(return_value=libraries_payload)),
+            patch("app.services.sync.grimmory_client.get_library_books", new=AsyncMock(return_value=books_payload)),
+            patch("app.services.sync.grimmory_client.get_shelves", new=AsyncMock(return_value=[])),
+            patch("app.services.sync.grimmory_client.get_magic_shelves", new=AsyncMock(return_value=[])),
+        ):
+            await sync_service.sync_all_metadata()
+
+        async with db.get_db() as conn:
+            cursor = await conn.execute(
+                "SELECT id, deleted FROM books WHERE id IN (9950, 9951, 9952) ORDER BY id"
+            )
+            rows = {row[0]: row[1] for row in await cursor.fetchall()}
+
+        assert rows.get(9950) == 1  # Previously synced audiobook marked deleted
+        assert 9951 not in rows     # .mp3 excluded before insert
+        assert rows.get(9952) == 0  # CBX comic remains active
+
+        # Empty audiobook series should be cleaned up
+        async with db.get_db() as conn:
+            cursor = await conn.execute("SELECT id FROM series WHERE id = '101-old-audio'")
+            assert await cursor.fetchone() is None
+    finally:
+        settings.sync_include_audiobooks = orig_flag
+
+
 
 
 

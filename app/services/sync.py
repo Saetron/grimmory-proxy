@@ -24,6 +24,18 @@ from app.services.page_calculator import PageCalculator
 logger = logging.getLogger("grimmory_proxy.sync")
 
 SLUG_PATTERN = re.compile(r"[^a-z0-9]+")
+AUDIOBOOK_EXTENSIONS = (".m4b", ".mp3", ".m4a", ".ogg", ".flac", ".aac", ".opus")
+
+
+def _is_audiobook(book: Dict[str, Any]) -> bool:
+    """Return True if a Grimmory book record represents an audiobook."""
+    if str(book.get("bookType") or "").upper() == "AUDIOBOOK":
+        return True
+    pfile = book.get("primaryFile") or {}
+    if str(pfile.get("bookType") or "").upper() == "AUDIOBOOK":
+        return True
+    file_path = str(pfile.get("filePath") or pfile.get("fileName") or "").lower()
+    return file_path.endswith(AUDIOBOOK_EXTENSIONS)
 
 
 def generate_series_slug(name: str) -> str:
@@ -157,6 +169,14 @@ class SyncService:
             books_raw = list(all_books_map.values())
             self._log(f"Fetched {len(books_raw)} total books from Grimmory")
             logger.info(f"Fetched {len(books_raw)} total books from Grimmory")
+
+            if not settings.sync_include_audiobooks:
+                filtered_books = [b for b in books_raw if not _is_audiobook(b)]
+                excluded_count = len(books_raw) - len(filtered_books)
+                if excluded_count:
+                    self._log(f"Excluded {excluded_count} audiobooks from Komga catalog")
+                    logger.info(f"Excluded {excluded_count} audiobooks from Komga catalog")
+                books_raw = filtered_books
 
             # Detect and handle books removed upstream on Grimmory
             current_remote_book_ids = {b["id"] for b in books_raw if not b.get("deleted")}

@@ -16,6 +16,7 @@ CONFIG_FIELDS: List[str] = [
     "sync_interval_minutes",
     "sync_on_startup",
     "sync_concurrency",
+    "sync_include_audiobooks",
     "user_sync_interval_minutes",
     "database_path",
     "thumbnails_dir",
@@ -133,6 +134,10 @@ class Settings(BaseSettings):
     sync_concurrency: int = Field(
         default=6,
         description="Concurrency limit for background series/book page inspection",
+    )
+    sync_include_audiobooks: bool = Field(
+        default=False,
+        description="Whether to include audiobook files during catalog sync (Komga readers typically do not support audiobooks)",
     )
     user_sync_interval_minutes: int = Field(
         default=5,

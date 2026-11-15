@@ -25,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Added `GET /api/v1/books/{book_id}/manifest/epub`, `GET /api/v1/books/{book_id}/manifest/pdf`, `GET /api/v1/books/{book_id}/positions`, and `GET /api/v1/books/{book_id}/resource/{resource}` for Readium WebPub EPUB/PDF readers.
   - Added `GET /api/v1/series/{series_id}/file` to stream a ZIP archive of all books in a series.
   - Regenerated [docs/openapi.json](file:///Users/jbudz/Documents/grimmory-proxy/docs/openapi.json) to reflect all newly added endpoints.
+- **Audiobook Filtering (`SYNC_INCLUDE_AUDIOBOOKS`)**:
+  - Excluded audiobooks (`bookType == "AUDIOBOOK"` or `.m4b`/`.mp3`/`.m4a`/`.ogg`/`.flac`/`.aac`/`.opus` files) during [`SyncService.sync_all_metadata`](file:///Users/jbudz/Documents/grimmory-proxy/app/services/sync.py) by default (`sync_include_audiobooks=False` in [`Settings`](file:///Users/jbudz/Documents/grimmory-proxy/app/config.py)), automatically marking any previously synced audiobooks as deleted and pruning empty series.
 
 ### Fixed
 - **Komic & Reader Resume Location Preservation**:
