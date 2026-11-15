@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Synchronized `GET /api/v1/books/{book_id}/progression` (Readium R2 progression) with `read_progress` so readers querying `/progression` receive the latest reading location even when progress was recorded via `PATCH /api/v1/books/{book_id}/read-progress` or page streaming, or when `read_progress` is newer than a previously stored R2 progression.
   - Updated `ReadProgressDto.created` and `ReadProgressDto.lastModified` in `KomgaMapper.to_book_dto` and `GET /api/v1/books/{book_id}/read-progress` to reflect `read_date` rather than the book's file modification timestamp.
   - Protected `UserSyncService` from overwriting active local progress (`page > 1`) with `page = 1` when Grimmory reports `READING` without a specific page or `read_date`.
+- **Series List Sorting (`POST /api/v1/series/list` & `GET /api/v1/series`)**:
+  - Added support in `Database.get_series_list` for `booksMetadata.releaseDate` / `releaseDate`, `readDate` / `readProgress.readDate` (scoped to `user_id`), and `random` (`RANDOM()`) sorting instead of falling back to `sort_title`, with `NULLS LAST` ordering for undated/unread series.
 
 ### Dependencies
 - Merged open Dependabot PRs updating `fastapi` (`>=0.162.4`), `pydantic` (`>=2.14.3`), `pypdf` (`>=7.0.1`), and `zensical` (`>=0.1.1`).

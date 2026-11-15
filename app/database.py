@@ -779,19 +779,42 @@ class Database:
         where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
         # Normalize sort column
-        clean_sort = sort_by.lower().replace("metadata.", "").replace("sort", "")
-        allowed_sorts = {
-            "name": "sort_title",
-            "title": "sort_title",
-            "created": "created",
-            "createddate": "created",
-            "lastmodified": "last_modified",
-            "lastmodifieddate": "last_modified",
-            "books_count": "books_count",
-            "bookscount": "books_count",
-        }
-        order_col = allowed_sorts.get(clean_sort, "sort_title")
+        clean_sort = sort_by.lower().replace("metadata.", "").replace("sort", "").strip()
         order_direction = "DESC" if sort_dir.lower() == "desc" else "ASC"
+        order_params: List[Any] = []
+
+        if clean_sort == "random":
+            order_by_sql = "RANDOM()"
+        elif clean_sort in ("releasedate", "booksreleasedate", "release", "booksrelease"):
+            release_expr = (
+                "NULLIF(COALESCE("
+                "json_extract(raw_json, '$.releaseDate'), "
+                "(SELECT MIN(NULLIF(COALESCE(b.released, json_extract(b.raw_json, '$.metadata.releaseDate'), json_extract(b.raw_json, '$.releaseDate')), '')) "
+                "FROM books b WHERE b.series_id = series.id AND b.deleted = 0)"
+                "), '')"
+            )
+            order_by_sql = f"{release_expr} {order_direction} NULLS LAST, sort_title ASC"
+        elif clean_sort in ("readdate", "readprogress.readdate", "readprogress") and user_id is not None:
+            read_date_expr = (
+                "NULLIF((SELECT MAX(rp.read_date) FROM books b "
+                "JOIN read_progress rp ON b.id = rp.book_id "
+                "WHERE b.series_id = series.id AND b.deleted = 0 AND rp.user_id = ?), '')"
+            )
+            order_params.append(user_id)
+            order_by_sql = f"{read_date_expr} {order_direction} NULLS LAST, sort_title ASC"
+        else:
+            allowed_sorts = {
+                "name": "sort_title",
+                "title": "sort_title",
+                "created": "created",
+                "createddate": "created",
+                "lastmodified": "last_modified",
+                "lastmodifieddate": "last_modified",
+                "books_count": "books_count",
+                "bookscount": "books_count",
+            }
+            order_col = allowed_sorts.get(clean_sort, "sort_title")
+            order_by_sql = f"{order_col} {order_direction}"
 
         async with self.get_db() as db:
             db.row_factory = aiosqlite.Row
@@ -807,10 +830,10 @@ class Database:
                                (SELECT COUNT(*) FROM books b JOIN read_progress rp ON b.id = rp.book_id WHERE b.series_id = s.id AND b.deleted = 0 AND rp.user_id = ? AND rp.completed = 0 AND (rp.page > 0 OR rp.read_date IS NOT NULL)) as books_in_progress_count
                         FROM (
                             SELECT * FROM series {where_clause}
-                            ORDER BY {order_col} {order_direction}
+                            ORDER BY {order_by_sql}
                         ) s
                     """
-                    cursor = await db.execute(query, [user_id, user_id] + params)
+                    cursor = await db.execute(query, [user_id, user_id] + params + order_params)
                 else:
                     query = f"""
                         SELECT s.*,
@@ -818,25 +841,25 @@ class Database:
                                (SELECT COUNT(*) FROM books b JOIN read_progress rp ON b.id = rp.book_id WHERE b.series_id = s.id AND b.deleted = 0 AND rp.user_id = ? AND rp.completed = 0 AND (rp.page > 0 OR rp.read_date IS NOT NULL)) as books_in_progress_count
                         FROM (
                             SELECT * FROM series {where_clause}
-                            ORDER BY {order_col} {order_direction}
+                            ORDER BY {order_by_sql}
                             LIMIT ? OFFSET ?
                         ) s
                     """
-                    cursor = await db.execute(query, [user_id, user_id] + params + [limit, offset])
+                    cursor = await db.execute(query, [user_id, user_id] + params + order_params + [limit, offset])
             else:
                 if unpaged:
                     query = f"""
                         SELECT * FROM series {where_clause}
-                        ORDER BY {order_col} {order_direction}
+                        ORDER BY {order_by_sql}
                     """
-                    cursor = await db.execute(query, params)
+                    cursor = await db.execute(query, params + order_params)
                 else:
                     query = f"""
                         SELECT * FROM series {where_clause}
-                        ORDER BY {order_col} {order_direction}
+                        ORDER BY {order_by_sql}
                         LIMIT ? OFFSET ?
                     """
-                    cursor = await db.execute(query, params + [limit, offset])
+                    cursor = await db.execute(query, params + order_params + [limit, offset])
 
             rows = await cursor.fetchall()
             return [dict(r) for r in rows], total

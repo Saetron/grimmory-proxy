@@ -3301,13 +3301,87 @@ async def test_komic_resume_last_location_and_unknown_page_count(monkeypatch):
         assert isinstance(pages_json[0]["height"], int)
 
 
+@pytest.mark.asyncio
+async def test_series_list_sorting_releasedate_readdate_random():
+    import json
+    from datetime import datetime, timedelta, timezone
+    from httpx import AsyncClient, ASGITransport
+    from app.main import app, db
+    from app.models.internal import UserSession
+    from app.services.auth import AuthService
 
+    await db.connect()
+    await db.upsert_libraries([{"id": 96, "name": "Sort Lib", "paths": []}])
+    await db.upsert_series_batch([
+        {
+            "id": "96-alpha",
+            "library_id": 96,
+            "name": "Alpha Series",
+            "slug": "alpha-series",
+            "sort_title": "alpha series",
+            "raw_json": json.dumps({"releaseDate": "2024-05-01"}),
+        },
+        {
+            "id": "96-beta",
+            "library_id": 96,
+            "name": "Beta Series",
+            "slug": "beta-series",
+            "sort_title": "beta series",
+            "raw_json": json.dumps({"releaseDate": "2022-01-15"}),
+        },
+        {
+            "id": "96-gamma",
+            "library_id": 96,
+            "name": "Gamma Series",
+            "slug": "gamma-series",
+            "sort_title": "gamma series",
+            "raw_json": json.dumps({}),
+        },
+    ])
+    await db.upsert_books_batch([
+        {"id": 9601, "series_id": "96-alpha", "library_id": 96, "name": "Alpha 1", "number": 1.0, "page_count": 20, "released": "2024-05-01"},
+        {"id": 9602, "series_id": "96-beta", "library_id": 96, "name": "Beta 1", "number": 1.0, "page_count": 20, "released": "2022-01-15"},
+        {"id": 9603, "series_id": "96-gamma", "library_id": 96, "name": "Gamma 1", "number": 1.0, "page_count": 20},
+    ])
+    await db.upsert_read_progress(96, 9601, 5, False, "2026-01-10T10:00:00Z")
+    await db.upsert_read_progress(96, 9602, 10, False, "2026-02-20T10:00:00Z")
 
+    user = UserSession(
+        user_id=96,
+        username="series_sort_user",
+        token="token_series_sort",
+        roles=["ROLE_USER"],
+        is_admin=False,
+        is_active=True,
+        allowed_library_ids=[96],
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    app.dependency_overrides[AuthService.require_user] = lambda: user
+    try:
+        body = {"condition": {"allOf": [{"libraryId": {"operator": "is", "value": "96"}}]}}
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            # 1. booksMetadata.releaseDate asc/desc (undated series last)
+            resp_rel_asc = await client.post("/api/v1/series/list?sort=booksMetadata.releaseDate,asc", json=body)
+            assert resp_rel_asc.status_code == 200
+            assert [s["id"] for s in resp_rel_asc.json()["content"]] == ["96-beta", "96-alpha", "96-gamma"]
 
+            resp_rel_desc = await client.post("/api/v1/series/list?sort=booksMetadata.releaseDate,desc", json=body)
+            assert resp_rel_desc.status_code == 200
+            assert [s["id"] for s in resp_rel_desc.json()["content"]] == ["96-alpha", "96-beta", "96-gamma"]
 
+            # 2. readDate asc/desc (unread series last)
+            resp_read_asc = await client.post("/api/v1/series/list?sort=readDate,asc", json=body)
+            assert resp_read_asc.status_code == 200
+            assert [s["id"] for s in resp_read_asc.json()["content"]] == ["96-alpha", "96-beta", "96-gamma"]
 
+            resp_read_desc = await client.post("/api/v1/series/list?sort=readDate,desc", json=body)
+            assert resp_read_desc.status_code == 200
+            assert [s["id"] for s in resp_read_desc.json()["content"]] == ["96-beta", "96-alpha", "96-gamma"]
 
-
-
-
+            # 3. random sort executes without error and returns all matching series
+            resp_rand = await client.post("/api/v1/series/list?sort=random,asc", json=body)
+            assert resp_rand.status_code == 200
+            assert set(s["id"] for s in resp_rand.json()["content"]) == {"96-alpha", "96-beta", "96-gamma"}
+    finally:
+        app.dependency_overrides.pop(AuthService.require_user, None)
 
