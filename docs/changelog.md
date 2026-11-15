@@ -31,6 +31,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Audiobook Filtering (`SYNC_INCLUDE_AUDIOBOOKS`)**:
   - Excluded audiobooks (`bookType == "AUDIOBOOK"` or `.m4b`/`.mp3`/`.m4a`/`.ogg`/`.flac`/`.aac`/`.opus` files) during `SyncService.sync_all_metadata` (`app/services/sync.py`) by default (`sync_include_audiobooks=False` in `app/config.py`), automatically marking any previously synced audiobooks as deleted and pruning empty series.
 
+### Changed
+- **Sync & Progress Code Cleanup**:
+  - Extracted `_derive_remote_read_state` and fixed `_sync_grimmory_read_states` return typing (`-> int`) in `app/services/user_sync.py`.
+  - Extracted `_merge_ci_strings` and `_merge_series_metadata`, removed unused `author_names` tracking, and hoisted `release_memory` imports in `app/services/sync.py`.
+
 ### Fixed
 - **Constructed Standalone Series Redirects**:
   - Updated `redirect_series` (`GET /series/{series_id}` in `app/main.py`) and `KomgaMapper.to_series_dto` (`app/services/mapper.py`) so constructed oneshot/standalone series (single book without an explicit Grimmory `seriesName`) redirect to `/book/{bookId}` instead of a non-existent `/series/{seriesName}` page in Grimmory.

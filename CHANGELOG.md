@@ -31,6 +31,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Audiobook Filtering (`SYNC_INCLUDE_AUDIOBOOKS`)**:
   - Excluded audiobooks (`bookType == "AUDIOBOOK"` or `.m4b`/`.mp3`/`.m4a`/`.ogg`/`.flac`/`.aac`/`.opus` files) during [`SyncService.sync_all_metadata`](file:///Users/jbudz/Documents/grimmory-proxy/app/services/sync.py) by default (`sync_include_audiobooks=False` in [`Settings`](file:///Users/jbudz/Documents/grimmory-proxy/app/config.py)), automatically marking any previously synced audiobooks as deleted and pruning empty series.
 
+### Changed
+- **Sync & Progress Code Cleanup**:
+  - Extracted [`_derive_remote_read_state`](file:///Users/jbudz/Documents/grimmory-proxy/app/services/user_sync.py) and fixed `_sync_grimmory_read_states` return typing (`-> int`) in [app/services/user_sync.py](file:///Users/jbudz/Documents/grimmory-proxy/app/services/user_sync.py).
+  - Extracted [`_merge_ci_strings`](file:///Users/jbudz/Documents/grimmory-proxy/app/services/sync.py) and [`_merge_series_metadata`](file:///Users/jbudz/Documents/grimmory-proxy/app/services/sync.py), removed unused `author_names` tracking, and hoisted `release_memory` imports in [app/services/sync.py](file:///Users/jbudz/Documents/grimmory-proxy/app/services/sync.py).
+
 ### Fixed
 - **Constructed Standalone Series Redirects**:
   - Updated [`redirect_series`](file:///Users/jbudz/Documents/grimmory-proxy/app/main.py) (`GET /series/{series_id}`) and [`KomgaMapper.to_series_dto`](file:///Users/jbudz/Documents/grimmory-proxy/app/services/mapper.py) (`links`) so constructed oneshot/standalone series (single book without an explicit Grimmory `seriesName`) redirect to `/book/{bookId}` instead of a non-existent `/series/{seriesName}` page in Grimmory.

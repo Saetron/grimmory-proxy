@@ -19,12 +19,59 @@ from app.services.mapper import (
     extract_summary,
     extract_tags,
 )
+from app.services.memory import release_memory
 from app.services.page_calculator import PageCalculator
 
 logger = logging.getLogger("grimmory_proxy.sync")
 
 SLUG_PATTERN = re.compile(r"[^a-z0-9]+")
 AUDIOBOOK_EXTENSIONS = (".m4b", ".mp3", ".m4a", ".ogg", ".flac", ".aac", ".opus")
+
+
+def _merge_ci_strings(target: List[str], additions: List[str]) -> None:
+    """Append items from additions into target, deduplicating case-insensitively."""
+    existing = {item.lower() for item in target}
+    for item in additions:
+        low = item.lower()
+        if low not in existing:
+            existing.add(low)
+            target.append(item)
+
+
+def _merge_series_metadata(
+    s_raw: Dict[str, Any],
+    b_authors: List[Dict[str, Any]],
+    b_genres: List[str],
+    b_tags: List[str],
+    b_publisher: Optional[str],
+    b_summary: Optional[str],
+    released_str: Optional[str],
+    has_explicit_series: bool,
+    series_total_val: Optional[int],
+) -> None:
+    """Merge book-level metadata into an existing aggregated series raw_json dict."""
+    if has_explicit_series:
+        s_raw["hasExplicitSeries"] = True
+    s_raw["standaloneBookId"] = None
+    if series_total_val and (not s_raw.get("seriesTotal") or series_total_val > s_raw["seriesTotal"]):
+        s_raw["seriesTotal"] = series_total_val
+
+    existing_auths = {(a["name"].lower(), a.get("role", "writer").lower()) for a in s_raw.get("authors", [])}
+    for a in b_authors:
+        key = (a["name"].lower(), a.get("role", "writer").lower())
+        if key not in existing_auths:
+            existing_auths.add(key)
+            s_raw["authors"].append(a)
+
+    _merge_ci_strings(s_raw.setdefault("genres", []), b_genres)
+    _merge_ci_strings(s_raw.setdefault("tags", []), b_tags)
+
+    if not s_raw.get("publisher") and b_publisher:
+        s_raw["publisher"] = b_publisher
+    if not s_raw.get("summary") and b_summary:
+        s_raw["summary"] = b_summary
+    if released_str and (not s_raw.get("releaseDate") or released_str < s_raw["releaseDate"]):
+        s_raw["releaseDate"] = released_str
 
 
 def _is_audiobook(book: Dict[str, Any]) -> bool:
@@ -195,7 +242,6 @@ class SyncService:
             series_dict: Dict[str, Dict[str, Any]] = {}
             book_records: List[Dict[str, Any]] = []
             author_records: set = set()
-            author_names: set = set()
 
             colliding_series_keys = detect_series_collisions(books_raw)
 
@@ -287,40 +333,22 @@ class SyncService:
                         },
                     }
                 else:
-                    s_raw = series_dict[series_id]["raw_json"]
-                    if has_explicit_series:
-                        s_raw["hasExplicitSeries"] = True
-                    s_raw["standaloneBookId"] = None
-                    if series_total_val and (not s_raw.get("seriesTotal") or series_total_val > s_raw["seriesTotal"]):
-                        s_raw["seriesTotal"] = series_total_val
-                    existing_auths = {(a["name"].lower(), a.get("role", "writer").lower()) for a in s_raw.get("authors", [])}
-                    for a in b_authors:
-                        key = (a["name"].lower(), a.get("role", "writer").lower())
-                        if key not in existing_auths:
-                            existing_auths.add(key)
-                            s_raw["authors"].append(a)
-                    existing_genres = {g.lower() for g in s_raw.get("genres", [])}
-                    for g in b_genres:
-                        if g.lower() not in existing_genres:
-                            existing_genres.add(g.lower())
-                            s_raw["genres"].append(g)
-                    existing_tags = {t.lower() for t in s_raw.get("tags", [])}
-                    for t in b_tags:
-                        if t.lower() not in existing_tags:
-                            existing_tags.add(t.lower())
-                            s_raw["tags"].append(t)
-                    if not s_raw.get("publisher") and b_publisher:
-                        s_raw["publisher"] = b_publisher
-                    if not s_raw.get("summary") and b_summary:
-                        s_raw["summary"] = b_summary
-                    if released_str and (not s_raw.get("releaseDate") or released_str < s_raw["releaseDate"]):
-                        s_raw["releaseDate"] = released_str
+                    _merge_series_metadata(
+                        series_dict[series_id]["raw_json"],
+                        b_authors,
+                        b_genres,
+                        b_tags,
+                        b_publisher,
+                        b_summary,
+                        released_str,
+                        has_explicit_series,
+                        series_total_val,
+                    )
 
                 series_dict[series_id]["books_count"] += 1
 
                 for a in b_authors:
                     author_records.add((a["name"], a.get("role", "writer")))
-                    author_names.add(a["name"])
 
                 book_records.append({
                     "id": b["id"],
@@ -397,7 +425,6 @@ class SyncService:
             except Exception:
                 pass
 
-            from app.services.memory import release_memory
             release_memory()
 
             # If this was initial startup with an empty database, or new books arrived without page counts,
@@ -425,7 +452,6 @@ class SyncService:
             self.status.current_phase = "failed"
             await self.db.set_state("sync_status", "idle")
         finally:
-            from app.services.memory import release_memory
             release_memory()
 
         return self.status

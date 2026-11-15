@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timezone, timedelta
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 import httpx
 
 from app.clients.grimmory import grimmory_client
@@ -10,6 +10,7 @@ from app.config import settings
 from app.database import Database
 from app.models.internal import ReadSyncStatus, UserSession
 from app.services.mapper import _safe_float, _safe_int, format_iso_timestamp
+from app.services.memory import release_memory
 
 logger = logging.getLogger("grimmory_proxy.user_sync")
 
@@ -43,6 +44,85 @@ def _merge_slim_book(target: Dict[int, Dict[str, Any]], b: Dict[str, Any]) -> No
         for k, v in slim.items():
             if v is not None:
                 existing[k] = v
+
+
+def _derive_remote_read_state(b: Dict[str, Any]) -> Tuple[bool, bool, int, Optional[str], int]:
+    """Compute (is_completed, is_in_prog, page, read_date, completed_page) from a slimmed Grimmory book dict."""
+    meta = b.get("metadata") or {}
+    page_count = _safe_int(meta.get("pageCount") or b.get("page_count"), 0)
+
+    read_status = b.get("readStatus")
+    date_finished = b.get("dateFinished")
+    cbx = b.get("cbxProgress") if isinstance(b.get("cbxProgress"), dict) else None
+    pdf = b.get("pdfProgress") if isinstance(b.get("pdfProgress"), dict) else None
+    epub = b.get("epubProgress") if isinstance(b.get("epubProgress"), dict) else None
+    rp = b.get("readProgress") if isinstance(b.get("readProgress"), dict) else None
+
+    cbx_perc = _safe_float(cbx.get("percentage")) if cbx else 0.0
+    cbx_page = _safe_int(cbx.get("page")) if cbx else 0
+    pdf_perc = _safe_float(pdf.get("percentage")) if pdf else 0.0
+    pdf_page = _safe_int(pdf.get("page")) if pdf else 0
+    epub_perc = _safe_float(epub.get("percentage")) if epub else 0.0
+    epub_page = max(1, round((epub_perc / 100.0) * page_count)) if epub_perc > 0 and page_count > 0 else 1
+
+    is_completed = False
+    is_in_prog = False
+    page = 1
+    read_date: Optional[str] = None
+
+    if read_status == "READ" or date_finished:
+        is_completed = True
+        read_date = date_finished
+    elif cbx and (cbx_perc >= 95.0 or (page_count > 0 and cbx_page >= page_count)):
+        is_completed = True
+        read_date = cbx.get("lastRead")
+    elif pdf and (pdf_perc >= 95.0 or (page_count > 0 and pdf_page >= page_count)):
+        is_completed = True
+        read_date = pdf.get("lastRead")
+    elif epub and epub_perc >= 95.0:
+        is_completed = True
+        read_date = epub.get("lastRead")
+    elif rp and (rp.get("completed") or (page_count > 0 and _safe_int(rp.get("page")) >= page_count)):
+        is_completed = True
+        read_date = rp.get("readDate")
+
+    if not is_completed:
+        if read_status in ("READING", "IN_PROGRESS"):
+            is_in_prog = True
+            read_date = (
+                (cbx.get("lastRead") if cbx else None)
+                or (pdf.get("lastRead") if pdf else None)
+                or (epub.get("lastRead") if epub else None)
+                or (rp.get("readDate") if rp else None)
+            )
+            page = cbx_page or pdf_page or (epub_page if epub_perc > 0 else 1)
+        elif cbx_perc > 0 or cbx_page > 0:
+            is_in_prog = True
+            page = cbx_page or 1
+            read_date = cbx.get("lastRead")
+        elif pdf_perc > 0 or pdf_page > 0:
+            is_in_prog = True
+            page = pdf_page or 1
+            read_date = pdf.get("lastRead")
+        elif epub_perc > 0:
+            is_in_prog = True
+            page = epub_page
+            read_date = epub.get("lastRead")
+        elif rp:
+            rp_page = _safe_int(rp.get("page"))
+            if rp_page > 1 or (rp.get("completed") is False and rp.get("readDate")):
+                is_in_prog = True
+                page = rp_page or 1
+                read_date = rp.get("readDate")
+
+    completed_page = (
+        page_count
+        or (cbx_page if cbx_page > 0 else None)
+        or (pdf_page if pdf_page > 0 else None)
+        or (epub_page if epub_perc > 0 else None)
+        or 1
+    )
+    return is_completed, is_in_prog, page, read_date, completed_page
 
 
 class UserSyncService:
@@ -274,7 +354,7 @@ class UserSyncService:
                 logger.warning(f"Failed to check Grimmory read states for user {user.username}: {e}")
                 return False
 
-    async def _sync_grimmory_read_states(self, user: UserSession) -> None:
+    async def _sync_grimmory_read_states(self, user: UserSession) -> int:
         logger.info(f"Checking Grimmory read states for user '{user.username}' (id={user.user_id})")
 
         if settings.sync_username and user.username == settings.sync_username:
@@ -359,115 +439,28 @@ class UserSyncService:
         progress_records: List[Dict[str, Any]] = []
 
         for book_id, b in all_books_map.items():
-            meta = b.get("metadata") or {}
-            page_count = _safe_int(meta.get("pageCount") or b.get("page_count"), 0)
-
-            read_status = b.get("readStatus")
-            date_finished = b.get("dateFinished")
-            cbx = b.get("cbxProgress") if isinstance(b.get("cbxProgress"), dict) else None
-            pdf = b.get("pdfProgress") if isinstance(b.get("pdfProgress"), dict) else None
-            epub = b.get("epubProgress") if isinstance(b.get("epubProgress"), dict) else None
-            rp = b.get("readProgress") if isinstance(b.get("readProgress"), dict) else None
-
-            cbx_perc = _safe_float(cbx.get("percentage")) if cbx else 0.0
-            cbx_page = _safe_int(cbx.get("page")) if cbx else 0
-            pdf_perc = _safe_float(pdf.get("percentage")) if pdf else 0.0
-            pdf_page = _safe_int(pdf.get("page")) if pdf else 0
-            epub_perc = _safe_float(epub.get("percentage")) if epub else 0.0
-
-            is_completed = False
-            is_in_prog = False
-            page = 1
-            read_date = None
-
-            # Completed check
-            if read_status == "READ" or date_finished:
-                is_completed = True
-                read_date = date_finished
-            elif cbx and (cbx_perc >= 95.0 or (page_count > 0 and cbx_page >= page_count)):
-                is_completed = True
-                read_date = cbx.get("lastRead")
-            elif pdf and (pdf_perc >= 95.0 or (page_count > 0 and pdf_page >= page_count)):
-                is_completed = True
-                read_date = pdf.get("lastRead")
-            elif epub and epub_perc >= 95.0:
-                is_completed = True
-                read_date = epub.get("lastRead")
-            elif rp and (rp.get("completed") or (page_count > 0 and _safe_int(rp.get("page")) >= page_count)):
-                is_completed = True
-                read_date = rp.get("readDate")
-
-            # In-progress check
-            if not is_completed:
-                epub_page = max(1, round((epub_perc / 100.0) * page_count)) if epub_perc > 0 and page_count > 0 else 1
-
-                if read_status in ("READING", "IN_PROGRESS"):
-                    is_in_prog = True
-                    read_date = (
-                        (cbx.get("lastRead") if cbx else None)
-                        or (pdf.get("lastRead") if pdf else None)
-                        or (epub.get("lastRead") if epub else None)
-                        or (rp.get("readDate") if rp else None)
-                    )
-                    page = cbx_page or pdf_page or (epub_page if epub_perc > 0 else 1)
-                elif cbx_perc > 0 or cbx_page > 0:
-                    is_in_prog = True
-                    page = cbx_page or 1
-                    read_date = cbx.get("lastRead")
-                elif pdf_perc > 0 or pdf_page > 0:
-                    is_in_prog = True
-                    page = pdf_page or 1
-                    read_date = pdf.get("lastRead")
-                elif epub_perc > 0:
-                    is_in_prog = True
-                    page = epub_page
-                    read_date = epub.get("lastRead")
-                elif rp:
-                    rp_page = _safe_int(rp.get("page"))
-                    if rp_page > 1 or (rp.get("completed") is False and rp.get("readDate")):
-                        is_in_prog = True
-                        page = rp_page or 1
-                        read_date = rp.get("readDate")
+            is_completed, is_in_prog, page, read_date, final_page = _derive_remote_read_state(b)
 
             # Check against local progress to protect local reading state
             local_rec = existing_local.get(book_id)
             if local_rec:
-                # If local record is already completed, do not downgrade it
                 if local_rec.get("completed") and not is_completed:
                     continue
                 local_ts = local_rec.get("read_date") or ""
                 remote_ts = format_iso_timestamp(read_date or b.get("last_modified") or b.get("addedOn"))
-                # If local record timestamp is newer, preserve local progress
                 if local_ts and remote_ts and local_ts > remote_ts:
                     continue
-                # If remote has no progress (or unread), but local has active progress, keep local
                 if not is_completed and not is_in_prog:
                     continue
-                # If remote reports READING with no specific page (>1), preserve local page > 1
                 if not is_completed and is_in_prog and page <= 1 and (local_rec.get("page") or 1) > 1:
                     continue
 
-            if is_completed:
-                final_page = (
-                    page_count
-                    or (cbx_page if cbx_page > 0 else None)
-                    or (pdf_page if pdf_page > 0 else None)
-                    or (epub_page if epub_perc > 0 else None)
-                    or 1
-                )
+            if is_completed or is_in_prog:
                 progress_records.append({
                     "user_id": user.user_id,
                     "book_id": book_id,
-                    "page": final_page,
-                    "completed": True,
-                    "read_date": format_iso_timestamp(read_date or b.get("last_modified") or b.get("addedOn")),
-                })
-            elif is_in_prog:
-                progress_records.append({
-                    "user_id": user.user_id,
-                    "book_id": book_id,
-                    "page": page,
-                    "completed": False,
+                    "page": final_page if is_completed else page,
+                    "completed": is_completed,
                     "read_date": format_iso_timestamp(read_date or b.get("last_modified") or b.get("addedOn")),
                 })
 
@@ -478,12 +471,8 @@ class UserSyncService:
             self._log(f"Synchronized {len(progress_records)} read states from Grimmory for user '{user.username}'")
             synced_count = len(progress_records)
 
-        try:
-            del all_books_map
-            del progress_records
-        except Exception:
-            pass
-        from app.services.memory import release_memory
+        all_books_map.clear()
+        progress_records.clear()
         release_memory()
         return synced_count
 
