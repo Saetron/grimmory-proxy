@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS series (
     books_count INTEGER DEFAULT 0,
     created TEXT,
     last_modified TEXT,
+    release_date TEXT,
     raw_json TEXT,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (library_id) REFERENCES libraries (id) ON DELETE CASCADE
@@ -59,6 +60,7 @@ CREATE TABLE IF NOT EXISTS books (
     koreader_hash TEXT,
     created TEXT,
     last_modified TEXT,
+    release_date TEXT,
     raw_json TEXT,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (series_id) REFERENCES series (id) ON DELETE CASCADE,
@@ -191,6 +193,7 @@ CREATE INDEX IF NOT EXISTS idx_series_library_id ON series(library_id);
 CREATE INDEX IF NOT EXISTS idx_series_name ON series(name);
 CREATE INDEX IF NOT EXISTS idx_series_slug ON series(slug);
 CREATE INDEX IF NOT EXISTS idx_series_sort_title ON series(sort_title);
+CREATE INDEX IF NOT EXISTS idx_series_release_date ON series(release_date);
 CREATE INDEX IF NOT EXISTS idx_books_series_number ON books(series_id, number);
 CREATE INDEX IF NOT EXISTS idx_authors_name ON authors(name);
 CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
@@ -432,6 +435,28 @@ class Database:
                 await db.execute("CREATE INDEX IF NOT EXISTS idx_books_koreader_hash ON books(koreader_hash)")
             except Exception:
                 pass
+            try:
+                await db.execute("ALTER TABLE series ADD COLUMN release_date TEXT")
+            except Exception:
+                pass
+            try:
+                await db.execute("CREATE INDEX IF NOT EXISTS idx_series_release_date ON series(release_date)")
+            except Exception:
+                pass
+            try:
+                chk_rel = await db.execute("SELECT 1 FROM sync_state WHERE key = 'series_release_date_backfilled_v1'")
+                if not await chk_rel.fetchone():
+                    await db.execute("""
+                        UPDATE series
+                        SET release_date = NULLIF(COALESCE(
+                            json_extract(raw_json, '$.releaseDate'),
+                            (SELECT MIN(NULLIF(COALESCE(b.released, json_extract(b.raw_json, '$.metadata.releaseDate'), json_extract(b.raw_json, '$.releaseDate')), ''))
+                             FROM books b WHERE b.series_id = series.id AND b.deleted = 0)
+                        ), '')
+                    """)
+                    await db.execute("INSERT OR REPLACE INTO sync_state (key, value) VALUES ('series_release_date_backfilled_v1', 'true')")
+            except Exception as e:
+                logger.debug(f"Series release_date backfill: {e}")
             # Backfill released column from raw_json if books were previously synced without released column
             try:
                 await db.execute("""
@@ -642,8 +667,22 @@ class Database:
         chunk_size = 1000
         for i in range(0, len(series_list), chunk_size):
             chunk = series_list[i : i + chunk_size]
-            params = [
-                (
+            params = []
+            for s in chunk:
+                raw_val = s.get("raw_json", {})
+                if isinstance(raw_val, str):
+                    raw_str = raw_val
+                    rel_date = s.get("release_date")
+                    if rel_date is None and '"releaseDate"' in raw_str:
+                        try:
+                            rel_date = json.loads(raw_str).get("releaseDate") or None
+                        except Exception:
+                            rel_date = None
+                else:
+                    raw_str = json.dumps(raw_val)
+                    rel_date = s.get("release_date") or (raw_val.get("releaseDate") if isinstance(raw_val, dict) else None) or None
+
+                params.append((
                     s["id"],
                     s["library_id"],
                     s["name"],
@@ -652,22 +691,22 @@ class Database:
                     s.get("books_count", 0),
                     s.get("created"),
                     s.get("last_modified"),
-                    s.get("raw_json") if isinstance(s.get("raw_json"), str) else json.dumps(s.get("raw_json", {})),
-                )
-                for s in chunk
-            ]
+                    rel_date,
+                    raw_str,
+                ))
 
             async def _op(db, rows=params):
                 await db.executemany(
                     """
-                    INSERT INTO series (id, library_id, name, slug, sort_title, books_count, created, last_modified, raw_json, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    INSERT INTO series (id, library_id, name, slug, sort_title, books_count, created, last_modified, release_date, raw_json, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                     ON CONFLICT(id) DO UPDATE SET
                         name = excluded.name,
                         slug = excluded.slug,
                         sort_title = excluded.sort_title,
                         books_count = excluded.books_count,
                         last_modified = excluded.last_modified,
+                        release_date = COALESCE(excluded.release_date, series.release_date),
                         raw_json = excluded.raw_json,
                         updated_at = CURRENT_TIMESTAMP
                     """,
@@ -781,27 +820,25 @@ class Database:
         # Normalize sort column
         clean_sort = sort_by.lower().replace("metadata.", "").replace("sort", "").strip()
         order_direction = "DESC" if sort_dir.lower() == "desc" else "ASC"
-        order_params: List[Any] = []
+        join_clause = ""
+        join_params: List[Any] = []
 
         if clean_sort == "random":
             order_by_sql = "RANDOM()"
         elif clean_sort in ("releasedate", "booksreleasedate", "release", "booksrelease"):
-            release_expr = (
-                "NULLIF(COALESCE("
-                "json_extract(raw_json, '$.releaseDate'), "
-                "(SELECT MIN(NULLIF(COALESCE(b.released, json_extract(b.raw_json, '$.metadata.releaseDate'), json_extract(b.raw_json, '$.releaseDate')), '')) "
-                "FROM books b WHERE b.series_id = series.id AND b.deleted = 0)"
-                "), '')"
-            )
-            order_by_sql = f"{release_expr} {order_direction} NULLS LAST, sort_title ASC"
+            order_by_sql = f"series.release_date {order_direction} NULLS LAST, series.sort_title ASC"
         elif clean_sort in ("readdate", "readprogress.readdate", "readprogress") and user_id is not None:
-            read_date_expr = (
-                "NULLIF((SELECT MAX(rp.read_date) FROM books b "
-                "JOIN read_progress rp ON b.id = rp.book_id "
-                "WHERE b.series_id = series.id AND b.deleted = 0 AND rp.user_id = ?), '')"
+            join_clause = (
+                "LEFT JOIN ("
+                "SELECT b.series_id, MAX(NULLIF(rp.read_date, '')) as max_read_date "
+                "FROM read_progress rp "
+                "JOIN books b ON b.id = rp.book_id "
+                "WHERE rp.user_id = ? AND b.deleted = 0 "
+                "GROUP BY b.series_id"
+                ") srp ON srp.series_id = series.id"
             )
-            order_params.append(user_id)
-            order_by_sql = f"{read_date_expr} {order_direction} NULLS LAST, sort_title ASC"
+            join_params.append(user_id)
+            order_by_sql = f"srp.max_read_date {order_direction} NULLS LAST, series.sort_title ASC"
         else:
             allowed_sorts = {
                 "name": "sort_title",
@@ -814,7 +851,7 @@ class Database:
                 "bookscount": "books_count",
             }
             order_col = allowed_sorts.get(clean_sort, "sort_title")
-            order_by_sql = f"{order_col} {order_direction}"
+            order_by_sql = f"series.{order_col} {order_direction}"
 
         async with self.get_db() as db:
             db.row_factory = aiosqlite.Row
@@ -829,37 +866,37 @@ class Database:
                                (SELECT COUNT(*) FROM books b JOIN read_progress rp ON b.id = rp.book_id WHERE b.series_id = s.id AND b.deleted = 0 AND rp.user_id = ? AND rp.completed = 1) as books_read_count,
                                (SELECT COUNT(*) FROM books b JOIN read_progress rp ON b.id = rp.book_id WHERE b.series_id = s.id AND b.deleted = 0 AND rp.user_id = ? AND rp.completed = 0 AND (rp.page > 0 OR rp.read_date IS NOT NULL)) as books_in_progress_count
                         FROM (
-                            SELECT * FROM series {where_clause}
+                            SELECT series.* FROM series {join_clause} {where_clause}
                             ORDER BY {order_by_sql}
                         ) s
                     """
-                    cursor = await db.execute(query, [user_id, user_id] + params + order_params)
+                    cursor = await db.execute(query, [user_id, user_id] + join_params + params)
                 else:
                     query = f"""
                         SELECT s.*,
                                (SELECT COUNT(*) FROM books b JOIN read_progress rp ON b.id = rp.book_id WHERE b.series_id = s.id AND b.deleted = 0 AND rp.user_id = ? AND rp.completed = 1) as books_read_count,
                                (SELECT COUNT(*) FROM books b JOIN read_progress rp ON b.id = rp.book_id WHERE b.series_id = s.id AND b.deleted = 0 AND rp.user_id = ? AND rp.completed = 0 AND (rp.page > 0 OR rp.read_date IS NOT NULL)) as books_in_progress_count
                         FROM (
-                            SELECT * FROM series {where_clause}
+                            SELECT series.* FROM series {join_clause} {where_clause}
                             ORDER BY {order_by_sql}
                             LIMIT ? OFFSET ?
                         ) s
                     """
-                    cursor = await db.execute(query, [user_id, user_id] + params + order_params + [limit, offset])
+                    cursor = await db.execute(query, [user_id, user_id] + join_params + params + [limit, offset])
             else:
                 if unpaged:
                     query = f"""
-                        SELECT * FROM series {where_clause}
+                        SELECT series.* FROM series {join_clause} {where_clause}
                         ORDER BY {order_by_sql}
                     """
-                    cursor = await db.execute(query, params + order_params)
+                    cursor = await db.execute(query, join_params + params)
                 else:
                     query = f"""
-                        SELECT * FROM series {where_clause}
+                        SELECT series.* FROM series {join_clause} {where_clause}
                         ORDER BY {order_by_sql}
                         LIMIT ? OFFSET ?
                     """
-                    cursor = await db.execute(query, params + order_params + [limit, offset])
+                    cursor = await db.execute(query, join_params + params + [limit, offset])
 
             rows = await cursor.fetchall()
             return [dict(r) for r in rows], total

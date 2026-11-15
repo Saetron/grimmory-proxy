@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Protected `UserSyncService` from overwriting active local progress (`page > 1`) with `page = 1` when Grimmory reports `READING` without a specific page or `read_date`.
 - **Series List Sorting (`POST /api/v1/series/list` & `GET /api/v1/series`)**:
   - Added support in `Database.get_series_list` for `booksMetadata.releaseDate` / `releaseDate`, `readDate` / `readProgress.readDate` (scoped to `user_id`), and `random` (`RANDOM()`) sorting instead of falling back to `sort_title`, with `NULLS LAST` ordering for undated/unread series.
+  - Added an indexed `series.release_date` column (with startup backfill) and replaced correlated `readDate` subqueries with a single aggregated `LEFT JOIN` for fast sorting on large libraries.
 
 ### Dependencies
 - Merged open Dependabot PRs updating `fastapi` (`>=0.162.4`), `pydantic` (`>=2.14.3`), `pypdf` (`>=7.0.1`), and `zensical` (`>=0.1.1`).
