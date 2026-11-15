@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 import json
 import logging
 from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, Body, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response, status
 
 from app.clients.grimmory import grimmory_client
 from app.database import Database
@@ -352,6 +352,7 @@ def get_progress_router(db: Database) -> APIRouter:
     @router.get("/api/v1/books/{book_id}/progression")
     async def get_book_progression(
         book_id: int,
+        request: Request,
         user: UserSession = Depends(AuthService.require_user),
     ) -> Response:
         """
@@ -394,11 +395,12 @@ def get_progress_router(db: Database) -> APIRouter:
             else:
                 total_prog = 0.0
             modified = local_prog.get("read_date") or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            base_url = str(request.base_url).rstrip("/")
             synthesized = {
                 "modified": modified,
                 "device": {"id": "grimmory-proxy", "name": "grimmory-proxy"},
                 "locator": {
-                    "href": f"/api/v1/books/{book_id}/pages/{page}",
+                    "href": f"{base_url}/api/v1/books/{book_id}/pages/{page}",
                     "type": "image/jpeg",
                     "locations": {
                         "progression": total_prog,
