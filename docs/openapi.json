@@ -3,7 +3,7 @@
   "info": {
     "title": "grimmory-proxy API",
     "description": "Komga-compatible API proxy translating to Grimmory backend with automatic novel/CBZ page counting and admin dashboard",
-    "version": "1.12.3"
+    "version": "1.13.0"
   },
   "paths": {
     "/actuator/info": {
