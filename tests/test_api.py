@@ -3840,6 +3840,161 @@ async def test_constructed_series_redirects_to_book_page():
         settings.grimmory_url = orig_url
 
 
+@pytest.mark.asyncio
+async def test_series_status_computation_and_filtering():
+    from datetime import datetime, timedelta, timezone
+    from unittest.mock import AsyncMock, patch
+    from httpx import AsyncClient, ASGITransport
+    from app.main import app, db, page_calculator
+    from app.models.internal import UserSession
+    from app.services.auth import AuthService
+    from app.services.sync import SyncService
+
+    await db.connect()
+
+    libraries_payload = [{"id": 103, "name": "StatusLib"}]
+    books_payload = [
+        # 1. Standalone book (no seriesName) -> ENDED
+        {
+            "id": 9970,
+            "libraryId": 103,
+            "bookType": "EPUB",
+            "metadata": {"title": "Standalone Story"},
+            "primaryFile": {"bookType": "EPUB", "fileName": "standalone.epub", "fileSizeKb": 500},
+        },
+        # 2. Completed series (2 books, seriesTotal=2) -> ENDED
+        {
+            "id": 9971,
+            "libraryId": 103,
+            "bookType": "EPUB",
+            "metadata": {
+                "title": "Vol 1",
+                "seriesName": "A Sister's All You Need.",
+                "seriesNumber": 1,
+                "seriesTotal": 2,
+            },
+            "primaryFile": {"bookType": "EPUB", "fileName": "s1.epub", "fileSizeKb": 500},
+        },
+        {
+            "id": 9972,
+            "libraryId": 103,
+            "bookType": "EPUB",
+            "metadata": {
+                "title": "Vol 2",
+                "seriesName": "A Sister's All You Need.",
+                "seriesNumber": 2,
+                "seriesTotal": 2,
+            },
+            "primaryFile": {"bookType": "EPUB", "fileName": "s2.epub", "fileSizeKb": 500},
+        },
+        # 3. Ongoing series (1 book, seriesTotal=5) -> ONGOING
+        {
+            "id": 9973,
+            "libraryId": 103,
+            "bookType": "EPUB",
+            "metadata": {
+                "title": "Vol 1",
+                "seriesName": "Ongoing Epic",
+                "seriesNumber": 1,
+                "seriesTotal": 5,
+            },
+            "primaryFile": {"bookType": "EPUB", "fileName": "o1.epub", "fileSizeKb": 500},
+        },
+        # 4. Ongoing series (no seriesTotal) -> ONGOING
+        {
+            "id": 9974,
+            "libraryId": 103,
+            "bookType": "EPUB",
+            "metadata": {
+                "title": "Vol 1",
+                "seriesName": "Unknown Total Series",
+                "seriesNumber": 1,
+            },
+            "primaryFile": {"bookType": "EPUB", "fileName": "u1.epub", "fileSizeKb": 500},
+        },
+    ]
+
+    sync_service = SyncService(db, page_calculator)
+    with (
+        patch("app.services.sync.grimmory_client.get_sync_token", new=AsyncMock(return_value="tok")),
+        patch("app.services.sync.grimmory_client.get_libraries", new=AsyncMock(return_value=libraries_payload)),
+        patch("app.services.sync.grimmory_client.get_library_books", new=AsyncMock(return_value=books_payload)),
+        patch("app.services.sync.grimmory_client.get_shelves", new=AsyncMock(return_value=[])),
+        patch("app.services.sync.grimmory_client.get_magic_shelves", new=AsyncMock(return_value=[])),
+    ):
+        await sync_service.sync_all_metadata()
+
+    fake_user = UserSession(
+        user_id=1,
+        username="testuser",
+        is_admin=True,
+        token="tok",
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    app.dependency_overrides[AuthService.require_user] = lambda: fake_user
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            # ONGOING filter
+            r_ongoing = await client.post(
+                "/api/v1/series/list",
+                json={"condition": {"allOf": [
+                    {"libraryId": {"operator": "is", "value": "103"}},
+                    {"seriesStatus": {"operator": "is", "value": "ONGOING"}},
+                ]}},
+            )
+            assert r_ongoing.status_code == 200
+            ongoing_titles = {s["metadata"]["title"] for s in r_ongoing.json()["content"]}
+            assert ongoing_titles == {"Ongoing Epic", "Unknown Total Series"}
+            assert all(s["metadata"]["status"] == "ONGOING" for s in r_ongoing.json()["content"])
+
+            # ENDED filter
+            r_ended = await client.post(
+                "/api/v1/series/list",
+                json={"condition": {"allOf": [
+                    {"libraryId": {"operator": "is", "value": "103"}},
+                    {"seriesStatus": {"operator": "is", "value": "ENDED"}},
+                ]}},
+            )
+            assert r_ended.status_code == 200
+            ended_titles = {s["metadata"]["title"] for s in r_ended.json()["content"]}
+            assert ended_titles == {"Standalone Story", "A Sister's All You Need."}
+            assert all(s["metadata"]["status"] == "ENDED" for s in r_ended.json()["content"])
+
+            # Both ONGOING + ENDED (client sends both inside allOf)
+            r_both = await client.post(
+                "/api/v1/series/list",
+                json={"condition": {"allOf": [
+                    {"libraryId": {"operator": "is", "value": "103"}},
+                    {"seriesStatus": {"operator": "is", "value": "ONGOING"}},
+                    {"seriesStatus": {"operator": "is", "value": "ENDED"}},
+                ]}},
+            )
+            assert r_both.status_code == 200
+            assert len(r_both.json()["content"]) == 4
+
+            # ABANDONED / HIATUS return empty
+            r_hiatus = await client.post(
+                "/api/v1/series/list",
+                json={"condition": {"allOf": [
+                    {"libraryId": {"operator": "is", "value": "103"}},
+                    {"seriesStatus": {"operator": "is", "value": "HIATUS"}},
+                ]}},
+            )
+            assert r_hiatus.status_code == 200
+            assert r_hiatus.json()["content"] == []
+
+            # GET /api/v1/series?library_id=103&status=ENDED
+            r_get = await client.get("/api/v1/series?library_id=103&status=ENDED")
+            assert r_get.status_code == 200
+            assert {s["metadata"]["title"] for s in r_get.json()["content"]} == {
+                "Standalone Story",
+                "A Sister's All You Need.",
+            }
+    finally:
+        app.dependency_overrides.pop(AuthService.require_user, None)
+
+
+
 
 
 

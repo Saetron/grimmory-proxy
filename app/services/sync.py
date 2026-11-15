@@ -250,6 +250,14 @@ class SyncService:
                 )
                 released_str = str(raw_released).strip() if raw_released else None
 
+                raw_series_total = meta.get("seriesTotal")
+                try:
+                    series_total_val = int(raw_series_total) if raw_series_total is not None else None
+                    if series_total_val is not None and series_total_val <= 0:
+                        series_total_val = None
+                except (ValueError, TypeError):
+                    series_total_val = None
+
                 if series_id not in series_dict:
                     series_dict[series_id] = {
                         "id": series_id,
@@ -273,6 +281,7 @@ class SyncService:
                             "language": b_lang,
                             "hasExplicitSeries": has_explicit_series,
                             "standaloneBookId": b["id"] if not has_explicit_series else None,
+                            "seriesTotal": series_total_val,
                         },
                     }
                 else:
@@ -280,6 +289,8 @@ class SyncService:
                     if has_explicit_series:
                         s_raw["hasExplicitSeries"] = True
                     s_raw["standaloneBookId"] = None
+                    if series_total_val and (not s_raw.get("seriesTotal") or series_total_val > s_raw["seriesTotal"]):
+                        s_raw["seriesTotal"] = series_total_val
                     existing_auths = {(a["name"].lower(), a.get("role", "writer").lower()) for a in s_raw.get("authors", [])}
                     for a in b_authors:
                         key = (a["name"].lower(), a.get("role", "writer").lower())
@@ -325,6 +336,15 @@ class SyncService:
                     "last_modified": b.get("addedOn"),
                     "raw_json": b,
                 })
+
+            # Finalize series status (ENDED for standalone books or when books_count == seriesTotal; ONGOING otherwise)
+            for s in series_dict.values():
+                s_raw = s["raw_json"]
+                b_count = s.get("books_count", 0)
+                s_total = s_raw.get("seriesTotal")
+                is_standalone = (not s_raw.get("hasExplicitSeries", True)) and b_count == 1
+                is_complete_series = bool(s_total and s_total > 0 and b_count == s_total)
+                s_raw["status"] = "ENDED" if (is_standalone or is_complete_series) else "ONGOING"
 
             # Upsert series
             await self.db.upsert_series_batch(list(series_dict.values()))

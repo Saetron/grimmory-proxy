@@ -25,6 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Added `GET /api/v1/books/{book_id}/manifest/epub`, `GET /api/v1/books/{book_id}/manifest/pdf`, `GET /api/v1/books/{book_id}/positions`, and `GET /api/v1/books/{book_id}/resource/{resource}` for Readium WebPub EPUB/PDF readers.
   - Added `GET /api/v1/series/{series_id}/file` to stream a ZIP archive of all books in a series.
   - Regenerated `docs/openapi.json` to reflect all newly added endpoints.
+- **Series Status Computation & Filtering (`ONGOING` / `ENDED`)**:
+  - Computed `status` on series during `SyncService.sync_all_metadata` (`app/services/sync.py`) (`ENDED` for standalone books and series where `books_count == seriesTotal`; `ONGOING` otherwise).
+  - Added `series_status` extraction in `extract_filter_params` (`app/services/filter_utils.py`) (`seriesStatus` in `POST /api/v1/series/list` and `POST /api/v1/series/list/alphabetical-groups`, plus `status` in `GET /api/v1/series` and `GET /api/v1/series/alphabetical-groups`) and SQL filtering in `Database._build_series_where_clause` (`app/database.py`).
 - **Audiobook Filtering (`SYNC_INCLUDE_AUDIOBOOKS`)**:
   - Excluded audiobooks (`bookType == "AUDIOBOOK"` or `.m4b`/`.mp3`/`.m4a`/`.ogg`/`.flac`/`.aac`/`.opus` files) during `SyncService.sync_all_metadata` (`app/services/sync.py`) by default (`sync_include_audiobooks=False` in `app/config.py`), automatically marking any previously synced audiobooks as deleted and pruning empty series.
 

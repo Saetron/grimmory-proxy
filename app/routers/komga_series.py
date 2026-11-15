@@ -34,6 +34,7 @@ def get_series_router(db: Database) -> APIRouter:
         tags: Optional[List[str]] = None,
         publishers: Optional[List[str]] = None,
         authors: Optional[List[Any]] = None,
+        series_status: Optional[List[str]] = None,
         page: int = 0,
         size: int = 20,
         sort: str = "title,asc",
@@ -96,6 +97,7 @@ def get_series_router(db: Database) -> APIRouter:
             tags=tags,
             publishers=publishers,
             authors=authors,
+            series_status=series_status,
             offset=0 if unpaged else page * size,
             limit=size,
             sort_by=sort_by,
@@ -125,6 +127,7 @@ def get_series_router(db: Database) -> APIRouter:
             tags=filters.get("tags"),
             publishers=filters.get("publishers"),
             authors=filters.get("authors"),
+            series_status=filters.get("series_status"),
             page=page,
             size=size,
             sort=sort,
@@ -161,6 +164,7 @@ def get_series_router(db: Database) -> APIRouter:
             tags=filters.get("tags"),
             publishers=filters.get("publishers"),
             authors=filters.get("authors"),
+            series_status=filters.get("series_status"),
             page=page,
             size=size,
             sort=sort,
@@ -183,6 +187,7 @@ def get_series_router(db: Database) -> APIRouter:
             tags=filters.get("tags"),
             publishers=filters.get("publishers"),
             authors=filters.get("authors"),
+            series_status=filters.get("series_status"),
             page=page,
             size=size,
             sort="lastmodified,desc",
@@ -205,6 +210,7 @@ def get_series_router(db: Database) -> APIRouter:
             tags=filters.get("tags"),
             publishers=filters.get("publishers"),
             authors=filters.get("authors"),
+            series_status=filters.get("series_status"),
             page=page,
             size=size,
             sort="created,desc",
@@ -227,6 +233,7 @@ def get_series_router(db: Database) -> APIRouter:
             tags=filters.get("tags"),
             publishers=filters.get("publishers"),
             authors=filters.get("authors"),
+            series_status=filters.get("series_status"),
             page=page,
             size=size,
             sort="lastmodified,desc",
@@ -250,6 +257,7 @@ def get_series_router(db: Database) -> APIRouter:
             tags=filters.get("tags"),
             publishers=filters.get("publishers"),
             authors=filters.get("authors"),
+            series_status=filters.get("series_status"),
         )
 
     @router.post("/api/v1/series/list/alphabetical-groups")
@@ -275,6 +283,7 @@ def get_series_router(db: Database) -> APIRouter:
             tags=filters.get("tags"),
             publishers=filters.get("publishers"),
             authors=filters.get("authors"),
+            series_status=filters.get("series_status"),
         )
 
     @router.get("/api/v1/series/genres")

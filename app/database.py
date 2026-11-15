@@ -751,6 +751,7 @@ class Database:
         tags: Optional[List[str]] = None,
         publishers: Optional[List[str]] = None,
         authors: Optional[List[Any]] = None,
+        series_status: Optional[List[str]] = None,
     ) -> Optional[Tuple[str, List[Any]]]:
         conditions = []
         params: List[Any] = []
@@ -834,6 +835,13 @@ class Database:
             if auth_clauses:
                 conditions.append(f"({' OR '.join(auth_clauses)})")
 
+        if series_status:
+            placeholders = ",".join("?" for _ in series_status)
+            conditions.append(
+                f"UPPER(COALESCE(json_extract(raw_json, '$.status'), 'ONGOING')) IN ({placeholders})"
+            )
+            params.extend([s.upper() for s in series_status])
+
         where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         return where_clause, params
 
@@ -846,6 +854,7 @@ class Database:
         tags: Optional[List[str]] = None,
         publishers: Optional[List[str]] = None,
         authors: Optional[List[Any]] = None,
+        series_status: Optional[List[str]] = None,
         offset: int = 0,
         limit: int = 20,
         sort_by: str = "name",
@@ -861,6 +870,7 @@ class Database:
             tags=tags,
             publishers=publishers,
             authors=authors,
+            series_status=series_status,
         )
         if built is None:
             return [], 0
@@ -944,6 +954,7 @@ class Database:
         tags: Optional[List[str]] = None,
         publishers: Optional[List[str]] = None,
         authors: Optional[List[Any]] = None,
+        series_status: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         built = self._build_series_where_clause(
             library_ids=library_ids,
@@ -952,6 +963,7 @@ class Database:
             tags=tags,
             publishers=publishers,
             authors=authors,
+            series_status=series_status,
         )
         if built is None:
             return []

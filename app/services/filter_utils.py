@@ -258,6 +258,13 @@ def extract_filter_params(request: Request, body: Optional[Any] = None) -> Dict[
     read_status_keys = {"read_status", "readstatus", "read_status[]", "readstatus[]"}
     read_status = _extract_string_filter_list(request, body, read_status_keys, uppercase=True)
 
+    # 4b. Extract Series Status (ONGOING, ENDED, ABANDONED, HIATUS)
+    series_status_keys = {
+        "series_status", "seriesstatus", "series_status[]", "seriesstatus[]",
+        "status", "status[]",
+    }
+    series_status = _extract_string_filter_list(request, body, series_status_keys, uppercase=True)
+
     # 5. Extract Genres
     genre_keys = {"genre", "genres", "genre[]", "genres[]"}
     genres = _extract_string_filter_list(request, body, genre_keys, dict_keys=("name", "value"))
@@ -296,6 +303,7 @@ def extract_filter_params(request: Request, body: Optional[Any] = None) -> Dict[
         "collection_ids": collection_ids,
         "search": search,
         "read_status": read_status,
+        "series_status": series_status,
         "genres": genres,
         "tags": tags,
         "publishers": publishers,
