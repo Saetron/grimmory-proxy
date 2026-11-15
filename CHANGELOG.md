@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.12.3] - 2026-11-15
+
 ### Fixed
 - **Komic & Reader Resume Location Preservation**:
   - Fixed `_resolve_book_page_count` and `_record_page_read_progress` so books with an unknown (`0` or `NULL`) page count are no longer defaulted to 1 page and prematurely marked `completed=True` on page 1 or mid-book, preventing Komic from jumping back to the start when reopening a book.
@@ -406,6 +408,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[1.12.3]: https://github.com/Saetron/grimmory-proxy/releases/tag/v1.12.3
 [1.12.2]: https://github.com/Saetron/grimmory-proxy/releases/tag/v1.12.2
 [1.12.1]: https://github.com/Saetron/grimmory-proxy/releases/tag/v1.12.1
 [1.12]: https://github.com/Saetron/grimmory-proxy/releases/tag/v1.12
