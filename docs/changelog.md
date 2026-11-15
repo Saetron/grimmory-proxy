@@ -21,6 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Added `ReadingSessionTracker` (`app/services/reading_sessions.py`) and `GrimmoryClient.create_reading_session` (`POST /api/v1/reading-sessions`) to aggregate page turns and progress updates into Grimmory reading sessions (flushing after 120s of inactivity, on book switch, on completion, and on shutdown).
 - **Automatic Page Calculation for New Books**:
   - Updated `SyncService.sync_all_metadata` (`app/services/sync.py`) to automatically trigger `PageCalculator.start_calculation_job(missing_only=True)` whenever a sync cycle detects newly added books with missing/zero page counts (not just on initial empty-DB startup).
+- **WebPub Manifests, EPUB Resources & Series Archive Downloads**:
+  - Added `GET /api/v1/books/{book_id}/manifest/epub`, `GET /api/v1/books/{book_id}/manifest/pdf`, `GET /api/v1/books/{book_id}/positions`, and `GET /api/v1/books/{book_id}/resource/{resource}` for Readium WebPub EPUB/PDF readers.
+  - Added `GET /api/v1/series/{series_id}/file` to stream a ZIP archive of all books in a series.
+  - Regenerated `docs/openapi.json` to reflect all newly added endpoints.
 
 ### Fixed
 - **Komic & Reader Resume Location Preservation**:

@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "grimmory-proxy API",
-    "description": "Complete Komga v1.12.0 and Admin WebUI API specification for grimmory-proxy.",
+    "description": "Komga-compatible API proxy translating to Grimmory backend with automatic novel/CBZ page counting and admin dashboard",
     "version": "1.12.3"
   },
   "paths": {
@@ -934,6 +934,58 @@
         }
       }
     },
+    "/api/v1/series/list/alphabetical-groups": {
+      "post": {
+        "tags": [
+          "Komga Series"
+        ],
+        "summary": "Post Series Alphabetical Groups",
+        "operationId": "post_series_alphabetical_groups_api_v1_series_list_alphabetical_groups_post",
+        "parameters": [
+          {
+            "name": "body",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {},
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Body"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  "title": "Response Post Series Alphabetical Groups Api V1 Series List Alphabetical Groups Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/series/genres": {
       "get": {
         "tags": [
@@ -1163,6 +1215,46 @@
         ],
         "summary": "Get Series Thumbnail",
         "operationId": "get_series_thumbnail_api_v1_series__series_id__thumbnail_get",
+        "parameters": [
+          {
+            "name": "series_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Series Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/series/{series_id}/file": {
+      "get": {
+        "tags": [
+          "Komga Series"
+        ],
+        "summary": "Download Series File",
+        "operationId": "download_series_file_api_v1_series__series_id__file_get",
         "parameters": [
           {
             "name": "series_id",
@@ -1706,6 +1798,53 @@
         }
       }
     },
+    "/api/v1/books/{book_id}/readlists": {
+      "get": {
+        "tags": [
+          "Komga Books"
+        ],
+        "summary": "Get Book Readlists",
+        "operationId": "get_book_readlists_api_v1_books__book_id__readlists_get",
+        "parameters": [
+          {
+            "name": "book_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Book Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  "title": "Response Get Book Readlists Api V1 Books  Book Id  Readlists Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/books/{book_id}/previous": {
       "get": {
         "tags": [
@@ -1941,6 +2080,55 @@
         }
       }
     },
+    "/api/v1/books/{book_id}/pages/{page_number}/raw": {
+      "get": {
+        "tags": [
+          "Komga Books"
+        ],
+        "summary": "Get Book Page Image Raw",
+        "operationId": "get_book_page_image_raw_api_v1_books__book_id__pages__page_number__raw_get",
+        "parameters": [
+          {
+            "name": "book_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Book Id"
+            }
+          },
+          {
+            "name": "page_number",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Page Number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/books/{book_id}/pages/{page_number}/thumbnail": {
       "get": {
         "tags": [
@@ -2102,6 +2290,187 @@
                   "additionalProperties": true,
                   "title": "Response Get Book Manifest Api V1 Books  Book Id  Manifest Get"
                 }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/books/{book_id}/manifest/pdf": {
+      "get": {
+        "tags": [
+          "Komga Books"
+        ],
+        "summary": "Get Book Pdf Manifest",
+        "operationId": "get_book_pdf_manifest_api_v1_books__book_id__manifest_pdf_get",
+        "parameters": [
+          {
+            "name": "book_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Book Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Get Book Pdf Manifest Api V1 Books  Book Id  Manifest Pdf Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/books/{book_id}/manifest/epub": {
+      "get": {
+        "tags": [
+          "Komga Books"
+        ],
+        "summary": "Get Book Epub Manifest",
+        "operationId": "get_book_epub_manifest_api_v1_books__book_id__manifest_epub_get",
+        "parameters": [
+          {
+            "name": "book_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Book Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Get Book Epub Manifest Api V1 Books  Book Id  Manifest Epub Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/books/{book_id}/positions": {
+      "get": {
+        "tags": [
+          "Komga Books"
+        ],
+        "summary": "Get Book Positions",
+        "operationId": "get_book_positions_api_v1_books__book_id__positions_get",
+        "parameters": [
+          {
+            "name": "book_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Book Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Get Book Positions Api V1 Books  Book Id  Positions Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/books/{book_id}/resource/{resource}": {
+      "get": {
+        "tags": [
+          "Komga Books"
+        ],
+        "summary": "Get Book Resource",
+        "operationId": "get_book_resource_api_v1_books__book_id__resource__resource__get",
+        "parameters": [
+          {
+            "name": "book_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Book Id"
+            }
+          },
+          {
+            "name": "resource",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Resource"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
               }
             }
           },
@@ -4693,6 +5062,477 @@
         }
       }
     },
+    "/api/v1/languages": {
+      "get": {
+        "tags": [
+          "Komga Metadata"
+        ],
+        "summary": "Get Languages V1",
+        "operationId": "get_languages_v1_api_v1_languages_get",
+        "parameters": [
+          {
+            "name": "library_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "integer"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Library Id"
+            }
+          },
+          {
+            "name": "collection_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Collection Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Response Get Languages V1 Api V1 Languages Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v2/languages": {
+      "get": {
+        "tags": [
+          "Komga Metadata"
+        ],
+        "summary": "Get Languages V2",
+        "operationId": "get_languages_v2_api_v2_languages_get",
+        "parameters": [
+          {
+            "name": "search",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Search"
+            }
+          },
+          {
+            "name": "library_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "integer"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Library Id"
+            }
+          },
+          {
+            "name": "collection_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Collection Id"
+            }
+          },
+          {
+            "name": "unpaged",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Unpaged"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Page"
+            }
+          },
+          {
+            "name": "size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 20,
+              "title": "Size"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PageableDto_str_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/age-ratings": {
+      "get": {
+        "tags": [
+          "Komga Metadata"
+        ],
+        "summary": "Get Age Ratings V1",
+        "operationId": "get_age_ratings_v1_api_v1_age_ratings_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array",
+                  "title": "Response Get Age Ratings V1 Api V1 Age Ratings Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v2/age-ratings": {
+      "get": {
+        "tags": [
+          "Komga Metadata"
+        ],
+        "summary": "Get Age Ratings V2",
+        "operationId": "get_age_ratings_v2_api_v2_age_ratings_get",
+        "parameters": [
+          {
+            "name": "unpaged",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Unpaged"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Page"
+            }
+          },
+          {
+            "name": "size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 20,
+              "title": "Size"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PageableDto_int_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sharing-labels": {
+      "get": {
+        "tags": [
+          "Komga Metadata"
+        ],
+        "summary": "Get Sharing Labels V1",
+        "operationId": "get_sharing_labels_v1_api_v1_sharing_labels_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array",
+                  "title": "Response Get Sharing Labels V1 Api V1 Sharing Labels Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v2/sharing-labels": {
+      "get": {
+        "tags": [
+          "Komga Metadata"
+        ],
+        "summary": "Get Sharing Labels V2",
+        "operationId": "get_sharing_labels_v2_api_v2_sharing_labels_get",
+        "parameters": [
+          {
+            "name": "unpaged",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Unpaged"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Page"
+            }
+          },
+          {
+            "name": "size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 20,
+              "title": "Size"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PageableDto_str_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v2/series/release-years": {
+      "get": {
+        "tags": [
+          "Komga Metadata"
+        ],
+        "summary": "Get Series Release Years V2",
+        "operationId": "get_series_release_years_v2_api_v2_series_release_years_get",
+        "parameters": [
+          {
+            "name": "search",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Search"
+            }
+          },
+          {
+            "name": "library_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "integer"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Library Id"
+            }
+          },
+          {
+            "name": "unpaged",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Unpaged"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Page"
+            }
+          },
+          {
+            "name": "size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 20,
+              "title": "Size"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PageableDto_str_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/koreader/users/auth": {
       "get": {
         "tags": [
@@ -6655,48 +7495,24 @@
             "default": "image/jpeg"
           },
           "width": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Width"
+            "type": "integer",
+            "title": "Width",
+            "default": 1200
           },
           "height": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Height"
+            "type": "integer",
+            "title": "Height",
+            "default": 1600
           },
           "sizeBytes": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Sizebytes"
+            "type": "integer",
+            "title": "Sizebytes",
+            "default": 0
           },
           "size": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Size"
+            "type": "string",
+            "title": "Size",
+            "default": "0 B"
           }
         },
         "type": "object",
@@ -7035,6 +7851,72 @@
           "empty"
         ],
         "title": "PageableDto[SeriesDto]"
+      },
+      "PageableDto_int_": {
+        "properties": {
+          "content": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Content"
+          },
+          "pageable": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Pageable"
+          },
+          "totalElements": {
+            "type": "integer",
+            "title": "Totalelements"
+          },
+          "totalPages": {
+            "type": "integer",
+            "title": "Totalpages"
+          },
+          "last": {
+            "type": "boolean",
+            "title": "Last"
+          },
+          "first": {
+            "type": "boolean",
+            "title": "First"
+          },
+          "size": {
+            "type": "integer",
+            "title": "Size"
+          },
+          "number": {
+            "type": "integer",
+            "title": "Number"
+          },
+          "numberOfElements": {
+            "type": "integer",
+            "title": "Numberofelements"
+          },
+          "empty": {
+            "type": "boolean",
+            "title": "Empty"
+          },
+          "sort": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Sort"
+          }
+        },
+        "type": "object",
+        "required": [
+          "content",
+          "totalElements",
+          "totalPages",
+          "last",
+          "first",
+          "size",
+          "number",
+          "numberOfElements",
+          "empty"
+        ],
+        "title": "PageableDto[int]"
       },
       "PageableDto_str_": {
         "properties": {

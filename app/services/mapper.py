@@ -535,3 +535,69 @@ class KomgaMapper:
                 }
             ],
         }
+
+    @staticmethod
+    def to_webpub_manifest(
+        book: BookDto,
+        pages: List[PageDto],
+        base_url: str = "",
+        profile: str = "pdf",
+        epub_reading_order: Optional[List[Dict[str, Any]]] = None,
+        epub_resources: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        """Builds a Readium WebPub manifest for EPUB or PDF readers."""
+        if epub_reading_order is not None:
+            reading_order = epub_reading_order
+            resources = epub_resources or []
+        else:
+            reading_order = [
+                {
+                    "type": p.mediaType,
+                    "href": f"{base_url}/api/v1/books/{book.id}/pages/{p.number}",
+                    "width": p.width or 1200,
+                    "height": p.height or 1600,
+                }
+                for p in pages
+            ]
+            resources = []
+
+        return {
+            "@context": "https://readium.org/webpub-manifest/context.jsonld",
+            "metadata": {
+                "@type": "http://schema.org/Book",
+                "title": book.metadata.title or book.name,
+                "identifier": book.id,
+                "numberOfPages": len(pages) if pages else len(reading_order),
+                "readingProgression": "ltr",
+            },
+            "readingOrder": reading_order,
+            "resources": resources,
+            "links": [
+                {
+                    "rel": "self",
+                    "href": f"{base_url}/api/v1/books/{book.id}/manifest/{profile}",
+                    "type": "application/webpub+json",
+                }
+            ],
+        }
+
+    @staticmethod
+    def to_r2_positions(book: BookDto, pages: List[PageDto], base_url: str = "") -> Dict[str, Any]:
+        """Builds Readium R2Positions payload for pagination-aware WebPub readers."""
+        total = len(pages)
+        positions = []
+        for idx, p in enumerate(pages):
+            total_prog = (idx / total) if total > 0 else 0.0
+            positions.append({
+                "href": f"{base_url}/api/v1/books/{book.id}/pages/{p.number}",
+                "type": p.mediaType,
+                "locations": {
+                    "position": p.number,
+                    "progression": 0.0,
+                    "totalProgression": round(total_prog, 6),
+                },
+            })
+        return {
+            "total": total,
+            "positions": positions,
+        }

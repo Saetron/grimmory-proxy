@@ -3559,5 +3559,104 @@ async def test_sync_triggers_page_calc_for_new_books_missing_pages(monkeypatch):
     mock_calc.start_calculation_job.assert_called_once_with(missing_only=True)
 
 
+@pytest.mark.asyncio
+async def test_webpub_manifests_positions_resources_and_series_zip(monkeypatch):
+    import io
+    import zipfile
+    from datetime import datetime, timedelta, timezone
+    from unittest.mock import AsyncMock
+    from httpx import AsyncClient, ASGITransport
+    from app.main import app, db
+    from app.clients.grimmory import grimmory_client
+    from app.models.internal import UserSession
+    from app.services.auth import AuthService
+
+    # Build a minimal valid EPUB archive in memory
+    epub_buf = io.BytesIO()
+    with zipfile.ZipFile(epub_buf, "w") as zf:
+        zf.writestr(
+            "META-INF/container.xml",
+            '<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">'
+            '<rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>',
+        )
+        zf.writestr(
+            "OEBPS/content.opf",
+            '<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0">'
+            '<manifest>'
+            '<item id="ch1" href="Text/ch1.xhtml" media-type="application/xhtml+xml"/>'
+            '<item id="css" href="Styles/style.css" media-type="text/css"/>'
+            '</manifest>'
+            '<spine><itemref idref="ch1"/></spine></package>',
+        )
+        zf.writestr("OEBPS/Text/ch1.xhtml", "<html><body><p>Hello</p></body></html>")
+        zf.writestr("OEBPS/Styles/style.css", "body { margin: 0; }")
+    epub_bytes = epub_buf.getvalue()
+
+    await db.connect()
+    await db.upsert_libraries([{"id": 99, "name": "WebPub Lib", "paths": []}])
+    await db.upsert_series_batch([{"id": "99-webpub", "library_id": 99, "name": "WebPub Series", "slug": "webpub-series"}])
+    await db.upsert_books_batch([
+        {"id": 9901, "series_id": "99-webpub", "library_id": 99, "name": "EPUB Book", "number": 1.0, "book_type": "EPUB", "page_count": 5},
+        {"id": 9902, "series_id": "99-webpub", "library_id": 99, "name": "PDF Book", "number": 2.0, "book_type": "PDF", "page_count": 3},
+    ])
+
+    async def fake_download_bytes(book_id, token=None):
+        return epub_bytes if book_id == 9901 else b"%PDF-1.4 sample"
+
+    monkeypatch.setattr(grimmory_client, "download_book_bytes", fake_download_bytes)
+
+    user = UserSession(
+        user_id=99,
+        username="webpub_user",
+        token="token_webpub",
+        roles=["ROLE_USER"],
+        is_admin=False,
+        is_active=True,
+        allowed_library_ids=[99],
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    app.dependency_overrides[AuthService.require_user] = lambda: user
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            # 1. PDF manifest & positions
+            pdf_manifest = await client.get("/api/v1/books/9902/manifest/pdf")
+            assert pdf_manifest.status_code == 200
+            pm = pdf_manifest.json()
+            assert len(pm["readingOrder"]) == 3
+            assert pm["links"][0]["href"].endswith("/api/v1/books/9902/manifest/pdf")
+
+            pos_resp = await client.get("/api/v1/books/9902/positions")
+            assert pos_resp.status_code == 200
+            assert pos_resp.json()["total"] == 3
+            assert pos_resp.json()["positions"][0]["locations"]["position"] == 1
+
+            # 2. EPUB manifest & resource streaming
+            epub_manifest = await client.get("/api/v1/books/9901/manifest/epub")
+            assert epub_manifest.status_code == 200
+            em = epub_manifest.json()
+            assert len(em["readingOrder"]) == 1
+            assert em["readingOrder"][0]["href"].endswith("/api/v1/books/9901/resource/OEBPS/Text/ch1.xhtml")
+            assert len(em["resources"]) == 1
+            assert em["resources"][0]["href"].endswith("/api/v1/books/9901/resource/OEBPS/Styles/style.css")
+
+            res_resp = await client.get("/api/v1/books/9901/resource/OEBPS/Text/ch1.xhtml")
+            assert res_resp.status_code == 200
+            assert res_resp.headers["content-type"].startswith("application/xhtml+xml")
+            assert b"<p>Hello</p>" in res_resp.content
+
+            # 3. Series ZIP download
+            zip_resp = await client.get("/api/v1/series/99-webpub/file")
+            assert zip_resp.status_code == 200
+            assert zip_resp.headers["content-type"] == "application/zip"
+            with zipfile.ZipFile(io.BytesIO(zip_resp.content)) as zf:
+                names = zf.namelist()
+                assert len(names) == 2
+                assert any(n.endswith(".epub") for n in names)
+                assert any(n.endswith(".pdf") for n in names)
+    finally:
+        app.dependency_overrides.pop(AuthService.require_user, None)
+
+
+
 
 

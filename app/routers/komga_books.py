@@ -3,7 +3,11 @@ from datetime import datetime, timezone
 import io
 import json
 import logging
-from typing import Any, Dict, List, Optional, Union
+import mimetypes
+import posixpath
+import xml.etree.ElementTree as ET
+import zipfile
+from typing import Any, Dict, List, Optional, Tuple, Union
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import StreamingResponse
 import httpx
@@ -633,5 +637,147 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
         pages = await get_book_pages(book_id, user)
         base_url = str(request.base_url).rstrip("/")
         return KomgaMapper.to_divina_manifest(book_dto, pages, base_url=base_url)
+
+    @router.get("/api/v1/books/{book_id}/manifest/pdf")
+    async def get_book_pdf_manifest(
+        book_id: int,
+        request: Request,
+        user: UserSession = Depends(AuthService.require_user),
+    ) -> Dict[str, Any]:
+        record = await db.get_book_by_id(book_id)
+        if not record:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
+        if not user.is_admin and user.assigned_library_ids and record["library_id"] not in user.assigned_library_ids:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
+
+        book_dto = KomgaMapper.to_book_dto(record)
+        pages = await get_book_pages(book_id, user)
+        base_url = str(request.base_url).rstrip("/")
+        return KomgaMapper.to_webpub_manifest(book_dto, pages, base_url=base_url, profile="pdf")
+
+    @router.get("/api/v1/books/{book_id}/manifest/epub")
+    async def get_book_epub_manifest(
+        book_id: int,
+        request: Request,
+        user: UserSession = Depends(AuthService.require_user),
+    ) -> Dict[str, Any]:
+        record = await db.get_book_by_id(book_id)
+        if not record:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
+        if not user.is_admin and user.assigned_library_ids and record["library_id"] not in user.assigned_library_ids:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
+
+        book_dto = KomgaMapper.to_book_dto(record)
+        base_url = str(request.base_url).rstrip("/")
+        epub_reading_order: Optional[List[Dict[str, Any]]] = None
+        epub_resources: Optional[List[Dict[str, Any]]] = None
+
+        if book_dto.media.mediaType == "application/epub+zip":
+            try:
+                raw_bytes = await grimmory_client.download_book_bytes(book_id, token=user.token)
+                if raw_bytes:
+                    with zipfile.ZipFile(io.BytesIO(raw_bytes)) as zf:
+                        container_xml = zf.read("META-INF/container.xml")
+                        c_root = ET.fromstring(container_xml)
+                        rf = c_root.find(".//{*}rootfile")
+                        opf_path = rf.attrib.get("full-path") if rf is not None else None
+                        if opf_path and opf_path in zf.namelist():
+                            opf_dir = posixpath.dirname(opf_path)
+                            opf_root = ET.fromstring(zf.read(opf_path))
+                            manifest_items: Dict[str, Tuple[str, str]] = {}
+                            for item in opf_root.findall(".//{*}manifest/{*}item"):
+                                item_id = item.attrib.get("id")
+                                href = item.attrib.get("href")
+                                mtype = item.attrib.get("media-type", "application/octet-stream")
+                                if item_id and href:
+                                    full_href = posixpath.normpath(posixpath.join(opf_dir, href)) if opf_dir else posixpath.normpath(href)
+                                    manifest_items[item_id] = (full_href, mtype)
+                            spine_ids = []
+                            reading_order = []
+                            for itemref in opf_root.findall(".//{*}spine/{*}itemref"):
+                                idref = itemref.attrib.get("idref")
+                                if idref and idref in manifest_items:
+                                    spine_ids.append(idref)
+                                    full_href, mtype = manifest_items[idref]
+                                    reading_order.append({
+                                        "href": f"{base_url}/api/v1/books/{book_id}/resource/{full_href}",
+                                        "type": mtype,
+                                    })
+                            spine_set = set(spine_ids)
+                            resources = [
+                                {
+                                    "href": f"{base_url}/api/v1/books/{book_id}/resource/{full_href}",
+                                    "type": mtype,
+                                }
+                                for item_id, (full_href, mtype) in manifest_items.items()
+                                if item_id not in spine_set
+                            ]
+                            if reading_order:
+                                epub_reading_order = reading_order
+                                epub_resources = resources
+            except Exception as e:
+                logger.debug(f"EPUB manifest extraction fallback for book {book_id}: {e}")
+
+        pages = [] if epub_reading_order is not None else await get_book_pages(book_id, user)
+        return KomgaMapper.to_webpub_manifest(
+            book_dto,
+            pages,
+            base_url=base_url,
+            profile="epub",
+            epub_reading_order=epub_reading_order,
+            epub_resources=epub_resources,
+        )
+
+    @router.get("/api/v1/books/{book_id}/positions")
+    async def get_book_positions(
+        book_id: int,
+        request: Request,
+        user: UserSession = Depends(AuthService.require_user),
+    ) -> Dict[str, Any]:
+        record = await db.get_book_by_id(book_id)
+        if not record:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
+        if not user.is_admin and user.assigned_library_ids and record["library_id"] not in user.assigned_library_ids:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
+
+        book_dto = KomgaMapper.to_book_dto(record)
+        pages = await get_book_pages(book_id, user)
+        base_url = str(request.base_url).rstrip("/")
+        return KomgaMapper.to_r2_positions(book_dto, pages, base_url=base_url)
+
+    @router.get("/api/v1/books/{book_id}/resource/{resource:path}")
+    async def get_book_resource(
+        book_id: int,
+        resource: str,
+        user: UserSession = Depends(AuthService.require_user),
+    ) -> Response:
+        record = await db.get_book_by_id(book_id)
+        if not record:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
+        if not user.is_admin and user.assigned_library_ids and record["library_id"] not in user.assigned_library_ids:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
+
+        clean_res = posixpath.normpath(resource.lstrip("/"))
+        if clean_res.startswith(".."):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid resource path")
+
+        raw_bytes = await grimmory_client.download_book_bytes(book_id, token=user.token)
+        if not raw_bytes:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book archive not found")
+
+        try:
+            with zipfile.ZipFile(io.BytesIO(raw_bytes)) as zf:
+                if clean_res not in zf.namelist():
+                    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resource not found")
+                content = zf.read(clean_res)
+        except HTTPException:
+            raise
+        except Exception:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resource not found")
+
+        guessed_type, _ = mimetypes.guess_type(clean_res)
+        if clean_res.endswith(".xhtml"):
+            guessed_type = "application/xhtml+xml"
+        return Response(content=content, media_type=guessed_type or "application/octet-stream")
 
     return router

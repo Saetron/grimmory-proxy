@@ -1,7 +1,10 @@
+import io
 import json
 import logging
+import zipfile
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi.responses import StreamingResponse
 
 from app.clients.grimmory import grimmory_client
 from app.database import Database
@@ -475,5 +478,41 @@ def get_series_router(db: Database) -> APIRouter:
             return Response(content=book_thumb, media_type="image/jpeg")
 
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Series thumbnail not found")
+
+    @router.get("/api/v1/series/{series_id}/file")
+    async def download_series_file(
+        series_id: str,
+        user: UserSession = Depends(AuthService.require_user),
+    ) -> StreamingResponse:
+        series = await db.get_series_by_id(series_id, user_id=user.user_id)
+        if not series:
+            series = await db.find_series_by_id_or_slug(series_id, user_id=user.user_id)
+        if not series:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Series not found")
+        if not user.is_admin and user.assigned_library_ids and series["library_id"] not in user.assigned_library_ids:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Series not found")
+
+        books = await db.get_books_by_series(series["id"])
+        if not books:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No books in series")
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_STORED) as zf:
+            for idx, b in enumerate(books, start=1):
+                raw_bytes = await grimmory_client.download_book_bytes(b["id"], token=user.token)
+                if not raw_bytes:
+                    continue
+                b_type = (b.get("book_type") or "").upper()
+                ext = "epub" if b_type == "EPUB" else ("pdf" if b_type == "PDF" else "cbz")
+                safe_name = str(b.get("name") or f"book-{b['id']}").replace("/", "_").replace("\\", "_")
+                zf.writestr(f"{idx:03d} - {safe_name}.{ext}", raw_bytes)
+
+        buf.seek(0)
+        series_name = str(series.get("name") or series["id"]).replace('"', "").replace("/", "_")
+        return StreamingResponse(
+            buf,
+            media_type="application/zip",
+            headers={"Content-Disposition": f'attachment; filename="{series_name}.zip"'},
+        )
 
     return router
