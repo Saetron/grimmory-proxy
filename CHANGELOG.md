@@ -31,6 +31,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Audiobook Filtering (`SYNC_INCLUDE_AUDIOBOOKS`)**:
   - Excluded audiobooks (`bookType == "AUDIOBOOK"` or `.m4b`/`.mp3`/`.m4a`/`.ogg`/`.flac`/`.aac`/`.opus` files) during [`SyncService.sync_all_metadata`](file:///Users/jbudz/Documents/grimmory-proxy/app/services/sync.py) by default (`sync_include_audiobooks=False` in [`Settings`](file:///Users/jbudz/Documents/grimmory-proxy/app/config.py)), automatically marking any previously synced audiobooks as deleted and pruning empty series.
 
+### Performance
+- **User Progress Sync Optimization**:
+  - Updated [`UserSyncService._sync_grimmory_read_states`](file:///Users/jbudz/Documents/grimmory-proxy/app/services/user_sync.py) to fetch `GET /api/v1/books` once for unrestricted users (falling back to concurrent per-library fetches only when needed or for library-restricted users) and retain only read-progress fields in memory via [`_slim_book_progress`](file:///Users/jbudz/Documents/grimmory-proxy/app/services/user_sync.py).
+- **Catalog Sync Peak RAM & Concurrency**:
+  - Updated [`SyncService.sync_all_metadata`](file:///Users/jbudz/Documents/grimmory-proxy/app/services/sync.py) to fetch libraries concurrently (semaphore of 4), skip redundant `get_all_books()` calls when libraries succeed, and eagerly clear intermediate `all_books_map`, `books_raw`, and `series_dict` buffers.
+- **Thumbnail & Memory Cache Overhead**:
+  - Updated [`DiskThumbnailCache`](file:///Users/jbudz/Documents/grimmory-proxy/app/services/cache.py) to cache the resolved base directory path instead of calling `os.path.realpath()` 3 times per hit, and added `max_items` + expired-key eviction to [`MemoryCache`](file:///Users/jbudz/Documents/grimmory-proxy/app/services/cache.py).
+
 ### Fixed
 - **Constructed Standalone Series Redirects**:
   - Updated [`redirect_series`](file:///Users/jbudz/Documents/grimmory-proxy/app/main.py) (`GET /series/{series_id}`) and [`KomgaMapper.to_series_dto`](file:///Users/jbudz/Documents/grimmory-proxy/app/services/mapper.py) (`links`) so constructed oneshot/standalone series (single book without an explicit Grimmory `seriesName`) redirect to `/book/{bookId}` instead of a non-existent `/series/{seriesName}` page in Grimmory.

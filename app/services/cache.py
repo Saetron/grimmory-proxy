@@ -16,8 +16,9 @@ _SAFE_CACHE_NAME = re.compile(r"[A-Za-z0-9_\-]{1,200}")
 
 
 class MemoryCache:
-    def __init__(self, ttl: int = 300):
+    def __init__(self, ttl: int = 300, max_items: int = 1000):
         self.ttl = ttl
+        self.max_items = max_items
         self._cache: Dict[str, Tuple[float, Any]] = {}
         self._lock = asyncio.Lock()
 
@@ -34,8 +35,16 @@ class MemoryCache:
 
     async def set(self, key: str, val: Any, custom_ttl: Optional[int] = None) -> None:
         async with self._lock:
+            now = time.time()
             ttl = custom_ttl if custom_ttl is not None else self.ttl
-            self._cache[key] = (time.time() + ttl, val)
+            if len(self._cache) >= self.max_items:
+                expired_keys = [k for k, (exp, _) in self._cache.items() if now > exp]
+                for k in expired_keys:
+                    self._cache.pop(k, None)
+                while len(self._cache) >= self.max_items:
+                    oldest_key = next(iter(self._cache))
+                    self._cache.pop(oldest_key, None)
+            self._cache[key] = (now + ttl, val)
 
     async def invalidate(self, key: str) -> None:
         async with self._lock:
@@ -52,6 +61,8 @@ class DiskThumbnailCache:
         self._cached_count = 0
         self._cached_bytes = 0
         self._last_calc_time = 0.0
+        self._resolved_for: Optional[Path] = None
+        self._resolved_base: str = ""
         try:
             self.base_dir.mkdir(parents=True, exist_ok=True)
         except (PermissionError, OSError) as e:
@@ -62,20 +73,22 @@ class DiskThumbnailCache:
         # Cryptographic hash prevents path traversal, eliminates special characters, and stops taint propagation
         return hashlib.sha256(str(value).encode("utf-8")).hexdigest()
 
+    def _get_base_resolved(self) -> str:
+        if self._resolved_for != self.base_dir:
+            self._resolved_base = os.path.realpath(str(self.base_dir))
+            self._resolved_for = self.base_dir
+        return self._resolved_base
+
     def _get_path(self, item_type: str, item_id: str) -> Path:
         filename = f"{self._safe_component(item_type)}_{self._safe_component(item_id)}.jpg"
-        base_path = os.path.realpath(str(self.base_dir))
-        full_path = os.path.realpath(os.path.join(base_path, filename))
-        if not full_path.startswith(base_path):
-            raise ValueError(f"Path traversal detected: {filename}")
+        base_path = self._get_base_resolved()
+        full_path = os.path.join(base_path, filename)
         return Path(full_path)
 
     def get_thumbnail(self, item_type: str, item_id: str) -> Optional[bytes]:
         try:
             file_path = self._get_path(item_type, str(item_id))
-            base_path = os.path.realpath(str(self.base_dir))
-            real_path = os.path.realpath(str(file_path))
-            if real_path.startswith(base_path) and os.path.isfile(real_path):
+            if os.path.isfile(file_path):
                 return file_path.read_bytes()
         except Exception as e:
             logger.warning(f"Error reading cached thumbnail: {e}")
@@ -84,15 +97,12 @@ class DiskThumbnailCache:
     def save_thumbnail(self, item_type: str, item_id: str, data: bytes) -> None:
         try:
             file_path = self._get_path(item_type, str(item_id))
-            base_path = os.path.realpath(str(self.base_dir))
-            real_path = os.path.realpath(str(file_path))
-            if real_path.startswith(base_path):
-                self.base_dir.mkdir(parents=True, exist_ok=True)
-                is_new = not file_path.exists()
-                file_path.write_bytes(data)
-                if self._last_calc_time > 0 and is_new:
-                    self._cached_count += 1
-                    self._cached_bytes += len(data)
+            self.base_dir.mkdir(parents=True, exist_ok=True)
+            is_new = not file_path.exists()
+            file_path.write_bytes(data)
+            if self._last_calc_time > 0 and is_new:
+                self._cached_count += 1
+                self._cached_bytes += len(data)
         except Exception as e:
             logger.warning(f"Error writing thumbnail to cache: {e}")
 

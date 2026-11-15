@@ -3994,6 +3994,57 @@ async def test_series_status_computation_and_filtering():
         app.dependency_overrides.pop(AuthService.require_user, None)
 
 
+@pytest.mark.asyncio
+async def test_user_sync_single_fetch_and_memory_cache_eviction():
+    from datetime import datetime, timedelta, timezone
+    from unittest.mock import AsyncMock, patch
+    from app.main import db
+    from app.models.internal import UserSession
+    from app.services.cache import MemoryCache
+    from app.services.user_sync import UserSyncService
+
+    await db.connect()
+    svc = UserSyncService(db)
+    admin_user = UserSession(
+        user_id=1,
+        username="admin",
+        is_admin=True,
+        token="tok",
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+
+    get_lib_mock = AsyncMock(return_value=[])
+    get_all_mock = AsyncMock(return_value=[
+        {
+            "id": 9970,
+            "readStatus": "READ",
+            "metadata": {"pageCount": 100},
+        }
+    ])
+
+    with (
+        patch("app.services.user_sync.grimmory_client.get_all_books", new=get_all_mock),
+        patch("app.services.user_sync.grimmory_client.get_library_books", new=get_lib_mock),
+        patch("app.services.user_sync.grimmory_client.get_magic_shelves", new=AsyncMock(return_value=[])),
+    ):
+        await svc._sync_grimmory_read_states(admin_user)
+
+    assert get_all_mock.await_count == 1
+    assert get_lib_mock.await_count == 0
+
+    # MemoryCache bounds total items and evicts expired/oldest keys
+    cache = MemoryCache(ttl=60, max_items=3)
+    await cache.set("a", 1, custom_ttl=-1)  # already expired
+    await cache.set("b", 2)
+    await cache.set("c", 3)
+    await cache.set("d", 4)  # triggers expired sweep removing "a"
+    assert await cache.get("a") is None
+    assert await cache.get("b") == 2
+    assert await cache.get("c") == 3
+    assert await cache.get("d") == 4
+
+
+
 
 
 

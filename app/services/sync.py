@@ -139,34 +139,36 @@ class SyncService:
             self._log(f"Synchronized {len(libraries)} libraries from Grimmory")
             logger.info(f"Synchronized {len(libraries)} libraries from Grimmory")
 
-            # 2. Fetch all books (per library for authoritative libraryId, with fallback to get_all_books)
+            # 2. Fetch all books (concurrently per library for authoritative libraryId, with fallback to get_all_books)
             self.status.current_phase = "fetching_books"
             all_books_map: Dict[int, Dict[str, Any]] = {}
-            for lib in libraries:
-                lib_id = lib.get("id")
-                if lib_id is not None:
-                    try:
-                        lib_books = await grimmory_client.get_library_books(lib_id)
-                        for b in lib_books:
-                            b["libraryId"] = lib_id
-                            all_books_map[b["id"]] = b
-                    except Exception as e:
-                        logger.debug(f"get_library_books({lib_id}): {e}")
+            lib_ids = [lib.get("id") for lib in libraries if lib.get("id") is not None]
+            if lib_ids:
+                sem = asyncio.Semaphore(4)
+
+                async def _fetch_lib(lid: int):
+                    async with sem:
+                        return await grimmory_client.get_library_books(lid)
+
+                lib_results = await asyncio.gather(
+                    *[_fetch_lib(lid) for lid in lib_ids],
+                    return_exceptions=True,
+                )
+                for lid, res in zip(lib_ids, lib_results):
+                    if isinstance(res, Exception):
+                        logger.debug(f"get_library_books({lid}): {res}")
+                        continue
+                    for b in res:
+                        b["libraryId"] = lid
+                        all_books_map[b["id"]] = b
 
             if not all_books_map:
                 books_raw = await grimmory_client.get_all_books()
                 for b in books_raw:
                     all_books_map[b["id"]] = b
-            else:
-                try:
-                    books_raw = await grimmory_client.get_all_books()
-                    for b in books_raw:
-                        if b["id"] not in all_books_map:
-                            all_books_map[b["id"]] = b
-                except Exception as e:
-                    logger.debug(f"get_all_books fallback: {e}")
 
             books_raw = list(all_books_map.values())
+            all_books_map.clear()
             self._log(f"Fetched {len(books_raw)} total books from Grimmory")
             logger.info(f"Fetched {len(books_raw)} total books from Grimmory")
 
@@ -337,6 +339,9 @@ class SyncService:
                     "raw_json": b,
                 })
 
+            # Release raw list now that book_records and series_dict are constructed
+            books_raw.clear()
+
             # Finalize series status (ENDED for standalone books or when books_count == seriesTotal; ONGOING otherwise)
             for s in series_dict.values():
                 s_raw = s["raw_json"]
@@ -347,9 +352,11 @@ class SyncService:
                 s_raw["status"] = "ENDED" if (is_standalone or is_complete_series) else "ONGOING"
 
             # Upsert series
+            series_count = len(series_dict)
             await self.db.upsert_series_batch(list(series_dict.values()))
-            self._log(f"Upserted {len(series_dict)} series into database")
-            logger.info(f"Upserted {len(series_dict)} series into database")
+            series_dict.clear()
+            self._log(f"Upserted {series_count} series into database")
+            logger.info(f"Upserted {series_count} series into database")
 
             new_books_missing_pages = [
                 r["id"] for r in book_records

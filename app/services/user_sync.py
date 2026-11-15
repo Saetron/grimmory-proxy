@@ -14,6 +14,37 @@ from app.services.mapper import _safe_float, _safe_int, format_iso_timestamp
 logger = logging.getLogger("grimmory_proxy.user_sync")
 
 
+def _slim_book_progress(b: Dict[str, Any]) -> Dict[str, Any]:
+    """Extract only read-progress fields from a Grimmory book dict to avoid retaining full metadata in RAM."""
+    meta = b.get("metadata")
+    page_count = meta.get("pageCount") if isinstance(meta, dict) else None
+    return {
+        "page_count": page_count if page_count is not None else b.get("page_count"),
+        "readStatus": b.get("readStatus"),
+        "dateFinished": b.get("dateFinished"),
+        "cbxProgress": b.get("cbxProgress"),
+        "pdfProgress": b.get("pdfProgress"),
+        "epubProgress": b.get("epubProgress"),
+        "readProgress": b.get("readProgress"),
+        "last_modified": b.get("last_modified"),
+        "addedOn": b.get("addedOn"),
+    }
+
+
+def _merge_slim_book(target: Dict[int, Dict[str, Any]], b: Dict[str, Any]) -> None:
+    bid = b.get("id")
+    if bid is None:
+        return
+    slim = _slim_book_progress(b)
+    existing = target.get(bid)
+    if existing is None:
+        target[bid] = slim
+    else:
+        for k, v in slim.items():
+            if v is not None:
+                existing[k] = v
+
+
 class UserSyncService:
     def __init__(self, db: Optional[Database] = None, cooldown_seconds: int = 60):
         self._db = db
@@ -253,57 +284,61 @@ class UserSyncService:
                 pass
 
         all_books_map: Dict[int, Dict[str, Any]] = {}
+        is_unrestricted = user.is_admin or not user.assigned_library_ids
 
-        # 1. Fetch library books for user's accessible libraries
-        try:
-            db_libraries = await self.database.get_libraries()
-            target_libs = db_libraries
-            if not user.is_admin and user.assigned_library_ids:
-                target_libs = [lib for lib in db_libraries if lib["id"] in user.assigned_library_ids]
-
-            for lib in target_libs:
-                lib_id = lib["id"]
-                try:
-                    lib_books = await grimmory_client.get_library_books(lib_id, token=user.token)
-                    for b in lib_books:
-                        all_books_map[b["id"]] = b
-                except (httpx.ConnectError, httpx.ConnectTimeout, httpx.NetworkError) as e:
-                    logger.debug(f"Grimmory unreachable for library {lib_id}: {e}")
-                    return 0
-                except Exception as e:
-                    logger.debug(f"Could not fetch books for library {lib_id} with user token: {e}")
-        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.NetworkError):
-            return 0
-        except Exception as e:
-            logger.debug(f"Error resolving libraries for user read states: {e}")
-
-        # 2. Fetch all books & magic shelves with user token ONLY if user has access to all libraries
-        if user.is_admin or not user.assigned_library_ids:
+        if is_unrestricted:
+            # 1. Unrestricted users: fetch all books in a single request instead of N sequential library calls
             try:
                 all_books = await grimmory_client.get_all_books(token=user.token)
                 for b in all_books:
-                    if b["id"] not in all_books_map:
-                        all_books_map[b["id"]] = b
-                    else:
-                        all_books_map[b["id"]].update(b)
+                    _merge_slim_book(all_books_map, b)
             except (httpx.ConnectError, httpx.ConnectTimeout, httpx.NetworkError) as e:
                 logger.debug(f"Grimmory unreachable for all books: {e}")
                 return 0
             except Exception as e:
                 logger.debug(f"Could not fetch all books with user token: {e}")
 
-            # 3. Check magic shelves if available (only for unrestricted users)
+        # 2. Fallback for restricted users or if get_all_books returned empty/failed
+        if not is_unrestricted or not all_books_map:
+            try:
+                db_libraries = await self.database.get_libraries()
+                target_libs = db_libraries
+                if not user.is_admin and user.assigned_library_ids:
+                    target_libs = [lib for lib in db_libraries if lib["id"] in user.assigned_library_ids]
+
+                sem = asyncio.Semaphore(4)
+
+                async def _fetch_lib(lib_id: int):
+                    async with sem:
+                        return await grimmory_client.get_library_books(lib_id, token=user.token)
+
+                results = await asyncio.gather(
+                    *[_fetch_lib(lib["id"]) for lib in target_libs],
+                    return_exceptions=True,
+                )
+                for lib, res in zip(target_libs, results):
+                    if isinstance(res, (httpx.ConnectError, httpx.ConnectTimeout, httpx.NetworkError)):
+                        logger.debug(f"Grimmory unreachable for library {lib['id']}: {res}")
+                        return 0
+                    if isinstance(res, Exception):
+                        logger.debug(f"Could not fetch books for library {lib['id']} with user token: {res}")
+                        continue
+                    for b in res:
+                        _merge_slim_book(all_books_map, b)
+            except (httpx.ConnectError, httpx.ConnectTimeout, httpx.NetworkError):
+                return 0
+            except Exception as e:
+                logger.debug(f"Error resolving libraries for user read states: {e}")
+
+        # 3. Check magic shelves if available (only for unrestricted users)
+        if is_unrestricted:
             try:
                 magic_shelves = await grimmory_client.get_magic_shelves(token=user.token)
                 for shelf in magic_shelves:
                     shelf_books = shelf.get("books") or shelf.get("items") or []
                     for b in shelf_books:
                         if isinstance(b, dict) and "id" in b:
-                            bid = b["id"]
-                            if bid not in all_books_map:
-                                all_books_map[bid] = b
-                            else:
-                                all_books_map[bid].update(b)
+                            _merge_slim_book(all_books_map, b)
             except (httpx.ConnectError, httpx.ConnectTimeout, httpx.NetworkError):
                 return 0
             except Exception as e:
