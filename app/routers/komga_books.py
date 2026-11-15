@@ -497,6 +497,8 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
                 username=user_session.username,
                 token=user_session.token,
                 book_id=b_id,
+                book_type=(record.get("book_type") if record else None) or "CBX",
+                progress=perc,
                 completed=completed,
             )
 

@@ -228,6 +228,8 @@ def get_progress_router(db: Database) -> APIRouter:
             username=user.username,
             token=user.token,
             book_id=book_id,
+            book_type=(record.get("book_type") if record else None) or "CBX",
+            progress=percentage,
             completed=completed,
         )
 
@@ -560,6 +562,8 @@ def get_progress_router(db: Database) -> APIRouter:
             username=user.username,
             token=user.token,
             book_id=book_id,
+            book_type=(record.get("book_type") if record else None) or "CBX",
+            progress=percentage,
             completed=completed,
         )
 

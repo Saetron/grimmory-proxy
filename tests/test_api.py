@@ -3492,12 +3492,24 @@ async def test_reading_session_tracker_logs_to_grimmory(monkeypatch):
 
     logged_calls = []
 
-    async def fake_create_session(book_id, start_time, end_time, duration_seconds, token=None):
+    async def fake_create_session(
+        book_id,
+        start_time,
+        end_time,
+        duration_seconds,
+        book_type="CBX",
+        start_progress=0.0,
+        end_progress=0.0,
+        token=None,
+    ):
         logged_calls.append({
             "book_id": book_id,
             "start_time": start_time,
             "end_time": end_time,
             "duration_seconds": duration_seconds,
+            "book_type": book_type,
+            "start_progress": start_progress,
+            "end_progress": end_progress,
             "token": token,
         })
         return True

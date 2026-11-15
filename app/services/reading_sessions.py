@@ -16,6 +16,9 @@ class _ActiveSession:
     username: str
     token: Optional[str]
     book_id: int
+    book_type: str
+    start_progress: float
+    end_progress: float
     start_time: datetime
     end_time: datetime
     timer_task: Optional[asyncio.Task] = None
@@ -34,11 +37,16 @@ class ReadingSessionTracker:
         username: str,
         token: Optional[str],
         book_id: int,
+        book_type: str = "CBX",
+        progress: float = 0.0,
         completed: bool = False,
     ) -> None:
         """Record reading activity for a user/book and schedule or flush the session."""
         now = datetime.now(timezone.utc)
         eff_token = None if (settings.sync_username and username == settings.sync_username) else token
+        norm_type = (book_type or "CBX").upper()
+        if norm_type not in ("CBX", "EPUB", "PDF"):
+            norm_type = "CBX"
 
         # Flush any active session for the same user on a different book
         other_keys = [
@@ -54,6 +62,7 @@ class ReadingSessionTracker:
             if existing.timer_task and not existing.timer_task.done():
                 existing.timer_task.cancel()
             existing.end_time = now
+            existing.end_progress = progress
             existing.token = eff_token
             session = existing
         else:
@@ -62,6 +71,9 @@ class ReadingSessionTracker:
                 username=username,
                 token=eff_token,
                 book_id=book_id,
+                book_type=norm_type,
+                start_progress=progress,
+                end_progress=progress,
                 start_time=now,
                 end_time=now,
             )
@@ -103,6 +115,9 @@ class ReadingSessionTracker:
                 start_time=start_str,
                 end_time=end_str,
                 duration_seconds=duration_seconds,
+                book_type=session.book_type,
+                start_progress=session.start_progress,
+                end_progress=session.end_progress,
                 token=session.token,
             )
             if ok:

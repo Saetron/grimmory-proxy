@@ -324,11 +324,18 @@ class GrimmoryClient:
         if not book_ids:
             return True
         resp, auth_token = await self._request_with_auth(
-            "POST", "/api/v1/books/reset-progress?type=ALL", token=token, json=book_ids
+            "POST", "/api/v1/books/reset-progress?type=BOOKLORE", token=token, json=book_ids
         )
         reset_ok = resp.status_code in (200, 204)
         if not reset_ok:
             logger.warning(f"Grimmory reset-progress failed ({resp.status_code}) for books {book_ids}: {resp.text[:200]}")
+        # Also reset KOReader progress if present (best-effort)
+        try:
+            await self._request_with_auth(
+                "POST", "/api/v1/books/reset-progress?type=KOREADER", token=auth_token, json=book_ids
+            )
+        except Exception:
+            pass
         # Ensure read status on Grimmory is also set to UNREAD
         status_ok = False
         try:
@@ -343,14 +350,21 @@ class GrimmoryClient:
         start_time: str,
         end_time: str,
         duration_seconds: int,
+        book_type: str = "CBX",
+        start_progress: float = 0.0,
+        end_progress: float = 0.0,
         token: Optional[str] = None,
     ) -> bool:
         """Log a reading session for the authenticated user on Grimmory."""
         payload = {
             "bookId": book_id,
+            "bookType": book_type,
             "startTime": start_time,
             "endTime": end_time,
             "durationSeconds": max(1, int(duration_seconds)),
+            "startProgress": round(float(start_progress), 2),
+            "endProgress": round(float(end_progress), 2),
+            "progressDelta": round(float(end_progress) - float(start_progress), 2),
         }
         resp, _ = await self._request_with_auth("POST", "/api/v1/reading-sessions", token=token, json=payload)
         if resp.status_code not in (200, 201, 204):
