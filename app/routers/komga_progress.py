@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response, status
 
 from app.clients.grimmory import grimmory_client
+from app.config import settings
 from app.database import Database
 from app.models.internal import UserSession
 from app.models.komga import (
@@ -24,13 +25,20 @@ from app.services.mapper import KomgaMapper, parse_raw_json
 logger = logging.getLogger("grimmory_proxy.komga_progress")
 
 
-async def _reset_book_progress_on_grimmory(book_id: int, token: str, username: str) -> None:
+def _effective_user_token(user: UserSession) -> Optional[str]:
+    """Use auto-renewing sync token when the acting user is the configured sync user."""
+    if settings.sync_username and user.username == settings.sync_username:
+        return None
+    return user.token
+
+
+async def _reset_book_progress_on_grimmory(book_ids: List[int], token: Optional[str], username: str) -> None:
     try:
-        success = await grimmory_client.reset_read_progress([book_id], token=token)
+        success = await grimmory_client.reset_read_progress(book_ids, token=token)
         if not success:
-            logger.warning(f"Failed to reset progress on Grimmory for book {book_id} and user {username}")
+            logger.warning(f"Failed to reset progress on Grimmory for books {book_ids} and user {username}")
     except Exception as e:
-        logger.warning(f"Error resetting progress on Grimmory for book {book_id}: {e}")
+        logger.warning(f"Error resetting progress on Grimmory for books {book_ids}: {e}")
 
 
 async def _sync_book_progress_to_grimmory(
@@ -94,7 +102,7 @@ def get_progress_router(db: Database) -> APIRouter:
         logger.info(f"_clear_book_progress book={book_id} user={user.username}")
         await db.delete_read_progress(user_id=user.user_id, book_id=book_id)
         await db.delete_r2_progression(user_id=user.user_id, book_id=book_id)
-        asyncio.create_task(_reset_book_progress_on_grimmory(book_id, user.token, user.username))
+        asyncio.create_task(_reset_book_progress_on_grimmory([book_id], _effective_user_token(user), user.username))
         await asyncio.sleep(0)
 
     # ---------------- Standard Komga Book Read Progress ----------------
@@ -210,7 +218,7 @@ def get_progress_router(db: Database) -> APIRouter:
         )
 
         asyncio.create_task(
-            _sync_book_progress_to_grimmory(req, book_id, completed, user.token, user.username)
+            _sync_book_progress_to_grimmory(req, book_id, completed, _effective_user_token(user), user.username)
         )
         await asyncio.sleep(0)
 
@@ -250,7 +258,7 @@ def get_progress_router(db: Database) -> APIRouter:
             book_ids = [b["id"] for b in books]
             await db.delete_read_progress_batch(user.user_id, book_ids)
             await db.delete_r2_progression_batch(user.user_id, book_ids)
-            asyncio.create_task(grimmory_client.reset_read_progress(book_ids, token=user.token))
+            asyncio.create_task(_reset_book_progress_on_grimmory(book_ids, _effective_user_token(user), user.username))
             return Response(status_code=status.HTTP_204_NO_CONTENT)
 
         # Mark all books in series as read
@@ -269,7 +277,7 @@ def get_progress_router(db: Database) -> APIRouter:
         await db.upsert_read_progress_batch(progress_records)
 
         # Concurrently sync all books in series to Grimmory in background
-        asyncio.create_task(_sync_series_books_read_to_grimmory(user.token, books, now_str))
+        asyncio.create_task(_sync_series_books_read_to_grimmory(_effective_user_token(user), books, now_str))
 
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -291,7 +299,7 @@ def get_progress_router(db: Database) -> APIRouter:
         await db.delete_read_progress_batch(user.user_id, book_ids)
         await db.delete_r2_progression_batch(user.user_id, book_ids)
 
-        asyncio.create_task(grimmory_client.reset_read_progress(book_ids, token=user.token))
+        asyncio.create_task(_reset_book_progress_on_grimmory(book_ids, _effective_user_token(user), user.username))
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     # ---------------- Mihon / Tachiyomi Series Read Progress ----------------
@@ -357,12 +365,12 @@ def get_progress_router(db: Database) -> APIRouter:
 
         if read_records:
             await db.upsert_read_progress_batch(read_records)
-            asyncio.create_task(_sync_series_books_read_to_grimmory(user.token, read_books, now_str))
+            asyncio.create_task(_sync_series_books_read_to_grimmory(_effective_user_token(user), read_books, now_str))
 
         if unread_ids:
             await db.delete_read_progress_batch(user.user_id, unread_ids)
             await db.delete_r2_progression_batch(user.user_id, unread_ids)
-            asyncio.create_task(grimmory_client.reset_read_progress(unread_ids, token=user.token))
+            asyncio.create_task(_reset_book_progress_on_grimmory(unread_ids, _effective_user_token(user), user.username))
 
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -534,7 +542,7 @@ def get_progress_router(db: Database) -> APIRouter:
             cfi=cfi,
         )
         asyncio.create_task(
-            _sync_book_progress_to_grimmory(req, book_id, completed, user.token, user.username)
+            _sync_book_progress_to_grimmory(req, book_id, completed, _effective_user_token(user), user.username)
         )
         await asyncio.sleep(0)
 

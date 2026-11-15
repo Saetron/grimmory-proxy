@@ -10,6 +10,7 @@ import httpx
 from PIL import Image
 
 from app.clients.grimmory import grimmory_client
+from app.config import settings
 from app.database import Database
 from app.models.internal import UserSession
 from app.models.komga import BookDto, PageDto, PageableDto, build_pageable
@@ -482,10 +483,11 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
                 completed=completed,
                 timestamp=now_str,
             )
-            await grimmory_client.update_read_progress(req, token=user_session.token)
-            await grimmory_client.update_read_status([b_id], "READ" if completed else "READING", token=user_session.token)
+            eff_token = None if (settings.sync_username and user_session.username == settings.sync_username) else user_session.token
+            await grimmory_client.update_read_progress(req, token=eff_token)
+            await grimmory_client.update_read_status([b_id], "READ" if completed else "READING", token=eff_token)
 
-            schedule_koreader_progress_sync(record, b_id, p_num, page_count, perc, user_session.token)
+            schedule_koreader_progress_sync(record, b_id, p_num, page_count, perc, eff_token)
         except Exception as e:
             logger.debug(f"Error recording page progress for book {b_id}: {e}")
 

@@ -303,7 +303,10 @@ class GrimmoryClient:
         """Update read progress for the specific authenticated user."""
         payload = progress_req.model_dump(exclude_none=True)
         resp, _ = await self._request_with_auth("POST", "/api/v1/books/progress", token=token, json=payload)
-        return resp.status_code in [200, 204]
+        if resp.status_code not in (200, 204):
+            logger.warning(f"Grimmory update_read_progress failed ({resp.status_code}): {resp.text[:200]}")
+            return False
+        return True
 
     async def update_read_status(self, book_ids: List[int], status: str, token: Optional[str] = None) -> bool:
         """Update read status ('READ', 'READING', 'UNREAD') for one or more books on Grimmory."""
@@ -311,7 +314,10 @@ class GrimmoryClient:
             return True
         payload = {"bookIds": book_ids, "status": status}
         resp, _ = await self._request_with_auth("POST", "/api/v1/books/status", token=token, json=payload)
-        return resp.status_code in [200, 204]
+        if resp.status_code not in (200, 204):
+            logger.warning(f"Grimmory update_read_status({status}) failed ({resp.status_code}): {resp.text[:200]}")
+            return False
+        return True
 
     async def reset_read_progress(self, book_ids: List[int], token: Optional[str] = None) -> bool:
         """Reset read progress and status for the specific authenticated user."""
@@ -320,12 +326,16 @@ class GrimmoryClient:
         resp, auth_token = await self._request_with_auth(
             "POST", "/api/v1/books/reset-progress?type=ALL", token=token, json=book_ids
         )
+        reset_ok = resp.status_code in (200, 204)
+        if not reset_ok:
+            logger.warning(f"Grimmory reset-progress failed ({resp.status_code}) for books {book_ids}: {resp.text[:200]}")
         # Ensure read status on Grimmory is also set to UNREAD
+        status_ok = False
         try:
-            await self.update_read_status(book_ids, "UNREAD", token=auth_token)
+            status_ok = await self.update_read_status(book_ids, "UNREAD", token=auth_token)
         except Exception as e:
-            logger.debug(f"Failed to reset read status to UNREAD for books {book_ids}: {e}")
-        return resp.status_code in [200, 204]
+            logger.warning(f"Failed to reset read status to UNREAD for books {book_ids}: {e}")
+        return reset_ok and status_ok
 
     async def update_koreader_progress(
         self,
