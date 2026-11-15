@@ -420,42 +420,47 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
         await db.upsert_book_pages(book_id, [p.model_dump() for p in page_dtos])
         return page_dtos
 
+    _page_progress_locks: Dict[tuple, asyncio.Lock] = {}
+
     async def _record_page_read_progress(user_session: UserSession, b_id: int, p_num: int) -> None:
+        lock_key = (user_session.user_id, b_id)
+        lock = _page_progress_locks.setdefault(lock_key, asyncio.Lock())
         try:
-            existing = await db.get_book_read_progress(user_session.user_id, b_id)
-            if existing and existing.get("completed"):
-                return
-            current_page = existing.get("page", 0) if existing else 0
-            if current_page >= p_num:
-                return
+            async with lock:
+                existing = await db.get_book_read_progress(user_session.user_id, b_id)
+                if existing and existing.get("completed"):
+                    return
+                current_page = existing.get("page", 0) if existing else 0
+                if current_page >= p_num:
+                    return
 
-            record = await db.get_book_by_id(b_id)
-            known_page_count = (record.get("page_count", 0) or 0) if record else 0
-            if known_page_count <= 0 and record and record.get("raw_json"):
-                raw_data = parse_raw_json(record["raw_json"])
-                if raw_data:
-                    known_page_count = raw_data.get("metadata", {}).get("pageCount") or raw_data.get("pageCount") or 0
-            if known_page_count <= 0:
-                pages = await db.get_book_pages(b_id)
-                if pages:
-                    known_page_count = len(pages)
-                    await db.update_book_page_count(b_id, known_page_count)
+                record = await db.get_book_by_id(b_id)
+                known_page_count = (record.get("page_count", 0) or 0) if record else 0
+                if known_page_count <= 0 and record and record.get("raw_json"):
+                    raw_data = parse_raw_json(record["raw_json"])
+                    if raw_data:
+                        known_page_count = raw_data.get("metadata", {}).get("pageCount") or raw_data.get("pageCount") or 0
+                if known_page_count <= 0:
+                    pages = await db.get_book_pages(b_id)
+                    if pages:
+                        known_page_count = len(pages)
+                        await db.update_book_page_count(b_id, known_page_count)
 
-            page_count = known_page_count if known_page_count > 0 else 1
-            completed = known_page_count > 0 and p_num >= known_page_count
-            now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                page_count = known_page_count if known_page_count > 0 else 1
+                completed = known_page_count > 0 and p_num >= known_page_count
+                now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-            logger.info(
-                f"_record_page_read_progress book={b_id} user={user_session.username} "
-                f"page={p_num}/{known_page_count} completed={completed}"
-            )
-            await db.upsert_read_progress(
-                user_id=user_session.user_id,
-                book_id=b_id,
-                page=p_num,
-                completed=completed,
-                read_date=now_str,
-            )
+                logger.info(
+                    f"_record_page_read_progress book={b_id} user={user_session.username} "
+                    f"page={p_num}/{known_page_count} completed={completed}"
+                )
+                await db.upsert_read_progress(
+                    user_id=user_session.user_id,
+                    book_id=b_id,
+                    page=p_num,
+                    completed=completed,
+                    read_date=now_str,
+                )
 
             perc = 100.0 if completed else (min(100.0, max(0.0, (p_num / page_count) * 100.0)) if page_count > 1 else 0.0)
             req = build_grimmory_progress_request(
