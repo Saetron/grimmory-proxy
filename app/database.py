@@ -193,7 +193,6 @@ CREATE INDEX IF NOT EXISTS idx_series_library_id ON series(library_id);
 CREATE INDEX IF NOT EXISTS idx_series_name ON series(name);
 CREATE INDEX IF NOT EXISTS idx_series_slug ON series(slug);
 CREATE INDEX IF NOT EXISTS idx_series_sort_title ON series(sort_title);
-CREATE INDEX IF NOT EXISTS idx_series_release_date ON series(release_date);
 CREATE INDEX IF NOT EXISTS idx_books_series_number ON books(series_id, number);
 CREATE INDEX IF NOT EXISTS idx_books_deleted_series ON books(deleted, series_id, number);
 CREATE INDEX IF NOT EXISTS idx_books_deleted_library ON books(deleted, library_id);
