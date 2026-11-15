@@ -24,6 +24,15 @@ from app.services.mapper import KomgaMapper, parse_raw_json
 logger = logging.getLogger("grimmory_proxy.komga_progress")
 
 
+async def _reset_book_progress_on_grimmory(book_id: int, token: str, username: str) -> None:
+    try:
+        success = await grimmory_client.reset_read_progress([book_id], token=token)
+        if not success:
+            logger.warning(f"Failed to reset progress on Grimmory for book {book_id} and user {username}")
+    except Exception as e:
+        logger.warning(f"Error resetting progress on Grimmory for book {book_id}: {e}")
+
+
 async def _sync_book_progress_to_grimmory(
     req: Any, book_id: int, completed: bool, token: str, username: str
 ) -> None:
@@ -82,14 +91,11 @@ def get_progress_router(db: Database) -> APIRouter:
         return series
 
     async def _clear_book_progress(user: UserSession, book_id: int) -> None:
+        logger.info(f"_clear_book_progress book={book_id} user={user.username}")
         await db.delete_read_progress(user_id=user.user_id, book_id=book_id)
         await db.delete_r2_progression(user_id=user.user_id, book_id=book_id)
-        try:
-            success = await grimmory_client.reset_read_progress([book_id], token=user.token)
-            if not success:
-                logger.warning(f"Failed to reset progress on Grimmory for book {book_id} and user {user.username}")
-        except Exception as e:
-            logger.warning(f"Error resetting progress on Grimmory for book {book_id}: {e}")
+        asyncio.create_task(_reset_book_progress_on_grimmory(book_id, user.token, user.username))
+        await asyncio.sleep(0)
 
     # ---------------- Standard Komga Book Read Progress ----------------
 
