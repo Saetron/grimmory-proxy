@@ -171,6 +171,10 @@ def get_progress_router(db: Database) -> APIRouter:
         now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
         # Save to proxy database immediately for instant responsiveness on home screen
+        logger.info(
+            f"update_read_progress book={book_id} user={user.username} "
+            f"dto=({dto.page}, {dto.completed}) -> page={page_num}/{known_page_count} completed={completed}"
+        )
         await db.upsert_read_progress(
             user_id=user.user_id,
             book_id=book_id,
@@ -378,6 +382,7 @@ def get_progress_router(db: Database) -> APIRouter:
                 if local_date and r2_modified and local_date > r2_modified and r2_pos != local_page:
                     use_stored_r2 = False
             if use_stored_r2:
+                logger.info(f"get_book_progression book={book_id} user={user.username} -> stored R2")
                 return Response(
                     content=json.dumps(prog),
                     media_type="application/json",
@@ -409,6 +414,7 @@ def get_progress_router(db: Database) -> APIRouter:
                     },
                 },
             }
+            logger.info(f"get_book_progression book={book_id} user={user.username} -> synthesized page={page}")
             return Response(
                 content=json.dumps(synthesized),
                 media_type="application/json",

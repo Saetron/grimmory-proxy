@@ -445,6 +445,10 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
             completed = known_page_count > 0 and p_num >= known_page_count
             now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
+            logger.info(
+                f"_record_page_read_progress book={b_id} user={user_session.username} "
+                f"page={p_num}/{known_page_count} completed={completed}"
+            )
             await db.upsert_read_progress(
                 user_id=user_session.user_id,
                 book_id=b_id,

@@ -408,8 +408,8 @@ class UserSyncService:
                 # If remote has no progress (or unread), but local has active progress, keep local
                 if not is_completed and not is_in_prog:
                     continue
-                # If remote reports READING with no specific page/read_date, preserve local page > 1
-                if not is_completed and is_in_prog and page <= 1 and (local_rec.get("page") or 1) > 1 and not read_date:
+                # If remote reports READING with no specific page (>1), preserve local page > 1
+                if not is_completed and is_in_prog and page <= 1 and (local_rec.get("page") or 1) > 1:
                     continue
 
             if is_completed:
