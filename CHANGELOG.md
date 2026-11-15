@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Komic & Reader Resume Location Preservation**:
+  - Fixed `_resolve_book_page_count` and `_record_page_read_progress` so books with an unknown (`0` or `NULL`) page count are no longer defaulted to 1 page and prematurely marked `completed=True` on page 1 or mid-book, preventing Komic from jumping back to the start when reopening a book.
+  - Synchronized `GET /api/v1/books/{book_id}/progression` (Readium R2 progression) with `read_progress` so readers querying `/progression` receive the latest reading location even when progress was recorded via `PATCH /api/v1/books/{book_id}/read-progress` or page streaming, or when `read_progress` is newer than a previously stored R2 progression.
+  - Updated `ReadProgressDto.created` and `ReadProgressDto.lastModified` in `KomgaMapper.to_book_dto` and `GET /api/v1/books/{book_id}/read-progress` to reflect `read_date` rather than the book's file modification timestamp.
+  - Protected `UserSyncService` from overwriting active local progress (`page > 1`) with `page = 1` when Grimmory reports `READING` without a specific page or `read_date`.
+
+### Dependencies
+- Merged open Dependabot PRs updating `fastapi` (`>=0.162.4`), `pydantic` (`>=2.14.3`), `pypdf` (`>=7.0.1`), and `zensical` (`>=0.1.1`).
+
 ## [1.12.2] - 2026-11-02
 
 ### Fixed
