@@ -31,14 +31,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Audiobook Filtering (`SYNC_INCLUDE_AUDIOBOOKS`)**:
   - Excluded audiobooks (`bookType == "AUDIOBOOK"` or `.m4b`/`.mp3`/`.m4a`/`.ogg`/`.flac`/`.aac`/`.opus` files) during `SyncService.sync_all_metadata` (`app/services/sync.py`) by default (`sync_include_audiobooks=False` in `app/config.py`), automatically marking any previously synced audiobooks as deleted and pruning empty series.
 
-### Performance
-- **User Progress Sync Optimization**:
-  - Updated `UserSyncService._sync_grimmory_read_states` (`app/services/user_sync.py`) to fetch `GET /api/v1/books` once for unrestricted users (falling back to concurrent per-library fetches only when needed or for library-restricted users) and retain only read-progress fields in memory.
-- **Catalog Sync Peak RAM & Concurrency**:
-  - Updated `SyncService.sync_all_metadata` (`app/services/sync.py`) to fetch libraries concurrently (semaphore of 4), skip redundant `get_all_books()` calls when libraries succeed, and eagerly clear intermediate `all_books_map`, `books_raw`, and `series_dict` buffers.
-- **Thumbnail & Memory Cache Overhead**:
-  - Updated `DiskThumbnailCache` (`app/services/cache.py`) to cache the resolved base directory path instead of calling `os.path.realpath()` 3 times per hit, and added `max_items` + expired-key eviction to `MemoryCache`.
-
 ### Fixed
 - **Constructed Standalone Series Redirects**:
   - Updated `redirect_series` (`GET /series/{series_id}` in `app/main.py`) and `KomgaMapper.to_series_dto` (`app/services/mapper.py`) so constructed oneshot/standalone series (single book without an explicit Grimmory `seriesName`) redirect to `/book/{bookId}` instead of a non-existent `/series/{seriesName}` page in Grimmory.
@@ -56,6 +48,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Added an indexed `series.release_date` column (with startup backfill) and replaced correlated `readDate` subqueries with a single aggregated `LEFT JOIN` for fast sorting on large libraries.
 
 ### Performance
+- **User Progress Sync Optimization**:
+  - Updated `UserSyncService._sync_grimmory_read_states` (`app/services/user_sync.py`) to fetch `GET /api/v1/books` once for unrestricted users (falling back to concurrent per-library fetches only when needed or for library-restricted users) and retain only read-progress fields in memory.
+- **Catalog Sync Peak RAM & Concurrency**:
+  - Updated `SyncService.sync_all_metadata` (`app/services/sync.py`) to fetch libraries concurrently (semaphore of 4), skip redundant `get_all_books()` calls when libraries succeed, and eagerly clear intermediate `all_books_map`, `books_raw`, and `series_dict` buffers.
+- **Thumbnail & Memory Cache Overhead**:
+  - Updated `DiskThumbnailCache` (`app/services/cache.py`) to cache the resolved base directory path instead of calling `os.path.realpath()` 3 times per hit, and added `max_items` + expired-key eviction to `MemoryCache`.
 - **Database Indexes & Query Deduplication**:
   - Added composite SQLite indexes (`idx_books_deleted_series`, `idx_books_deleted_library`, `idx_books_released`, `idx_series_library_sort`, `idx_series_created`, `idx_series_last_modified`, `idx_read_progress_user_date`) in [app/database.py](app/database.py).
   - Extracted shared `_SERIES_PROGRESS_COLS` projection, unified `unpaged` vs paged query execution in `get_series_list` and `get_books_list`, and skipped redundant `SELECT COUNT(*)` queries when `unpaged=True`.
