@@ -432,15 +432,23 @@ class KomgaMapper:
         series_created = format_iso_timestamp(record.get("created"))
         series_modified = format_iso_timestamp(record.get("last_modified"))
 
-        series_links = []
-        if settings.public_grimmory_url:
-            series_links.append({
-                "label": "Grimmory",
-                "url": f"{settings.public_grimmory_url}/series/{quote(name, safe='')}",
-            })
-
         # Parse raw_json if available
         raw = parse_raw_json(record.get("raw_json"))
+
+        series_links = []
+        if settings.public_grimmory_url:
+            if (
+                not raw.get("hasExplicitSeries", True)
+                and raw.get("standaloneBookId")
+                and count == 1
+            ):
+                grimmory_link = f"{settings.public_grimmory_url}/book/{raw['standaloneBookId']}"
+            else:
+                grimmory_link = f"{settings.public_grimmory_url}/series/{quote(name, safe='')}"
+            series_links.append({
+                "label": "Grimmory",
+                "url": grimmory_link,
+            })
 
         publisher = record.get("publisher") or raw.get("publisher", "") or extract_publisher(raw)
         genres = raw.get("genres") or extract_genres(raw)

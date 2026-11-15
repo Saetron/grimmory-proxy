@@ -3754,6 +3754,93 @@ async def test_sync_excludes_audiobooks_by_default():
         settings.sync_include_audiobooks = orig_flag
 
 
+@pytest.mark.asyncio
+async def test_constructed_series_redirects_to_book_page():
+    import json
+    from httpx import AsyncClient, ASGITransport
+    from app.config import settings
+    from app.main import app, db
+
+    await db.connect()
+    async with db.write_db() as conn:
+        await conn.execute(
+            "INSERT OR REPLACE INTO libraries (id, name, raw_json) VALUES (?, ?, ?)",
+            (102, "OneShotLib", json.dumps({"id": 102, "name": "OneShotLib"})),
+        )
+        # Constructed standalone series (no metadata.seriesName on book)
+        await conn.execute(
+            "INSERT OR REPLACE INTO series (id, library_id, name, slug, raw_json) VALUES (?, ?, ?, ?, ?)",
+            (
+                "102-standalone-one-shot",
+                102,
+                "Standalone One Shot",
+                "standalone-one-shot",
+                json.dumps({
+                    "id": "102-standalone-one-shot",
+                    "hasExplicitSeries": False,
+                    "standaloneBookId": 9960,
+                }),
+            ),
+        )
+        await conn.execute(
+            """
+            INSERT OR REPLACE INTO books
+            (id, series_id, library_id, name, book_type, deleted, raw_json)
+            VALUES (?, ?, ?, ?, ?, 0, ?)
+            """,
+            (
+                9960,
+                "102-standalone-one-shot",
+                102,
+                "Standalone One Shot",
+                "CBX",
+                json.dumps({"id": 9960, "metadata": {"title": "Standalone One Shot"}}),
+            ),
+        )
+        # Explicit single-book series (has metadata.seriesName on book)
+        await conn.execute(
+            "INSERT OR REPLACE INTO series (id, library_id, name, slug, raw_json) VALUES (?, ?, ?, ?, ?)",
+            (
+                "102-real-series",
+                102,
+                "Real Series",
+                "real-series",
+                json.dumps({"id": "102-real-series", "hasExplicitSeries": True}),
+            ),
+        )
+        await conn.execute(
+            """
+            INSERT OR REPLACE INTO books
+            (id, series_id, library_id, name, book_type, deleted, raw_json)
+            VALUES (?, ?, ?, ?, ?, 0, ?)
+            """,
+            (
+                9961,
+                "102-real-series",
+                102,
+                "Vol 1",
+                "CBX",
+                json.dumps({"id": 9961, "metadata": {"title": "Vol 1", "seriesName": "Real Series"}}),
+            ),
+        )
+        await conn.commit()
+
+    orig_url = settings.grimmory_url
+    try:
+        settings.grimmory_url = "https://grimmory.example.com"
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            r1 = await client.get("/series/102-standalone-one-shot", follow_redirects=False)
+            assert r1.status_code == 307
+            assert r1.headers["location"] == "https://grimmory.example.com/book/9960"
+
+            r2 = await client.get("/series/102-real-series", follow_redirects=False)
+            assert r2.status_code == 307
+            assert r2.headers["location"] == "https://grimmory.example.com/series/Real%20Series"
+    finally:
+        settings.grimmory_url = orig_url
+
+
+
 
 
 

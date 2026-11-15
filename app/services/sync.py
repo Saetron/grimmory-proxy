@@ -271,10 +271,15 @@ class SyncService:
                             "summary": b_summary,
                             "releaseDate": released_str,
                             "language": b_lang,
+                            "hasExplicitSeries": has_explicit_series,
+                            "standaloneBookId": b["id"] if not has_explicit_series else None,
                         },
                     }
                 else:
                     s_raw = series_dict[series_id]["raw_json"]
+                    if has_explicit_series:
+                        s_raw["hasExplicitSeries"] = True
+                    s_raw["standaloneBookId"] = None
                     existing_auths = {(a["name"].lower(), a.get("role", "writer").lower()) for a in s_raw.get("authors", [])}
                     for a in b_authors:
                         key = (a["name"].lower(), a.get("role", "writer").lower())

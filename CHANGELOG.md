@@ -29,6 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Excluded audiobooks (`bookType == "AUDIOBOOK"` or `.m4b`/`.mp3`/`.m4a`/`.ogg`/`.flac`/`.aac`/`.opus` files) during [`SyncService.sync_all_metadata`](file:///Users/jbudz/Documents/grimmory-proxy/app/services/sync.py) by default (`sync_include_audiobooks=False` in [`Settings`](file:///Users/jbudz/Documents/grimmory-proxy/app/config.py)), automatically marking any previously synced audiobooks as deleted and pruning empty series.
 
 ### Fixed
+- **Constructed Standalone Series Redirects**:
+  - Updated [`redirect_series`](file:///Users/jbudz/Documents/grimmory-proxy/app/main.py) (`GET /series/{series_id}`) and [`KomgaMapper.to_series_dto`](file:///Users/jbudz/Documents/grimmory-proxy/app/services/mapper.py) (`links`) so constructed oneshot/standalone series (single book without an explicit Grimmory `seriesName`) redirect to `/book/{bookId}` instead of a non-existent `/series/{seriesName}` page in Grimmory.
 - **Komic & Reader Resume Location Preservation**:
   - Fixed `PageDto` serialization so `width`, `height`, `sizeBytes`, and `size` are always non-null (`int`/`str`), resolving Swift `Codable` decoding failures (`GET /api/v1/books/{book_id}/pages`) in KMReader and Komic.
   - Fixed `_resolve_book_page_count` and `_record_page_read_progress` so books with an unknown (`0` or `NULL`) page count are no longer defaulted to 1 page and prematurely marked `completed=True` on page 1 or mid-book, preventing Komic from jumping back to the start when reopening a book.

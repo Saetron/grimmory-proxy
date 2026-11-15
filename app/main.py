@@ -24,6 +24,7 @@ from app.routers.komga_progress import get_progress_router
 from app.routers.komga_series import get_series_router
 from app.routers.koreader import get_koreader_router
 from app.services.log_buffer import proxy_log_handler
+from app.services.mapper import parse_raw_json
 from app.services.page_calculator import PageCalculator
 from app.services.sync import SyncService
 from app.services.user_sync import user_sync_service
@@ -171,6 +172,15 @@ async def redirect_series(request: Request, series_id: str = ""):
         series = await db.find_series_by_id_or_slug(first_segment)
 
     if series and series.get("name"):
+        # For constructed standalone/oneshot series (single book without an explicit Grimmory seriesName),
+        # Grimmory has no /series/:seriesName page — redirect directly to /book/:bookId instead.
+        series_books = await db.get_books_by_series(series["id"])
+        if len(series_books) == 1:
+            only_book = series_books[0]
+            book_raw = parse_raw_json(only_book.get("raw_json"))
+            explicit_series = (book_raw.get("metadata") or {}).get("seriesName")
+            if not (explicit_series and str(explicit_series).strip()):
+                return _safe_grimmory_redirect(f"book/{only_book['id']}", query)
         target_name = series["name"]
     else:
         # Fallback if metadata is not in DB: strip library id prefix and hex hash
