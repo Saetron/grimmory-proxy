@@ -24,6 +24,18 @@ from app.services.mapper import KomgaMapper, parse_raw_json
 logger = logging.getLogger("grimmory_proxy.komga_progress")
 
 
+async def _sync_book_progress_to_grimmory(
+    req: Any, book_id: int, completed: bool, token: str, username: str
+) -> None:
+    try:
+        success = await grimmory_client.update_read_progress(req, token=token)
+        await grimmory_client.update_read_status([book_id], "READ" if completed else "READING", token=token)
+        if not success:
+            logger.warning(f"Failed to update progress on Grimmory for book {book_id} and user {username}")
+    except Exception as e:
+        logger.warning(f"Error calling Grimmory update_read_progress for book {book_id}: {e}")
+
+
 async def _sync_series_books_read_to_grimmory(token: str, books: List[Dict[str, Any]], date_finished: str) -> None:
     tasks = []
     book_ids = [b["id"] for b in books]
@@ -191,13 +203,10 @@ def get_progress_router(db: Database) -> APIRouter:
             timestamp=now_str,
         )
 
-        try:
-            success = await grimmory_client.update_read_progress(req, token=user.token)
-            await grimmory_client.update_read_status([book_id], "READ" if completed else "READING", token=user.token)
-            if not success:
-                logger.warning(f"Failed to update progress on Grimmory for book {book_id} and user {user.username}")
-        except Exception as e:
-            logger.warning(f"Error calling Grimmory update_read_progress for book {book_id}: {e}")
+        asyncio.create_task(
+            _sync_book_progress_to_grimmory(req, book_id, completed, user.token, user.username)
+        )
+        await asyncio.sleep(0)
 
         schedule_koreader_progress_sync(record, book_id, page_num, page_count, percentage, user.token)
 
@@ -518,13 +527,10 @@ def get_progress_router(db: Database) -> APIRouter:
             href=href,
             cfi=cfi,
         )
-        try:
-            success = await grimmory_client.update_read_progress(req, token=user.token)
-            await grimmory_client.update_read_status([book_id], "READ" if completed else "READING", token=user.token)
-            if not success:
-                logger.warning(f"Failed to update progress on Grimmory for book {book_id} and user {user.username}")
-        except Exception as e:
-            logger.warning(f"Error calling Grimmory update_read_progress for book {book_id}: {e}")
+        asyncio.create_task(
+            _sync_book_progress_to_grimmory(req, book_id, completed, user.token, user.username)
+        )
+        await asyncio.sleep(0)
 
         schedule_koreader_progress_sync(record, book_id, page_num, page_count, percentage, user.token)
 
