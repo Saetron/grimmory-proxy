@@ -233,7 +233,7 @@ def get_progress_router(db: Database) -> APIRouter:
             completed=completed,
         )
 
-        schedule_koreader_progress_sync(record, book_id, page_num, page_count, percentage, user.token)
+        schedule_koreader_progress_sync(record, book_id, page_num, page_count, percentage, _effective_user_token(user))
 
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -567,7 +567,7 @@ def get_progress_router(db: Database) -> APIRouter:
             completed=completed,
         )
 
-        schedule_koreader_progress_sync(record, book_id, page_num, page_count, percentage, user.token)
+        schedule_koreader_progress_sync(record, book_id, page_num, page_count, percentage, _effective_user_token(user))
 
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
