@@ -3174,6 +3174,123 @@ async def test_get_libraries_scan_interval_enum_compliance():
         assert resp_single.json()["scanInterval"] == "EVERY_6H"
 
 
+@pytest.mark.asyncio
+async def test_komic_resume_last_location_and_unknown_page_count(monkeypatch):
+    import asyncio
+    from datetime import datetime, timedelta, timezone
+    from unittest.mock import AsyncMock
+    from httpx import AsyncClient, ASGITransport
+    from app.main import app, db
+    from app.clients.grimmory import grimmory_client
+    from app.models.internal import UserSession
+    from app.services.auth import AuthService
+
+    await db.connect()
+    await db.upsert_libraries([{"id": 95, "name": "Komic Lib", "paths": []}])
+    await db.upsert_series_batch([{"id": "95-series1", "library_id": 95, "name": "Komic Series", "slug": "komic-series"}])
+    await db.upsert_books_batch([
+        {
+            "id": 9501,
+            "series_id": "95-series1",
+            "library_id": 95,
+            "name": "Uncalculated Book",
+            "number": 1.0,
+            "page_count": 0,
+            "last_modified": "2025-01-01T00:00:00Z",
+        },
+        {
+            "id": 9502,
+            "series_id": "95-series1",
+            "library_id": 95,
+            "name": "Calculated Book",
+            "number": 2.0,
+            "page_count": 100,
+            "last_modified": "2025-01-01T00:00:00Z",
+        },
+    ])
+
+    user = UserSession(
+        user_id=95,
+        username="komic_resume_user",
+        token="token_komic_resume",
+        is_admin=True,
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    AuthService.cache_session(user)
+    headers = {"Authorization": "Bearer token_komic_resume"}
+
+    monkeypatch.setattr(grimmory_client, "update_read_progress", AsyncMock(return_value=True))
+    monkeypatch.setattr(grimmory_client, "update_read_status", AsyncMock(return_value=True))
+    # Minimal 1x1 JPEG bytes for page streaming
+    from PIL import Image
+    import io
+    buf = io.BytesIO()
+    Image.new("RGB", (10, 10), color="white").save(buf, format="JPEG")
+    monkeypatch.setattr(grimmory_client, "stream_page_image", AsyncMock(return_value=buf.getvalue()))
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # 1. Stream page 1 and page 12 on a book with unknown page_count (0)
+        r1 = await client.get("/api/v1/books/9501/pages/1", headers=headers)
+        assert r1.status_code == 200
+        await asyncio.sleep(0.05)
+
+        r12 = await client.get("/api/v1/books/9501/pages/12", headers=headers)
+        assert r12.status_code == 200
+        await asyncio.sleep(0.05)
+
+        book_resp = await client.get("/api/v1/books/9501", headers=headers)
+        assert book_resp.status_code == 200
+        rp = book_resp.json()["readProgress"]
+        assert rp is not None
+        assert rp["page"] == 12
+        assert rp["completed"] is False
+        assert rp["lastModified"] == rp["readDate"]
+        assert rp["lastModified"] != "2025-01-01T00:00:00Z"
+
+        # 2. PATCH /read-progress on unknown page_count book must not mark completed=True
+        patch_resp = await client.patch(
+            "/api/v1/books/9501/read-progress",
+            json={"page": 18, "completed": False},
+            headers=headers,
+        )
+        assert patch_resp.status_code == 204
+
+        book_resp2 = await client.get("/api/v1/books/9501", headers=headers)
+        assert book_resp2.status_code == 200
+        assert book_resp2.json()["readProgress"]["page"] == 18
+        assert book_resp2.json()["readProgress"]["completed"] is False
+
+        # 3. GET /progression synthesizes R2 progression from read_progress when R2 was never PUT
+        prog_resp = await client.get("/api/v1/books/9501/progression", headers=headers)
+        assert prog_resp.status_code == 200
+        assert prog_resp.json()["locator"]["locations"]["position"] == 18
+
+        # 4. Newer PATCH /read-progress supersedes older PUT /progression
+        old_r2 = {
+            "modified": "2025-06-01T10:00:00Z",
+            "device": {"id": "komic-app", "name": "Komic"},
+            "locator": {
+                "href": "/api/v1/books/9502/pages/10",
+                "locations": {"position": 10, "totalProgression": 0.1},
+            },
+        }
+        put_resp = await client.put("/api/v1/books/9502/progression", json=old_r2, headers=headers)
+        assert put_resp.status_code == 204
+
+        patch_resp2 = await client.patch(
+            "/api/v1/books/9502/read-progress",
+            json={"page": 42, "completed": False},
+            headers=headers,
+        )
+        assert patch_resp2.status_code == 204
+
+        prog_resp2 = await client.get("/api/v1/books/9502/progression", headers=headers)
+        assert prog_resp2.status_code == 200
+        assert prog_resp2.json()["locator"]["locations"]["position"] == 42
+        assert abs(prog_resp2.json()["locator"]["locations"]["totalProgression"] - 0.42) < 1e-6
+
+
 
 
 
