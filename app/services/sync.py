@@ -161,6 +161,7 @@ class SyncService:
             # Detect and handle books removed upstream on Grimmory
             current_remote_book_ids = {b["id"] for b in books_raw if not b.get("deleted")}
             active_db_ids = await self.db.get_active_book_ids()
+            active_db_set = set(active_db_ids)
             removed_ids = [bid for bid in active_db_ids if bid not in current_remote_book_ids]
             if removed_ids:
                 marked = await self.db.mark_books_deleted(removed_ids)
@@ -305,6 +306,11 @@ class SyncService:
             self._log(f"Upserted {len(series_dict)} series into database")
             logger.info(f"Upserted {len(series_dict)} series into database")
 
+            new_books_missing_pages = [
+                r["id"] for r in book_records
+                if r["id"] not in active_db_set and not r.get("deleted") and (r.get("page_count") or 0) <= 0
+            ]
+
             # Upsert books
             await self.db.upsert_books_batch(book_records)
             self._log(f"Upserted {len(book_records)} books into database")
@@ -342,10 +348,21 @@ class SyncService:
             from app.services.memory import release_memory
             release_memory()
 
-            # If this was initial startup with an empty database, trigger automatic page calculation!
+            # If this was initial startup with an empty database, or new books arrived without page counts,
+            # trigger automatic background page calculation.
             if was_database_empty and settings.sync_on_startup:
                 self._log("First startup with empty database detected: triggering background page calculation...")
                 logger.info("First startup with empty database detected: triggering background page calculation for all missing pages...")
+                self.page_calculator.start_calculation_job(missing_only=True)
+            elif new_books_missing_pages and not self.page_calculator.is_running:
+                self._log(
+                    f"Detected {len(new_books_missing_pages)} new book(s) without page counts: "
+                    "triggering background page calculation..."
+                )
+                logger.info(
+                    f"Detected {len(new_books_missing_pages)} new book(s) without page counts: "
+                    "triggering background page calculation..."
+                )
                 self.page_calculator.start_calculation_job(missing_only=True)
 
         except Exception as e:

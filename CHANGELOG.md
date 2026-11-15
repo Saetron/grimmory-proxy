@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Added referential metadata endpoints: `GET /api/v1/languages`, `GET /api/v2/languages`, `GET /api/v1/age-ratings`, `GET /api/v2/age-ratings`, `GET /api/v1/sharing-labels`, `GET /api/v2/sharing-labels`, and `GET /api/v2/series/release-years`.
 - **Grimmory Reading Sessions**:
   - Added [`ReadingSessionTracker`](file:///Users/jbudz/Documents/grimmory-proxy/app/services/reading_sessions.py) and `GrimmoryClient.create_reading_session` (`POST /api/v1/reading-sessions`) to aggregate page turns and progress updates into Grimmory reading sessions (flushing after 120s of inactivity, on book switch, on completion, and on shutdown).
+- **Automatic Page Calculation for New Books**:
+  - Updated [`SyncService.sync_all_metadata`](file:///Users/jbudz/Documents/grimmory-proxy/app/services/sync.py) to automatically trigger `PageCalculator.start_calculation_job(missing_only=True)` whenever a sync cycle detects newly added books with missing/zero page counts (not just on initial empty-DB startup).
 
 ### Fixed
 - **Komic & Reader Resume Location Preservation**:

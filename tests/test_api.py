@@ -3524,4 +3524,40 @@ async def test_reading_session_tracker_logs_to_grimmory(monkeypatch):
     assert logged_calls[1]["duration_seconds"] >= 1
 
 
+@pytest.mark.asyncio
+async def test_sync_triggers_page_calc_for_new_books_missing_pages(monkeypatch):
+    from unittest.mock import AsyncMock, MagicMock
+    from app.main import db
+    from app.clients.grimmory import grimmory_client
+    from app.services.sync import SyncService
+
+    await db.connect()
+    await db.upsert_libraries([{"id": 98, "name": "AutoPage Lib", "paths": []}])
+    await db.upsert_series_batch([{"id": "98-existing", "library_id": 98, "name": "Existing", "slug": "existing"}])
+    await db.upsert_books_batch([
+        {"id": 9801, "series_id": "98-existing", "library_id": 98, "name": "Existing Book", "number": 1.0, "page_count": 20},
+    ])
+
+    monkeypatch.setattr(grimmory_client, "get_libraries", AsyncMock(return_value=[{"id": 98, "name": "AutoPage Lib", "paths": []}]))
+    monkeypatch.setattr(
+        grimmory_client,
+        "get_library_books",
+        AsyncMock(return_value=[
+            {"id": 9801, "libraryId": 98, "bookType": "CBX", "metadata": {"title": "Existing Book", "pageCount": 20}},
+            {"id": 9802, "libraryId": 98, "bookType": "CBX", "metadata": {"title": "Brand New Book", "pageCount": 0}},
+        ]),
+    )
+    monkeypatch.setattr(grimmory_client, "get_all_books", AsyncMock(return_value=[]))
+
+    mock_calc = MagicMock()
+    mock_calc.is_running = False
+    mock_calc.start_calculation_job = MagicMock()
+
+    svc = SyncService(db=db, page_calculator=mock_calc)
+    await svc.sync_all_metadata()
+
+    mock_calc.start_calculation_job.assert_called_once_with(missing_only=True)
+
+
+
 
