@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **Komic & Reader Resume Location Preservation**:
+  - Fixed `PageDto` serialization so `width`, `height`, `sizeBytes`, and `size` are always non-null (`int`/`str`), resolving Swift `Codable` decoding failures (`GET /api/v1/books/{book_id}/pages`) in KMReader and Komic.
   - Fixed `_resolve_book_page_count` and `_record_page_read_progress` so books with an unknown (`0` or `NULL`) page count are no longer defaulted to 1 page and prematurely marked `completed=True` on page 1 or mid-book, preventing Komic from jumping back to the start when reopening a book.
   - Synchronized `GET /api/v1/books/{book_id}/progression` (Readium R2 progression) with `read_progress` so readers querying `/progression` receive the latest reading location even when progress was recorded via `PATCH /api/v1/books/{book_id}/read-progress` or page streaming, or when `read_progress` is newer than a previously stored R2 progression.
   - Updated `ReadProgressDto.created` and `ReadProgressDto.lastModified` in `KomgaMapper.to_book_dto` and `GET /api/v1/books/{book_id}/read-progress` to reflect `read_date` rather than the book's file modification timestamp.

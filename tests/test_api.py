@@ -3290,6 +3290,16 @@ async def test_komic_resume_last_location_and_unknown_page_count(monkeypatch):
         assert prog_resp2.json()["locator"]["locations"]["position"] == 42
         assert abs(prog_resp2.json()["locator"]["locations"]["totalProgression"] - 0.42) < 1e-6
 
+        # 5. GET /pages returns non-null sizeBytes, size, width, height for Swift Codable clients (KMReader/Komic)
+        pages_resp = await client.get("/api/v1/books/9502/pages", headers=headers)
+        assert pages_resp.status_code == 200
+        pages_json = pages_resp.json()
+        assert len(pages_json) == 100
+        assert isinstance(pages_json[0]["sizeBytes"], int)
+        assert isinstance(pages_json[0]["size"], str) and len(pages_json[0]["size"]) > 0
+        assert isinstance(pages_json[0]["width"], int)
+        assert isinstance(pages_json[0]["height"], int)
+
 
 
 

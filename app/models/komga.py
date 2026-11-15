@@ -196,10 +196,35 @@ class PageDto(BaseModel):
     number: int
     fileName: str
     mediaType: str = "image/jpeg"
-    width: Optional[int] = None
-    height: Optional[int] = None
-    sizeBytes: Optional[int] = None
-    size: Optional[str] = None
+    width: int = 1200
+    height: int = 1600
+    sizeBytes: int = 0
+    size: str = "0 B"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_null_fields(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            d = dict(data)
+            if d.get("width") is None:
+                d["width"] = 1200
+            if d.get("height") is None:
+                d["height"] = 1600
+            sb = d.get("sizeBytes")
+            if sb is None:
+                sb = 0
+            d["sizeBytes"] = int(sb)
+            if not d.get("size"):
+                if d["sizeBytes"] <= 0:
+                    d["size"] = "0 B"
+                elif d["sizeBytes"] < 1024:
+                    d["size"] = f"{d['sizeBytes']} B"
+                elif d["sizeBytes"] < 1024 * 1024:
+                    d["size"] = f"{d['sizeBytes'] / 1024.0:.1f} KB"
+                else:
+                    d["size"] = f"{d['sizeBytes'] / (1024.0 * 1024.0):.1f} MB"
+            return d
+        return data
 
 
 class CollectionDto(BaseModel):
