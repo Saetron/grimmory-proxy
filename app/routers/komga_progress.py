@@ -89,10 +89,13 @@ def get_progress_router(db: Database) -> APIRouter:
         # Check local database read progress first
         local_prog = await db.get_book_read_progress(user.user_id, book_id)
         if local_prog:
+            rp_date = local_prog["read_date"]
             return ReadProgressDto(
                 page=local_prog["page"],
                 completed=bool(local_prog["completed"]),
-                readDate=local_prog["read_date"],
+                readDate=rp_date,
+                created=rp_date,
+                lastModified=rp_date,
             )
 
         # Fetch book from Grimmory with this user's authentication context
@@ -360,12 +363,56 @@ def get_progress_router(db: Database) -> APIRouter:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
 
         prog = await db.get_r2_progression(user.user_id, book_id)
+        local_prog = await db.get_book_read_progress(user.user_id, book_id)
+
         if prog:
+            use_stored_r2 = True
+            if local_prog:
+                r2_modified = str(prog.get("modified") or "")
+                r2_loc = prog.get("locator") if isinstance(prog.get("locator"), dict) else prog
+                r2_locations = r2_loc.get("locations") if isinstance(r2_loc.get("locations"), dict) else {}
+                r2_pos = r2_locations.get("position") or r2_locations.get("page") or prog.get("page")
+                local_date = str(local_prog.get("read_date") or "")
+                local_page = int(local_prog.get("page") or 1)
+                if local_date and r2_modified and local_date > r2_modified and r2_pos != local_page:
+                    use_stored_r2 = False
+            if use_stored_r2:
+                return Response(
+                    content=json.dumps(prog),
+                    media_type="application/json",
+                    status_code=status.HTTP_200_OK,
+                )
+
+        if local_prog:
+            known_page_count = await _resolve_book_page_count(book_id, record)
+            page = max(1, int(local_prog.get("page") or 1))
+            is_completed = bool(local_prog.get("completed"))
+            if is_completed:
+                total_prog = 1.0
+            elif known_page_count > 1:
+                total_prog = min(1.0, max(0.0, page / known_page_count))
+            else:
+                total_prog = 0.0
+            modified = local_prog.get("read_date") or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            synthesized = {
+                "modified": modified,
+                "device": {"id": "grimmory-proxy", "name": "grimmory-proxy"},
+                "locator": {
+                    "href": f"/api/v1/books/{book_id}/pages/{page}",
+                    "type": "image/jpeg",
+                    "locations": {
+                        "progression": total_prog,
+                        "totalProgression": total_prog,
+                        "position": page,
+                    },
+                },
+            }
             return Response(
-                content=json.dumps(prog),
+                content=json.dumps(synthesized),
                 media_type="application/json",
                 status_code=status.HTTP_200_OK,
             )
+
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     @router.put("/api/v1/books/{book_id}/progression", status_code=status.HTTP_204_NO_CONTENT)

@@ -337,12 +337,13 @@ class KomgaMapper:
             or record.get("user_completed") is not None
             or record.get("user_read_date") is not None
         ):
+            rp_date = format_iso_timestamp(record.get("user_read_date") or book_modified)
             read_progress = ReadProgressDto(
                 page=record.get("user_page") or 1,
                 completed=bool(record.get("user_completed")),
-                readDate=format_iso_timestamp(record.get("user_read_date") or book_modified),
-                created=book_created,
-                lastModified=book_modified,
+                readDate=rp_date,
+                created=rp_date,
+                lastModified=rp_date,
             )
         elif not read_progress and not has_user_query and raw:
             # Check if book raw JSON has progress for the current user
