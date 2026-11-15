@@ -94,10 +94,20 @@ app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 @app.middleware("http")
 async def add_static_no_cache_headers(request: Request, call_next):
     response = await call_next(request)
-    if request.url.path.startswith("/static/"):
+    path = request.url.path
+    if path.startswith("/static/"):
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
+    elif path.startswith("/api/v") and (
+        response.status_code >= 400
+        or "/read-progress" in path
+        or "/progression" in path
+        or "/manifest" in path
+        or path.endswith("/pages")
+        or (request.method != "GET" and "/books/list" not in path)
+    ):
+        logger.info(f"API {request.method} {path} -> {response.status_code}")
     return response
 
 # Mount Routers
