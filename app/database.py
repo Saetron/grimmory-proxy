@@ -195,8 +195,22 @@ CREATE INDEX IF NOT EXISTS idx_series_slug ON series(slug);
 CREATE INDEX IF NOT EXISTS idx_series_sort_title ON series(sort_title);
 CREATE INDEX IF NOT EXISTS idx_series_release_date ON series(release_date);
 CREATE INDEX IF NOT EXISTS idx_books_series_number ON books(series_id, number);
+CREATE INDEX IF NOT EXISTS idx_books_deleted_series ON books(deleted, series_id, number);
+CREATE INDEX IF NOT EXISTS idx_books_deleted_library ON books(deleted, library_id);
+CREATE INDEX IF NOT EXISTS idx_books_released ON books(released);
+CREATE INDEX IF NOT EXISTS idx_series_library_sort ON series(library_id, sort_title);
+CREATE INDEX IF NOT EXISTS idx_series_created ON series(created);
+CREATE INDEX IF NOT EXISTS idx_series_last_modified ON series(last_modified);
+CREATE INDEX IF NOT EXISTS idx_read_progress_user_date ON read_progress(user_id, read_date DESC);
 CREATE INDEX IF NOT EXISTS idx_authors_name ON authors(name);
 CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+"""
+
+
+_SERIES_PROGRESS_COLS = """
+    s.*,
+    (SELECT COUNT(*) FROM books b JOIN read_progress rp ON b.id = rp.book_id WHERE b.series_id = s.id AND b.deleted = 0 AND rp.user_id = ? AND rp.completed = 1) as books_read_count,
+    (SELECT COUNT(*) FROM books b JOIN read_progress rp ON b.id = rp.book_id WHERE b.series_id = s.id AND b.deleted = 0 AND rp.user_id = ? AND rp.completed = 0 AND (rp.page > 0 OR rp.read_date IS NOT NULL)) as books_in_progress_count
 """
 
 
@@ -443,6 +457,19 @@ class Database:
                 await db.execute("CREATE INDEX IF NOT EXISTS idx_series_release_date ON series(release_date)")
             except Exception:
                 pass
+            for idx_sql in (
+                "CREATE INDEX IF NOT EXISTS idx_books_deleted_series ON books(deleted, series_id, number)",
+                "CREATE INDEX IF NOT EXISTS idx_books_deleted_library ON books(deleted, library_id)",
+                "CREATE INDEX IF NOT EXISTS idx_books_released ON books(released)",
+                "CREATE INDEX IF NOT EXISTS idx_series_library_sort ON series(library_id, sort_title)",
+                "CREATE INDEX IF NOT EXISTS idx_series_created ON series(created)",
+                "CREATE INDEX IF NOT EXISTS idx_series_last_modified ON series(last_modified)",
+                "CREATE INDEX IF NOT EXISTS idx_read_progress_user_date ON read_progress(user_id, read_date DESC)",
+            ):
+                try:
+                    await db.execute(idx_sql)
+                except Exception:
+                    pass
             try:
                 chk_rel = await db.execute("SELECT 1 FROM sync_state WHERE key = 'series_release_date_backfilled_v1'")
                 if not await chk_rel.fetchone():
@@ -853,53 +880,39 @@ class Database:
             order_col = allowed_sorts.get(clean_sort, "sort_title")
             order_by_sql = f"series.{order_col} {order_direction}"
 
+        limit_clause = "" if unpaged else "LIMIT ? OFFSET ?"
+        limit_params = [] if unpaged else [limit, offset]
+
         async with self.get_db() as db:
             db.row_factory = aiosqlite.Row
-            count_cursor = await db.execute(f"SELECT COUNT(*) as total FROM series {where_clause}", params)
-            count_row = await count_cursor.fetchone()
-            total = count_row["total"] if count_row else 0
+            if unpaged:
+                total = 0
+            else:
+                count_cursor = await db.execute(f"SELECT COUNT(*) as total FROM series {where_clause}", params)
+                count_row = await count_cursor.fetchone()
+                total = count_row["total"] if count_row else 0
 
             if user_id is not None:
-                if unpaged:
-                    query = f"""
-                        SELECT s.*,
-                               (SELECT COUNT(*) FROM books b JOIN read_progress rp ON b.id = rp.book_id WHERE b.series_id = s.id AND b.deleted = 0 AND rp.user_id = ? AND rp.completed = 1) as books_read_count,
-                               (SELECT COUNT(*) FROM books b JOIN read_progress rp ON b.id = rp.book_id WHERE b.series_id = s.id AND b.deleted = 0 AND rp.user_id = ? AND rp.completed = 0 AND (rp.page > 0 OR rp.read_date IS NOT NULL)) as books_in_progress_count
-                        FROM (
-                            SELECT series.* FROM series {join_clause} {where_clause}
-                            ORDER BY {order_by_sql}
-                        ) s
-                    """
-                    cursor = await db.execute(query, [user_id, user_id] + join_params + params)
-                else:
-                    query = f"""
-                        SELECT s.*,
-                               (SELECT COUNT(*) FROM books b JOIN read_progress rp ON b.id = rp.book_id WHERE b.series_id = s.id AND b.deleted = 0 AND rp.user_id = ? AND rp.completed = 1) as books_read_count,
-                               (SELECT COUNT(*) FROM books b JOIN read_progress rp ON b.id = rp.book_id WHERE b.series_id = s.id AND b.deleted = 0 AND rp.user_id = ? AND rp.completed = 0 AND (rp.page > 0 OR rp.read_date IS NOT NULL)) as books_in_progress_count
-                        FROM (
-                            SELECT series.* FROM series {join_clause} {where_clause}
-                            ORDER BY {order_by_sql}
-                            LIMIT ? OFFSET ?
-                        ) s
-                    """
-                    cursor = await db.execute(query, [user_id, user_id] + join_params + params + [limit, offset])
+                query = f"""
+                    SELECT {_SERIES_PROGRESS_COLS}
+                    FROM (
+                        SELECT series.* FROM series {join_clause} {where_clause}
+                        ORDER BY {order_by_sql}
+                        {limit_clause}
+                    ) s
+                """
+                cursor = await db.execute(query, [user_id, user_id] + join_params + params + limit_params)
             else:
-                if unpaged:
-                    query = f"""
-                        SELECT series.* FROM series {join_clause} {where_clause}
-                        ORDER BY {order_by_sql}
-                    """
-                    cursor = await db.execute(query, join_params + params)
-                else:
-                    query = f"""
-                        SELECT series.* FROM series {join_clause} {where_clause}
-                        ORDER BY {order_by_sql}
-                        LIMIT ? OFFSET ?
-                    """
-                    cursor = await db.execute(query, join_params + params + [limit, offset])
+                query = f"""
+                    SELECT series.* FROM series {join_clause} {where_clause}
+                    ORDER BY {order_by_sql}
+                    {limit_clause}
+                """
+                cursor = await db.execute(query, join_params + params + limit_params)
 
             rows = await cursor.fetchall()
-            return [dict(r) for r in rows], total
+            result = [dict(r) for r in rows]
+            return result, (len(result) if unpaged else total)
 
     async def get_series_alphabetical_groups(
         self, library_ids: Optional[List[int]] = None
@@ -933,10 +946,8 @@ class Database:
         async with self.get_db() as db:
             db.row_factory = aiosqlite.Row
             if user_id is not None:
-                query = """
-                    SELECT s.*,
-                           (SELECT COUNT(*) FROM books b JOIN read_progress rp ON b.id = rp.book_id WHERE b.series_id = s.id AND b.deleted = 0 AND rp.user_id = ? AND rp.completed = 1) as books_read_count,
-                           (SELECT COUNT(*) FROM books b JOIN read_progress rp ON b.id = rp.book_id WHERE b.series_id = s.id AND b.deleted = 0 AND rp.user_id = ? AND rp.completed = 0 AND (rp.page > 0 OR rp.read_date IS NOT NULL)) as books_in_progress_count
+                query = f"""
+                    SELECT {_SERIES_PROGRESS_COLS}
                     FROM series s WHERE s.id = ?
                 """
                 cursor = await db.execute(query, (user_id, user_id, series_id))
@@ -1047,9 +1058,7 @@ class Database:
             s_placeholders = ",".join("?" for _ in series_ids)
             if user_id is not None:
                 s_query = f"""
-                    SELECT s.*,
-                           (SELECT COUNT(*) FROM books b JOIN read_progress rp ON b.id = rp.book_id WHERE b.series_id = s.id AND b.deleted = 0 AND rp.user_id = ? AND rp.completed = 1) as books_read_count,
-                           (SELECT COUNT(*) FROM books b JOIN read_progress rp ON b.id = rp.book_id WHERE b.series_id = s.id AND b.deleted = 0 AND rp.user_id = ? AND rp.completed = 0 AND (rp.page > 0 OR rp.read_date IS NOT NULL)) as books_in_progress_count
+                    SELECT {_SERIES_PROGRESS_COLS}
                     FROM series s WHERE s.id IN ({s_placeholders})
                 """
                 s_cursor = await db.execute(s_query, [user_id, user_id] + series_ids)
@@ -2074,46 +2083,41 @@ class Database:
         order_by_sql = ", ".join(order_clauses)
         where_clause = f"WHERE {' AND '.join(conditions)}"
 
+        limit_clause = "" if unpaged else "LIMIT ? OFFSET ?"
+        limit_params = [] if unpaged else [limit, offset]
+
         async with self.get_db() as db:
             db.row_factory = aiosqlite.Row
-            join_series_count = "LEFT JOIN series s ON b.series_id = s.id" if search else ""
-            count_query = f"""
-                SELECT COUNT(*) as total FROM books b
-                {join_series_count}
-                {join_rp_clause}
-                {where_clause}
-            """
-            count_cursor = await db.execute(count_query, rp_join_params + params)
-            count_row = await count_cursor.fetchone()
-            total = count_row["total"] if count_row else 0
+            if unpaged:
+                total = 0
+            else:
+                join_series_count = "LEFT JOIN series s ON b.series_id = s.id" if search else ""
+                count_query = f"""
+                    SELECT COUNT(*) as total FROM books b
+                    {join_series_count}
+                    {join_rp_clause}
+                    {where_clause}
+                """
+                count_cursor = await db.execute(count_query, rp_join_params + params)
+                count_row = await count_cursor.fetchone()
+                total = count_row["total"] if count_row else 0
 
             select_cols = """
                 b.*, s.name as series_name,
                 rp.page as user_page, rp.completed as user_completed, rp.read_date as user_read_date
             """
-
-            if unpaged:
-                query = f"""
-                    SELECT {select_cols} FROM books b
-                    LEFT JOIN series s ON b.series_id = s.id
-                    {join_rp_clause}
-                    {where_clause}
-                    ORDER BY {order_by_sql}
-                """
-                cursor = await db.execute(query, rp_join_params + params)
-            else:
-                query = f"""
-                    SELECT {select_cols} FROM books b
-                    LEFT JOIN series s ON b.series_id = s.id
-                    {join_rp_clause}
-                    {where_clause}
-                    ORDER BY {order_by_sql}
-                    LIMIT ? OFFSET ?
-                """
-                cursor = await db.execute(query, rp_join_params + params + [limit, offset])
-
+            query = f"""
+                SELECT {select_cols} FROM books b
+                LEFT JOIN series s ON b.series_id = s.id
+                {join_rp_clause}
+                {where_clause}
+                ORDER BY {order_by_sql}
+                {limit_clause}
+            """
+            cursor = await db.execute(query, rp_join_params + params + limit_params)
             rows = await cursor.fetchall()
-            return [dict(r) for r in rows], total
+            result = [dict(r) for r in rows]
+            return result, (len(result) if unpaged else total)
 
     async def get_books_ondeck(
         self,
