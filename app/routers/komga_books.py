@@ -24,6 +24,7 @@ from app.services.koreader_utils import (
 )
 from app.services.mapper import KomgaMapper, parse_raw_json
 from app.services.page_calculator import PageCalculator
+from app.services.reading_sessions import reading_session_tracker
 
 logger = logging.getLogger("grimmory_proxy.komga_books")
 
@@ -486,6 +487,14 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
             eff_token = None if (settings.sync_username and user_session.username == settings.sync_username) else user_session.token
             await grimmory_client.update_read_progress(req, token=eff_token)
             await grimmory_client.update_read_status([b_id], "READ" if completed else "READING", token=eff_token)
+
+            reading_session_tracker.record_activity(
+                user_id=user_session.user_id,
+                username=user_session.username,
+                token=user_session.token,
+                book_id=b_id,
+                completed=completed,
+            )
 
             schedule_koreader_progress_sync(record, b_id, p_num, page_count, perc, eff_token)
         except Exception as e:

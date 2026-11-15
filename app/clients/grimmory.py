@@ -337,6 +337,27 @@ class GrimmoryClient:
             logger.warning(f"Failed to reset read status to UNREAD for books {book_ids}: {e}")
         return reset_ok and status_ok
 
+    async def create_reading_session(
+        self,
+        book_id: int,
+        start_time: str,
+        end_time: str,
+        duration_seconds: int,
+        token: Optional[str] = None,
+    ) -> bool:
+        """Log a reading session for the authenticated user on Grimmory."""
+        payload = {
+            "bookId": book_id,
+            "startTime": start_time,
+            "endTime": end_time,
+            "durationSeconds": max(1, int(duration_seconds)),
+        }
+        resp, _ = await self._request_with_auth("POST", "/api/v1/reading-sessions", token=token, json=payload)
+        if resp.status_code not in (200, 201, 204):
+            logger.warning(f"Grimmory create_reading_session failed ({resp.status_code}): {resp.text[:200]}")
+            return False
+        return True
+
     async def update_koreader_progress(
         self,
         document_hash: str,

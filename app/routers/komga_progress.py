@@ -21,6 +21,7 @@ from app.services.koreader_utils import (
     schedule_koreader_progress_sync,
 )
 from app.services.mapper import KomgaMapper, parse_raw_json
+from app.services.reading_sessions import reading_session_tracker
 
 logger = logging.getLogger("grimmory_proxy.komga_progress")
 
@@ -221,6 +222,14 @@ def get_progress_router(db: Database) -> APIRouter:
             _sync_book_progress_to_grimmory(req, book_id, completed, _effective_user_token(user), user.username)
         )
         await asyncio.sleep(0)
+
+        reading_session_tracker.record_activity(
+            user_id=user.user_id,
+            username=user.username,
+            token=user.token,
+            book_id=book_id,
+            completed=completed,
+        )
 
         schedule_koreader_progress_sync(record, book_id, page_num, page_count, percentage, user.token)
 
@@ -545,6 +554,14 @@ def get_progress_router(db: Database) -> APIRouter:
             _sync_book_progress_to_grimmory(req, book_id, completed, _effective_user_token(user), user.username)
         )
         await asyncio.sleep(0)
+
+        reading_session_tracker.record_activity(
+            user_id=user.user_id,
+            username=user.username,
+            token=user.token,
+            book_id=book_id,
+            completed=completed,
+        )
 
         schedule_koreader_progress_sync(record, book_id, page_num, page_count, percentage, user.token)
 

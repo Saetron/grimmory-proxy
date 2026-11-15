@@ -63,6 +63,8 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down Grimmory Proxy...")
     sync_task.cancel()
     user_sync_task.cancel()
+    from app.services.reading_sessions import reading_session_tracker
+    await reading_session_tracker.flush_all()
     await db.checkpoint("TRUNCATE")
     await grimmory_client.close()
 

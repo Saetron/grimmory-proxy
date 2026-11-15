@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Added `GET /api/v1/books/{book_id}/readlists` for client book-detail compatibility.
   - Added `POST /api/v1/series/list/alphabetical-groups` sharing [`Database._build_series_where_clause`](file:///Users/jbudz/Documents/grimmory-proxy/app/database.py) with `POST /api/v1/series/list`.
   - Added referential metadata endpoints: `GET /api/v1/languages`, `GET /api/v2/languages`, `GET /api/v1/age-ratings`, `GET /api/v2/age-ratings`, `GET /api/v1/sharing-labels`, `GET /api/v2/sharing-labels`, and `GET /api/v2/series/release-years`.
+- **Grimmory Reading Sessions**:
+  - Added [`ReadingSessionTracker`](file:///Users/jbudz/Documents/grimmory-proxy/app/services/reading_sessions.py) and `GrimmoryClient.create_reading_session` (`POST /api/v1/reading-sessions`) to aggregate page turns and progress updates into Grimmory reading sessions (flushing after 120s of inactivity, on book switch, on completion, and on shutdown).
 
 ### Fixed
 - **Komic & Reader Resume Location Preservation**:

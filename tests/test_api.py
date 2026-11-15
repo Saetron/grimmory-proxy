@@ -3483,3 +3483,45 @@ async def test_reader_and_client_facing_endpoints(monkeypatch):
         app.dependency_overrides.pop(AuthService.require_user, None)
 
 
+@pytest.mark.asyncio
+async def test_reading_session_tracker_logs_to_grimmory(monkeypatch):
+    import asyncio
+    from unittest.mock import AsyncMock
+    from app.clients.grimmory import grimmory_client
+    from app.services.reading_sessions import ReadingSessionTracker
+
+    logged_calls = []
+
+    async def fake_create_session(book_id, start_time, end_time, duration_seconds, token=None):
+        logged_calls.append({
+            "book_id": book_id,
+            "start_time": start_time,
+            "end_time": end_time,
+            "duration_seconds": duration_seconds,
+            "token": token,
+        })
+        return True
+
+    monkeypatch.setattr(grimmory_client, "create_reading_session", fake_create_session)
+
+    tracker = ReadingSessionTracker(inactivity_timeout_seconds=10)
+    # 1. Start reading book 101, then switch to book 102 -> flushes 101
+    tracker.record_activity(user_id=50, username="reader1", token="tok50", book_id=101, completed=False)
+    tracker.record_activity(user_id=50, username="reader1", token="tok50", book_id=102, completed=False)
+    await asyncio.sleep(0.05)
+
+    assert len(logged_calls) == 1
+    assert logged_calls[0]["book_id"] == 101
+    assert logged_calls[0]["duration_seconds"] >= 1
+    assert logged_calls[0]["token"] == "tok50"
+
+    # 2. Complete book 102 -> flushes 102 immediately
+    tracker.record_activity(user_id=50, username="reader1", token="tok50", book_id=102, completed=True)
+    await asyncio.sleep(0.05)
+
+    assert len(logged_calls) == 2
+    assert logged_calls[1]["book_id"] == 102
+    assert logged_calls[1]["duration_seconds"] >= 1
+
+
+
