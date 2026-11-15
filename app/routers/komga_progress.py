@@ -59,7 +59,7 @@ def get_progress_router(db: Database) -> APIRouter:
             if pages:
                 page_count = len(pages)
                 await db.update_book_page_count(book_id, page_count)
-        return page_count if page_count > 0 else 1
+        return page_count if page_count > 0 else 0
 
     async def _resolve_series_or_404(series_id: str, user_id: Optional[int] = None) -> Dict[str, Any]:
         series = await db.get_series_by_id(series_id, user_id=user_id)
@@ -119,7 +119,8 @@ def get_progress_router(db: Database) -> APIRouter:
     ) -> Response:
         dto = update_dto if update_dto is not None else ReadProgressUpdateDto(completed=True)
         record = await db.get_book_by_id(book_id)
-        page_count = await _resolve_book_page_count(book_id, record)
+        known_page_count = await _resolve_book_page_count(book_id, record)
+        page_count = known_page_count if known_page_count > 0 else 1
 
         # Check if marking unread
         if dto.completed is False and (dto.page is None or dto.page <= 0):
@@ -129,17 +130,25 @@ def get_progress_router(db: Database) -> APIRouter:
         # Determine completion and page position according to Komga & reader application behavior
         if dto.completed is True:
             completed = True
-            page_num = dto.page if dto.page is not None else (page_count if page_count > 0 else 1)
+            page_num = dto.page if dto.page is not None else page_count
             percentage = 100.0
         else:
             page_num = dto.page if dto.page is not None else 1
-            if page_count > 1:
-                percentage = min(100.0, max(0.0, (page_num / page_count) * 100.0))
+            if known_page_count > 1:
+                percentage = min(100.0, max(0.0, (page_num / known_page_count) * 100.0))
+            elif known_page_count == 1:
+                percentage = 100.0 if (page_num >= 1 and dto.completed is None) else 0.0
             else:
-                percentage = 100.0 if (page_count == 1 and page_num >= 1 and dto.completed is None) else 0.0
+                percentage = 0.0
 
-            # Reaching or passing the last page in reader applications (like Komic) automatically marks as read
-            is_at_end = (page_count > 0 and page_num >= page_count) or (page_count > 1 and percentage >= 95.0)
+            # Reaching or passing the last page in reader applications (like Komic) automatically marks as read.
+            # Never auto-complete when page_count is unknown (0), otherwise mid-book pages get marked READ.
+            if known_page_count > 1:
+                is_at_end = page_num >= known_page_count or percentage >= 95.0
+            elif known_page_count == 1:
+                is_at_end = page_num >= 1 and dto.completed is None
+            else:
+                is_at_end = False
 
             if dto.completed is False and page_num <= 1:
                 # Explicit unread / rewind to start
@@ -153,7 +162,8 @@ def get_progress_router(db: Database) -> APIRouter:
 
         if completed:
             percentage = 100.0
-            page_num = page_count if page_count > 1 else page_num
+            if known_page_count > 1:
+                page_num = known_page_count
 
         now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -372,7 +382,8 @@ def get_progress_router(db: Database) -> APIRouter:
         if not record:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
 
-        page_count = await _resolve_book_page_count(book_id, record)
+        known_page_count = await _resolve_book_page_count(book_id, record)
+        page_count = known_page_count if known_page_count > 0 else 1
 
         now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 

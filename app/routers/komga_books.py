@@ -21,7 +21,7 @@ from app.services.koreader_utils import (
     build_grimmory_progress_request,
     schedule_koreader_progress_sync,
 )
-from app.services.mapper import KomgaMapper
+from app.services.mapper import KomgaMapper, parse_raw_json
 from app.services.page_calculator import PageCalculator
 
 logger = logging.getLogger("grimmory_proxy.komga_books")
@@ -430,11 +430,19 @@ def get_books_router(db: Database, page_calculator: PageCalculator) -> APIRouter
                 return
 
             record = await db.get_book_by_id(b_id)
-            page_count = record.get("page_count", 0) if record else 0
-            if page_count <= 0:
-                page_count = 1
+            known_page_count = (record.get("page_count", 0) or 0) if record else 0
+            if known_page_count <= 0 and record and record.get("raw_json"):
+                raw_data = parse_raw_json(record["raw_json"])
+                if raw_data:
+                    known_page_count = raw_data.get("metadata", {}).get("pageCount") or raw_data.get("pageCount") or 0
+            if known_page_count <= 0:
+                pages = await db.get_book_pages(b_id)
+                if pages:
+                    known_page_count = len(pages)
+                    await db.update_book_page_count(b_id, known_page_count)
 
-            completed = page_count > 0 and p_num >= page_count
+            page_count = known_page_count if known_page_count > 0 else 1
+            completed = known_page_count > 0 and p_num >= known_page_count
             now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
             await db.upsert_read_progress(
