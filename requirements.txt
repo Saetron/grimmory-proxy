@@ -1,7 +1,7 @@
 fastapi>=0.162.4
 uvicorn[standard]>=0.54.0
 pydantic>=2.14.3
-pydantic-settings>=2.16.2
+pydantic-settings>=2.16.3
 httpx>=0.28.1
 aiosqlite>=0.22.1
 pillow>=13.0.0
